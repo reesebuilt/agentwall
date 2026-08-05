@@ -1,0 +1,11 @@
+{
+  "exit": 1,
+  "layers": {
+    "chained": false,
+    "linked": true,
+    "anchored": true
+  },
+  "go_codes_include": [
+    "hash-mismatch"
+  ]
+}
