@@ -1,0 +1,11 @@
+{
+  "exit": 1,
+  "layers": {
+    "chained": true,
+    "linked": false,
+    "anchored": false
+  },
+  "go_codes_include": [
+    "manifest-link-break"
+  ]
+}

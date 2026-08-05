@@ -95,8 +95,10 @@ export const AgentContextSchema = z.object({
   sessionId: z.string().optional(),
   plane: PlaneSchema,
   action: z.string(),
-  payload: z.record(z.unknown()),
-  metadata: z.record(z.string()).optional(),
+  // Key schemas are explicit: both records are keyed by arbitrary caller-supplied
+  // strings, so nothing here constrains which keys may appear.
+  payload: z.record(z.string(), z.unknown()),
+  metadata: z.record(z.string(), z.string()).optional(),
   actor: ActorScopeSchema.optional(),
   control: ControlPlaneStateSchema.optional(),
   provenance: z.array(ProvenanceTagSchema).optional(),
@@ -209,6 +211,13 @@ export interface AuditIntegrity {
    * the previous label ("verified-local") implied all three and delivered none.
    */
   status: "chained-local";
+  /**
+   * The canonical form the hash was computed over. Present on records written by this
+   * version, absent on older ones. A verifier in another language needs it: without the
+   * marker it has to guess whether the writer ordered object keys by locale collation or
+   * by code unit, and guessing wrong makes an untouched record look tampered.
+   */
+  canon?: "cu1";
 }
 
 export interface AuditEvent {
@@ -289,7 +298,7 @@ export type ContentClassification = z.infer<typeof ContentClassificationSchema>;
 export const NetworkRequestSchema = z.object({
   url: z.string(),
   method: z.string().optional(),
-  headers: z.record(z.string()).optional(),
+  headers: z.record(z.string(), z.string()).optional(),
   body: z.string().optional(),
 });
 export type NetworkRequest = z.infer<typeof NetworkRequestSchema>;

@@ -17,6 +17,9 @@ than a narrative document.
   where decisions are made.
 - [Threat model](threat-model.md) — what AgentWall defends against, what it explicitly
   does not, and the assumptions behind both. Read this before relying on it for anything.
+- [Audit evidence format](audit-format.md): the normative on-disk spec. Record hashing,
+  canonicalization, rotation manifest, checkpoints, and OpenTimestamps proofs, with worked
+  examples and a statement of what the format does not prove.
 - [FloodGuard](runtime-floodguard.md) — runtime rate and burst control, including how
   shield mode changes behaviour.
 

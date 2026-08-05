@@ -791,8 +791,8 @@ async function commandVerify(flags: CliFlags): Promise<void> {
 
   const meaning: Record<string, string> = {
     chained: "records link within each segment, so an edit inside one is detectable",
-    linked: "segments link to each other, so removing a whole segment is detectable",
-    anchored: "a fingerprint exists off-box, so rewriting everything here is detectable",
+    linked: "segments link and match their files, so removing or replacing one is detectable",
+    anchored: "a fingerprint exists off-box and still matches what is here, so a local rewrite shows",
   };
 
   for (const layer of report.layers) {

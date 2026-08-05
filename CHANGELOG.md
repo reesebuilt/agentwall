@@ -41,6 +41,8 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - Pending approvals now have an explicit mixed-risk ordering test and panel-side sort to keep critical items pinned before older lower-priority reviews.
 - The approvals panel now shows a queue health summary with pending count, critical count, and oldest waiting item before the pending decision list.
 - Brand asset docs now point at the actual public asset path.
+- Policy and config YAML now parses under the YAML 1.2 core schema on js-yaml 5. Merge keys (`<<`) are no longer expanded, so a policy file that relies on one is rejected whole and the last good ruleset stays in force instead of a partially assembled rule taking effect. Unquoted dates load as strings rather than `Date` objects, and a mapping with a complex key is rejected instead of having that key flattened into a lossy string.
+- The dashboard runtime-context panel now degrades to "none" when the agent harness config file cannot be parsed, rather than failing the whole dashboard state build on a file Agentwall does not own.
 
 ## [0.1.0] - 2026-03-23
 

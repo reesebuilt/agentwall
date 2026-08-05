@@ -87,6 +87,47 @@ rules:
     expect(failedReload.error).toBeDefined();
     expect(runtime.getRules().map((rule) => rule.id)).toEqual(["custom:allow-second"]);
   });
+
+  // A policy file is attacker-adjacent input: anyone who can write into the policy path can
+  // decide what the parser sees. A file the YAML parser rejects outright must be rejected
+  // whole, never partially applied, and the last good ruleset must stay in force so a
+  // malformed write cannot silently disarm the running policy.
+  it.each([
+    ["unparseable YAML", "version: \"1\"\nrules:\n\t- id: \"custom:tabbed\"\n"],
+    ["a truncated flow collection", "version: \"1\"\nrules: [\n"],
+    ["a document with no content", "# every line here is a comment\n"],
+  ])("rejects %s and keeps the last good rules", (_label, contents) => {
+    const { dir, policyPath } = createPolicyDir();
+    tempDirs.push(dir);
+
+    writePolicy(policyPath, `
+version: "1"
+rules:
+  - id: "custom:allow-good"
+    description: "Allow known host"
+    plane: "network"
+    match:
+      type: "hostname-equals"
+      values: ["api.good.example"]
+    decision: "allow"
+    riskLevel: "low"
+    reason: "Known host allowed"
+`);
+
+    const runtime = new FileBackedPolicyRuntime(policyPath, {
+      watch: false,
+      logger: { error: () => {}, warn: () => {} },
+    });
+    expect(runtime.getRules().map((rule) => rule.id)).toEqual(["custom:allow-good"]);
+
+    writePolicy(policyPath, contents);
+
+    const failedReload = runtime.reload();
+    expect(failedReload.reloaded).toBe(false);
+    expect(failedReload.error).toBeInstanceOf(Error);
+    expect(runtime.getRules().map((rule) => rule.id)).toEqual(["custom:allow-good"]);
+    expect(runtime.getDeclarativeRules().map((rule) => rule.id)).toEqual(["custom:allow-good"]);
+  });
 });
 
 describe("buildServer policy reload", () => {
