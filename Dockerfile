@@ -27,7 +27,7 @@
 # a rebuild can quietly change the runtime under a signed release. The trailing comment
 # names the tag the digest belonged to when it was resolved; Dependabot's docker ecosystem
 # opens the bump PRs against this line.
-FROM node:22-slim@sha256:f576cc608b02e6b04bb0700e13be83eb5ceb7bb24584c3181b0f4ecfa0cd0edf AS build
+FROM node:25-slim@sha256:81db02c4b671288a03915da9534dbd54f96d0e7c24d80ccc54f5b36b2e684370 AS build
 
 WORKDIR /app
 
@@ -50,7 +50,7 @@ RUN npm run build
 RUN npm prune --omit=dev
 
 
-FROM node:22-slim@sha256:f576cc608b02e6b04bb0700e13be83eb5ceb7bb24584c3181b0f4ecfa0cd0edf AS runtime
+FROM node:25-slim@sha256:81db02c4b671288a03915da9534dbd54f96d0e7c24d80ccc54f5b36b2e684370 AS runtime
 
 # Production mode for the dependency tree, and a hint to fastify and pino that this is
 # not a development process.
