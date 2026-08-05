@@ -25,7 +25,7 @@ const securityGroups = [
     tests: [
       'tests/approval-webhook.test.ts',
       'tests/audit-chain.test.ts',
-      'tests/capability-ticket.test.ts',
+      'tests/audit-durability.test.ts',
     ],
   },
   {

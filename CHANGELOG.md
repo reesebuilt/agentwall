@@ -32,6 +32,35 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
   as a submission failure rather than writing it as a proof. A broken or hostile answer therefore
   leaves a recorded gap instead of a file that a later verify reports as corrupt evidence.
 
+### Removed
+- Capability tickets. `/evaluate` minted an HMAC-signed ticket, `capabilityTicket`, and nothing in
+  the product ever presented one back: the verifier function had exactly one caller, its own test.
+  The signing key was generated per process, so a ticket could not be checked by anything but the
+  process that issued it and did not survive a restart. A signed token nobody checks reads to a
+  reviewer as an authorization control and is not one, so the minting is gone rather than given an
+  endpoint no client calls. `PolicyEvaluationResponse` no longer carries the field.
+
+### Fixed
+- Audit records lost to a failing sink no longer read as tampering. The chain state advanced before
+  the sinks ran and the sink error was swallowed, so a record that never reached disk still moved
+  the chain on, and the next record carried the index jump and broken link of a DELETED record.
+  `agentwall verify` reported the same findings for a full partition as for the corpus forgery
+  `b3-record-removed`, while the process stayed up and said nothing. The chain now advances only
+  after a durable sink accepts the record, so the file stays contiguous across a loss; the refused
+  record goes to stderr under `agentwall_audit_dropped` without an integrity block; and the first
+  append that succeeds afterwards writes a gap declaration record, which both verifiers report as
+  the non-fatal `chain-gap-declared`. `/health` carries the drop counters. See
+  [The gap declaration record](docs/audit-format.md#the-gap-declaration-record).
+- The audit file sink rolls back an append that ran out of space part way through. A short write
+  left a fragment with no terminator, and the next append fused onto that line, so a full disk
+  destroyed a record that had been written on top of the one that had not.
+- A failed console write no longer terminates the service. With stdout or stderr redirected to a
+  regular file, node backs the stream with a synchronous writer whose failure Writable turns into
+  an `'error'` event rather than an exception, so the per-sink try/catch never saw it and an
+  unhandled event killed the process on the next tick. A partition full enough to stop the audit
+  file therefore took down the thing gating egress, on the record after the first one it could not
+  write.
+
 ## [0.2.0] - 2026-08-05
 
 The first tagged release. It freezes the on-disk evidence format and makes that format

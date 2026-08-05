@@ -16,6 +16,17 @@ const HASH_STATUS = "chained-local";
 // a tampered record.
 const CANON = "cu1";
 
+/**
+ * The `action` that marks a record as the writer's declaration of a hole.
+ *
+ * A record carrying it is an ordinary chained record in every respect. It exists because a
+ * writer that could not store a record has no other way to say so inside the evidence: the
+ * chain stays contiguous across the loss, so nothing in the linkage reveals that anything
+ * happened. Named here rather than in the logger because the writer and the chain walk both
+ * need the same string, and a copy in each would drift.
+ */
+export const AUDIT_CHAIN_GAP_ACTION = "audit:chain-gap";
+
 type AuditPayloadValue = string | number | boolean | null | AuditPayloadValue[] | { [key: string]: AuditPayloadValue };
 
 function emitCanonical(value: AuditPayloadValue): string {

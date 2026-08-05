@@ -157,34 +157,6 @@ export interface PolicyResult {
   detections: DetectionMatch[];
 }
 
-export interface CapabilityTicketFlowConstraints {
-  direction: FlowDirection;
-  labels?: FlowLabel[];
-  target?: string;
-  highRisk?: boolean;
-  crossesBoundary?: boolean;
-}
-
-export interface CapabilityTicketConstraints {
-  payloadKeys: string[];
-  flow?: CapabilityTicketFlowConstraints;
-}
-
-export interface CapabilityTicket {
-  id: string;
-  issuedAt: string;
-  expiresAt: string;
-  decision: Decision;
-  riskLevel: RiskLevel;
-  agentId: string;
-  sessionId?: string;
-  plane: Plane;
-  action: string;
-  actor?: ActorScope;
-  constraints: CapabilityTicketConstraints;
-  signature: string;
-}
-
 export interface PolicyEvaluationResponse {
   decision: Decision;
   riskLevel: RiskLevel;
@@ -194,7 +166,6 @@ export interface PolicyEvaluationResponse {
   highRiskFlow: boolean;
   detections: DetectionMatch[];
   auditEventId: string;
-  capabilityTicket?: CapabilityTicket;
 }
 
 // --- Audit ---

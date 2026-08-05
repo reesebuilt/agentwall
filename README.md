@@ -257,6 +257,13 @@ and a foreign key exits 1.
 Full detail, including the conformance corpus and what verification does NOT prove, is in
 [docs/verification.md](docs/verification.md).
 
+A storage failure is deliberately not reported that way. When a record cannot be written, the
+chain does not advance past it, so the file stays contiguous and nothing in it reads as a removed
+record; the refused record goes to stderr under `agentwall_audit_dropped`, `/health` counts it, and
+the first append that succeeds afterwards writes a record declaring how many were lost. `verify`
+surfaces that as `chain-gap-declared` without failing the layer. A full partition and a deletion
+have to look different, or the alert for one gets ignored because of the other.
+
 ## Limits
 
 Stated plainly, because a security tool that oversells itself is worse than no tool.
