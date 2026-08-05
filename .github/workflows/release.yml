@@ -266,9 +266,10 @@ jobs:
       actions: read
       # Sign the provenance against the workflow's own OIDC identity.
       id-token: write
-      # The reusable workflow declares this for its own upload path; assets are attached by the
-      # release job below, which keeps one job in charge of what the release contains.
-      contents: write
+      # Read only. Inside the generator, contents: write belongs to its upload-assets job, which
+      # is guarded by `if: inputs.upload-assets` and therefore never runs here: the release job
+      # below attaches the provenance, so one job stays in charge of what the release contains.
+      contents: read
     uses: slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@v2.1.0
     with:
       base64-subjects: ${{ needs.build.outputs.hashes }}
