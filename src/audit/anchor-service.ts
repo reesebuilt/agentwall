@@ -342,7 +342,7 @@ export function runVerify(paths: AnchorPaths): VerifyReport {
 			chainProblems.push(
 				`${p}: ${v.problems.length} problems across ${v.records} records` +
 					(reuse
-						? ` — ${v.records} records but only ${reuse.distinct} distinct chain indexes ` +
+						? `; ${v.records} records but only ${reuse.distinct} distinct chain indexes ` +
 							`(one index reused up to ${reuse.worst} times), which is the signature of ` +
 							`CONCURRENT WRITERS each keeping their own chain state, not of a single edit`
 						: ""),

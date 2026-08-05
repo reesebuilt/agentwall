@@ -65,7 +65,7 @@ async function main() {
             // The five route handlers already feed the dashboard directly; the
             // proxy is the one producer that bypasses them, which is why the
             // console read "Awaiting first live agent activity" while the proxy
-            // was handling real traffic. Wire only this path — a global audit
+            // was handling real traffic. Wire only this path: a global audit
             // sink would double-record every routed event.
             runtime.recordAuditEvent(auditEvent);
           } catch {

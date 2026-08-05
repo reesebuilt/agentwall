@@ -5,15 +5,25 @@ on:
     branches: ["main", "master"]
   pull_request:
 
+# Workflow-wide floor. A job added later that forgets its own block inherits read-only
+# instead of the repository default, which on many repositories is read-write: a compromised
+# step would otherwise hold a token that can push commits, move tags, or open releases.
+permissions:
+  contents: read
+
 jobs:
+  # Job ids are the check-run names branch protection matches, so none of these jobs sets a
+  # display `name`. Renaming `test` would silently detach it from the required-check rule.
   test:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Setup Node
-        uses: actions/setup-node@v7
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22
           cache: npm
@@ -32,3 +42,118 @@ jobs:
 
       - name: Audit (high+)
         run: npm audit --audit-level=high
+
+  verifier:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: verifier
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          # The toolchain comes from the module's own go directive. A hardcoded version here
+          # drifts from go.mod without anything noticing, and CI then proves the verifier
+          # builds under a Go nobody claims to support.
+          go-version-file: verifier/go.mod
+          # Zero requirements means no dependency graph to cache and no go.sum for the cache
+          # key to hash. setup-go's cache path wants that file and warns when it is absent.
+          cache: false
+
+      - name: Formatting (gofmt)
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "gofmt reports unformatted files:" >&2
+            echo "$unformatted" >&2
+            exit 1
+          fi
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        run: go test ./...
+
+      # The README says the verifier carries no third-party code. A claim nobody checks is a
+      # claim that rots: one stray `go get` turns the sentence into a lie that reads exactly
+      # like the truth. `go list -m all` prints the main module plus every module in the
+      # build list, so a single line is the whole assertion.
+      - name: Zero third-party dependencies
+        run: |
+          modules=$(go list -m all)
+          count=$(printf '%s\n' "$modules" | wc -l)
+          if [ "$count" -ne 1 ]; then
+            echo "the verifier module must have no requirements; go list -m all printed $count lines:" >&2
+            echo "$modules" >&2
+            exit 1
+          fi
+          echo "$modules"
+
+      - name: Build
+        run: go build -o agentwall-verify .
+
+      - name: Upload verifier binary
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: agentwall-verify-ci
+          path: verifier/agentwall-verify
+          # An upload that silently matches nothing leaves a green job and no artifact, which
+          # is the failure mode this step exists to make visible.
+          if-no-files-found: error
+
+  conformance:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Setup Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: verifier/go.mod
+          cache: false
+
+      - name: Install
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Build verifier
+        run: go build -o agentwall-verify .
+        working-directory: verifier
+
+      # Runs the committed corpus, the bytes a stranger gets from a checkout, through both
+      # implementations. The harness exits non-zero on any failure and zero when the only
+      # differences are the divergences declared in its DIVERGENCES table; it also fails when
+      # a declared divergence stops happening, so the table cannot absorb a fixed gap.
+      - name: Conformance (typescript and go)
+        run: node scripts/conformance.js
+
+      # Regeneration must reproduce the committed tree byte for byte. Ordered after the
+      # harness so the generator cannot overwrite the bytes the harness is supposed to judge.
+      - name: Corpus reproduces from the generator
+        run: |
+          npm run gen:corpus
+          changed=$(git status --porcelain -- verifier/testdata/corpus)
+          if [ -n "$changed" ]; then
+            echo "regenerating the corpus does not reproduce the committed tree." >&2
+            echo "either the generator is nondeterministic or the corpus was edited by hand:" >&2
+            echo "$changed" >&2
+            git --no-pager diff -- verifier/testdata/corpus >&2
+            exit 1
+          fi

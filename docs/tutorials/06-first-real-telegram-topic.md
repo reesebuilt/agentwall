@@ -40,7 +40,7 @@ turns hostile.
    - runs `/api/dashboard/proof/communication-channel` to verify containment.
 3. Read the printed summary. You want:
    - `proof: passed (5/5)` (or at minimum, every required check `PASS`)
-   - one `auditEventId` per check — these are your evidence handles
+   - one `auditEventId` per check (these are your evidence handles)
 4. Open the dashboard channel panel and confirm the lane row now shows
    `Answer only`. The matched rules should include
    `channel:deny-filesystem-mutation`, `channel:deny-sensitive-data-access`,
@@ -61,8 +61,8 @@ from the dashboard.
 
 ## If the lane turns hostile
 
-If you see unexpected attempts on this topic — for example sustained tool calls
-from an account you did not authorize — switch the profile to locked down and
+If you see unexpected attempts on this topic, for example sustained tool calls
+from an account you did not authorize, switch the profile to locked down and
 stop accepting traffic until you understand it:
 
 ```bash
@@ -89,7 +89,7 @@ verified clean by `scripts/verify-live.sh`. Keep that discipline.
 
 ## Related
 
-- `docs/tutorials/01-telegram-answer-only.md` — dashboard-only walkthrough of
+- `docs/tutorials/01-telegram-answer-only.md`: dashboard-only walkthrough of
   the same containment loop, no helper script.
-- `docs/tutorials/04-approval-queue.md` — what to do with the audit events the
+- `docs/tutorials/04-approval-queue.md`: what to do with the audit events the
   proof suite produces.
