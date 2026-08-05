@@ -189,6 +189,10 @@ Anchored
 
 Both commands need `AGENTWALL_AUDIT_FILE` set, or `--audit <path>`.
 
+The evidence format is specified in [docs/audit-format.md](docs/audit-format.md), at the byte
+level, with worked examples: enough to write a verifier in another language without reading
+this one's source, and it states plainly what the format does not prove.
+
 To run the tests behind the claims in this file:
 
 ```bash
