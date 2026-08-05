@@ -12,7 +12,7 @@ import {
 } from "fs";
 import { dirname } from "path";
 import { AuditEvent } from "../types";
-import { AuditChainState } from "./chain";
+import { AuditChainState, findDuplicateKey } from "./chain";
 
 /**
  * Durable JSONL sink for the audit chain.
@@ -320,6 +320,19 @@ export function verifyChainFile(
   let expectedPrev: string | null = null;
 
   lines.forEach((line, i) => {
+    // Checked on the raw bytes, because JSON.parse silently collapses a duplicate member
+    // and the evidence of it is gone the moment the line is parsed. Such a record counts
+    // toward nothing: it does not advance the expected index or the expected link, so the
+    // records around it are judged against each other rather than against a line whose
+    // meaning depends on which parser read it.
+    const duplicate = findDuplicateKey(line);
+    if (duplicate !== null) {
+      problems.push(
+        `line ${i + 1}: dup-key, two members named ${JSON.stringify(duplicate)}, so what this record says ` +
+          "depends on which parser reads it",
+      );
+      return;
+    }
     let ev: AuditEvent;
     try {
       ev = JSON.parse(line) as AuditEvent;
