@@ -205,16 +205,17 @@ describe("rotation manifest", () => {
 	});
 
 	it("keeps a missing segment distinct from a segment that contradicts its seal", () => {
-		// Absent evidence and lying evidence are different findings. A file that is simply
-		// gone is reported as missing by the per-record layer, and reporting it here as a
-		// content mismatch would point an operator at tampering that did not happen.
+		// Absent evidence and lying evidence are different findings, and an operator chasing
+		// one must not be handed the other. Both belong to the manifest, which is what named
+		// the file, so both are reported here and neither is silent.
 		const d = tmp();
 		const m = join(d, "manifest.jsonl");
 		sealSegment(segment(d, "a.jsonl", 0, 3, "a"), m);
 		rmSync(join(d, "a.jsonl"));
 		const v = verifyManifest(m);
-		expect(v.ok).toBe(true);
-		expect(v.problems).toEqual([]);
+		expect(v.ok).toBe(false);
+		expect(v.problems.join(" ")).toMatch(/segment-missing/);
+		expect(v.problems.join(" ")).not.toMatch(/segment-content-mismatch/);
 	});
 
 	it("detects a sealed segment emptied in place, which no other layer sees", () => {

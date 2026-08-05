@@ -272,7 +272,10 @@ describe("verify", () => {
 		expect(after?.detail).toMatch(/1 segment\(s\) linked/);
 	});
 
-	it("flags a sealed segment that has gone missing from disk", async () => {
+	it("flags a sealed segment that has gone missing from disk, on the manifest layer", async () => {
+		// Segment accountability lives on one layer. If absence were reported only by the
+		// per-record walk, `linked` would report PASS while a segment the manifest vouches
+		// for is simply gone, which is the hole this whole change exists to close.
 		const d = tmp();
 		const audit = join(d, "audit.jsonl");
 		const old = join(d, "audit.jsonl.old");
@@ -281,9 +284,17 @@ describe("verify", () => {
 		await runAnchorPass({ auditPath: audit }, () => new Date(), okPoster);
 		rmSync(old);
 
-		const chained = runVerify({ auditPath: audit }).layers.find((l) => l.name === "chained");
-		expect(chained?.ok).toBe(false);
-		expect(chained?.problems.join(" ")).toMatch(/missing from disk/);
+		const report = runVerify({ auditPath: audit });
+		const linked = report.layers.find((l) => l.name === "linked");
+		const chained = report.layers.find((l) => l.name === "chained");
+		expect(linked?.ok).toBe(false);
+		expect(linked?.problems.join(" ")).toMatch(/segment-missing/);
+		expect(linked?.problems.join(" ")).not.toMatch(/segment-content-mismatch/);
+		// Not double-reported: the per-record layer says nothing about a file it never read.
+		expect(chained?.problems.join(" ")).not.toMatch(/missing/);
+		// And it does not claim to have covered it either. Counting a file it skipped would
+		// overstate what the layer checked, which is the same overclaiming in miniature.
+		expect(chained?.detail).toMatch(/4 records across 1 segment\(s\)/);
 	});
 
 	it("detects a checkpoint signed by a different key", async () => {
