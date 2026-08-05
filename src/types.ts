@@ -209,6 +209,13 @@ export interface AuditIntegrity {
    * the previous label ("verified-local") implied all three and delivered none.
    */
   status: "chained-local";
+  /**
+   * The canonical form the hash was computed over. Present on records written by this
+   * version, absent on older ones. A verifier in another language needs it: without the
+   * marker it has to guess whether the writer ordered object keys by locale collation or
+   * by code unit, and guessing wrong makes an untouched record look tampered.
+   */
+  canon?: "cu1";
 }
 
 export interface AuditEvent {

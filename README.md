@@ -98,7 +98,7 @@ Each request appends a chained record naming the process that made it:
  "metadata":{"host":"example.com","port":"443","pid":"1101858","comm":"curl",
              "durationMs":"378","bytesUp":"797","bytesDown":"5344"},
  "integrity":{"chainIndex":1,"hash":"0e86f943...","previousHash":"4678da51...",
-              "algorithm":"sha256","status":"chained-local"}}
+              "algorithm":"sha256","status":"chained-local","canon":"cu1"}}
 ```
 
 Ask for a policy decision. The token is mandatory; without it this returns `401`:
