@@ -1,4 +1,4 @@
-<p align="center"><img src=".github/assets/logo.jpg" width="140" alt="Agentwall"></p>
+<p align="center"><img src="assets/brand/agentwall-logo-mark.svg" width="140" alt="Agentwall"></p>
 
 <h1 align="center">Agentwall</h1>
 
