@@ -354,23 +354,14 @@ node scripts/conformance.js
 The run prints one line per case. Its tail:
 
 ```
-DIVERGENCE b9-anchor-digest-altered
-             format expects exit=1 chained=true linked=true anchored=false
-             typescript returns exit=0 chained=true linked=true anchored=true
-             it reports the digest the record claims was submitted and never recomputes one from the checkpoint the record embeds
-DIVERGENCE b10-proof-truncated
-             format expects exit=1 chained=true linked=true anchored=false
-             typescript returns exit=0 chained=true linked=true anchored=true
-             it never opens a proof file, so a proof that cannot be parsed still counts as an anchor
+ok         b9-anchor-digest-altered  exit=1 chained=true linked=true anchored=false
+ok         b10-proof-truncated  exit=1 chained=true linked=true anchored=false
 DIVERGENCE b11-torn-tail
              format expects exit=1 chained=true linked=true anchored=false
              typescript returns exit=1 chained=false linked=true anchored=false
              it reports a partial final line as a broken chain rather than as the torn tail a hard kill leaves behind
 ok         b12-duplicate-key-shadowed  exit=1 chained=false linked=true anchored=false
-DIVERGENCE b13-confirmed-without-proof
-             format expects exit=1 chained=true linked=true anchored=false
-             typescript returns exit=0 chained=true linked=true anchored=true
-             it counts the status field, so an anchor claiming confirmation passes with no proof bytes behind it
+ok         b13-confirmed-without-proof  exit=1 chained=true linked=true anchored=false
 ok         b14-submission-never-reached-calendar  exit=1 chained=true linked=true anchored=false
 ok         b15-sealed-segment-rewritten  exit=1 chained=true linked=false anchored=true
 ok         b16-live-tail-rewritten-after-checkpoint  exit=1 chained=true linked=true anchored=false
@@ -378,7 +369,7 @@ ok         b17-sealed-segment-missing  exit=1 chained=true linked=false anchored
 ok         l1-confirmed-with-pending-proof  exit=0 chained=true linked=true anchored=true
 ok         l2-legacy-canon-unmarked  exit=1 chained=false linked=true anchored=false
 
-26 cases, typescript and go: 22 agreed, 4 declared divergence(s), 0 failure(s)
+26 cases, typescript and go: 25 agreed, 1 declared divergence(s), 0 failure(s)
 ```
 
 Each case is copied to a temp directory before it runs, so a verifier cannot alter what it checks.
@@ -392,23 +383,23 @@ That prints nothing, because the regenerated tree is byte identical to the commi
 
 ### Where the two verifiers disagree today
 
-Four corpus cases get different verdicts from the two verifiers. In three of them the bundled
-TypeScript verifier accepts evidence the format rejects, which makes the Go verifier the stricter of
-the two today. In the fourth both reject the file, and the bundled verifier blames the chain instead
-of naming the torn tail:
+One corpus case gets different verdicts from the two verifiers. Both reject the file, and the
+bundled verifier blames the chain instead of naming the torn tail:
 
 | Case | The edit | Bundled TypeScript verifier | Go verifier |
 | --- | --- | --- | --- |
-| `b9-anchor-digest-altered` | the anchor record's `digest` field altered | `anchored` PASS, exit 0. It reports the digest the record claims was submitted and never recomputes one from the checkpoint the record embeds | `digest-mismatch`, `anchored` FAIL, exit 1 |
-| `b10-proof-truncated` | the OTS proof truncated inside a length prefix | `anchored` PASS, exit 0. It never opens a proof file, so a proof that cannot be parsed still counts as an anchor | `proof-parse-error`, `anchored` FAIL, exit 1 |
 | `b11-torn-tail` | a partial final line, as a hard kill leaves behind | `chained` FAIL, exit 1. It condemns the whole chain over one partial write | `torn-tail` reported distinctly, `chained` PASS, exit 1 because nothing is anchored |
-| `b13-confirmed-without-proof` | an anchor claiming `confirmed` with its proof file deleted | `anchored` PASS, exit 0. It counts the status field, so a claim of confirmation passes with no proof bytes behind it | `proof-missing`, `anchored` FAIL, exit 1 |
 
-The three acceptance gaps are limits of the bundled verifier as it ships today. The harness prints
-every entry in this list on each run and fails if one of them starts agreeing
-([`scripts/conformance.js:40-66`](scripts/conformance.js)), so the list cannot rot into a set of
-excuses, and it is why the summary line above reports four declared divergences instead of agreement
-on every case.
+That naming gap is a limit of the bundled verifier as it ships today. The harness prints every entry
+in this list on each run and fails if one of them starts agreeing
+([`scripts/conformance.js:40-51`](scripts/conformance.js)), so the list cannot rot into a set of
+excuses, and it is why the summary line above reports one declared divergence instead of agreement on
+every case.
+
+The bundled verifier recomputes each anchor record's digest from the checkpoint the record embeds,
+requires a non-empty proof file behind any submission that reached a calendar, and parses that proof
+against the submitted digest. So an altered digest, a deleted proof, and a truncated proof all fail
+the `anchored` layer in both verifiers rather than in one.
 
 ### What verification does not prove
 

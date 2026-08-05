@@ -43,25 +43,10 @@ const SKIP_GO = process.env.CONFORMANCE_SKIP_GO === "1";
  * the bundled verifier, not opinions about the corpus.
  */
 const DIVERGENCES = {
-	"b9-anchor-digest-altered": {
-		exit: 0,
-		layers: { anchored: true },
-		why: "it reports the digest the record claims was submitted and never recomputes one from the checkpoint the record embeds",
-	},
-	"b10-proof-truncated": {
-		exit: 0,
-		layers: { anchored: true },
-		why: "it never opens a proof file, so a proof that cannot be parsed still counts as an anchor",
-	},
 	"b11-torn-tail": {
 		exit: 1,
 		layers: { chained: false },
 		why: "it reports a partial final line as a broken chain rather than as the torn tail a hard kill leaves behind",
-	},
-	"b13-confirmed-without-proof": {
-		exit: 0,
-		layers: { anchored: true },
-		why: "it counts the status field, so an anchor claiming confirmation passes with no proof bytes behind it",
 	},
 };
 

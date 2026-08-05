@@ -1,6 +1,7 @@
 import { createHash } from "crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { join } from "path";
+import { parseOtsProof } from "./ots-proof";
 import type { Checkpoint } from "./signing";
 
 /**
@@ -153,6 +154,21 @@ export async function anchorToOpenTimestamps(
 					// An empty 200 is not a proof. Treat it as failure rather than
 					// writing a zero-byte file that looks like evidence.
 					failures.push(`${cal}: empty proof body`);
+					continue;
+				}
+				// Parse the body before it is kept. A response that does not lead from the
+				// digest we submitted to an attestation is not a timestamp, whether the
+				// calendar is broken or an on-path attacker answered for it. Writing it anyway
+				// would put bytes on disk that a later verify reports as a proof parse error,
+				// so the operator would be told their evidence is corrupt when in truth it was
+				// never a proof. Try the next calendar instead.
+				try {
+					if (parseOtsProof(res.body, Buffer.from(digest, "hex")).length === 0) {
+						failures.push(`${cal}: proof reaches no attestation`);
+						continue;
+					}
+				} catch (err) {
+					failures.push(`${cal}: unparseable proof, ${(err as Error).message}`);
 					continue;
 				}
 				let proofPath: string | undefined;

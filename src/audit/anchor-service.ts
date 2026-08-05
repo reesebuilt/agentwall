@@ -1,9 +1,10 @@
 import { createHash } from "crypto";
-import { appendFileSync, existsSync, mkdirSync, readFileSync } from "fs";
-import { dirname, join, resolve } from "path";
-import { anchorToOpenTimestamps, fetchPoster, type AnchorRecord } from "./anchor";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync } from "fs";
+import { basename, dirname, isAbsolute, join, resolve } from "path";
+import { anchorDigest, anchorToOpenTimestamps, fetchPoster, type AnchorRecord } from "./anchor";
 import { verifyChainFile } from "./file-sink";
 import { chainAuditEvent, findDuplicateKey } from "./chain";
+import { OtsParseError, parseOtsProofFile } from "./ots-proof";
 import { loadOrCreateKeys, signCheckpoint, verifyCheckpoint, type Checkpoint } from "./signing";
 import {
 	adoptExistingSegments,
@@ -269,6 +270,26 @@ function countIndexReuse(path: string): { distinct: number; worst: number } | nu
 	}
 }
 
+/**
+ * Find the proof file an anchor record names.
+ *
+ * `proofPath` holds whatever the producer wrote, relative to a working directory this
+ * verifier neither knows nor needs to share, because an evidence directory gets copied
+ * between hosts. So a short fixed candidate list is tried and the first file that exists
+ * wins. Deriving the name from the digest instead is refused: naming a proof after its
+ * digest is a writer convention rather than a rule of the format, and the recorded path
+ * is the only thing that finds a proof named any other way. Nothing here writes.
+ */
+function resolveProofPath(proofPath: string, r: ResolvedPaths): string | null {
+	const candidates = isAbsolute(proofPath) ? [proofPath] : [];
+	candidates.push(
+		join(r.proofDir, proofPath),
+		join(r.proofDir, basename(proofPath)),
+		join(dirname(r.anchorLogPath), proofPath),
+	);
+	return candidates.find((c) => existsSync(c)) ?? null;
+}
+
 export interface LayerVerdict {
 	name: string;
 	ok: boolean;
@@ -402,6 +423,8 @@ export function runVerify(paths: AnchorPaths): VerifyReport {
 	let pending = 0;
 	let confirmed = 0;
 	let failed = 0;
+	let calendarAttestations = 0;
+	let bitcoinAttestations = 0;
 	if (existsSync(r.anchorLogPath) && existsSync(r.keyPath)) {
 		const manifestEntries = readManifest(r.manifestPath);
 		// One composite set per distinct sealed-segment count. An anchor log holds many
@@ -434,6 +457,19 @@ export function runVerify(paths: AnchorPaths): VerifyReport {
 			if (rec.checkpoint) {
 				const v = verifyCheckpoint(rec.checkpoint, keys.publicKey.export({ type: "spki", format: "der" }).toString("base64"));
 				if (!v.ok) anchorProblems.push(`checkpoint ${rec.checkpoint.chainIndex}: ${v.problem}`);
+				// Recompute the digest from the checkpoint the record carries, rather than
+				// reporting the one the record states. Taken on trust, `digest` lets a forger
+				// point a record at a checkpoint its proof never covered: the proof still
+				// parses, because nothing tied the two together. Recomputing is what makes an
+				// off-box timestamp attest to THIS checkpoint.
+				const submitted = anchorDigest(rec.checkpoint);
+				if (rec.digest !== submitted) {
+					anchorProblems.push(
+						`checkpoint ${rec.checkpoint.chainIndex}: digest-mismatch, the record says it submitted ` +
+							`${String(rec.digest).slice(0, 16)} and the checkpoint it embeds hashes to ` +
+							`${submitted.slice(0, 16)}, so the proof does not attest to this checkpoint`,
+					);
+				}
 				const composites = compositesFor(rec.checkpoint.chainIndex);
 				if (!composites) {
 					anchorProblems.push(
@@ -448,6 +484,11 @@ export function runVerify(paths: AnchorPaths): VerifyReport {
 							"no longer describes the evidence on disk",
 					);
 				}
+			} else {
+				anchorProblems.push(
+					"digest-mismatch, an anchor record embeds no checkpoint, so there is nothing to " +
+						"recompute its digest from and nothing for its proof to be about",
+				);
 			}
 			// A total submission failure is recorded as status "pending" WITH an error,
 			// because the record is written either way. Counting that as pending would
@@ -456,6 +497,48 @@ export function runVerify(paths: AnchorPaths): VerifyReport {
 			if (rec.error) failed++;
 			else if (rec.status === "confirmed") confirmed++;
 			else if (rec.status === "pending") pending++;
+
+			// `status` is what the record says about itself, and a record is exactly as
+			// trustworthy as the host that wrote it. The calendar's response IS the proof, so
+			// an anchor that reached a calendar has proof bytes behind it and one that did not
+			// carries `error` and is already counted failed. Without this, "confirmed" with an
+			// empty proof directory verifies, which is the overclaim this layer exists to
+			// refuse: it would report Bitcoin-grade evidence for a line of JSON.
+			if (!rec.error) {
+				const named = typeof rec.proofPath === "string" ? rec.proofPath : "";
+				const found = named ? resolveProofPath(named, r) : null;
+				if (!found || statSync(found).size === 0) {
+					anchorProblems.push(
+						`anchor ${rec.chainIndex}: proof-missing, it records status "${rec.status}" and ` +
+							(named
+								? `the proof it names (${basename(named)}) is absent or empty`
+								: "names no proof file") +
+							", so no off-box bytes stand behind the claim",
+					);
+					continue;
+				}
+				// Parse it. Unopened, a proof is a file name: truncate the bytes and the anchor
+				// still counts, which reduces the whole layer to trusting that an HTTP request
+				// once happened.
+				let parseProblem: string | null = null;
+				try {
+					const attestations = parseOtsProofFile(found, Buffer.from(String(rec.digest), "hex"));
+					if (attestations.length === 0) parseProblem = "it parses but reaches no attestation";
+					for (const a of attestations) {
+						if (a.kind === "pending") calendarAttestations++;
+						else bitcoinAttestations++;
+					}
+				} catch (err) {
+					parseProblem =
+						err instanceof OtsParseError ? err.message : `unreadable: ${(err as Error).message}`;
+				}
+				if (parseProblem) {
+					anchorProblems.push(
+						`anchor ${rec.chainIndex}: proof-parse-error, ${basename(found)} ${parseProblem}, ` +
+							"so the bytes on disk are not the timestamp the record claims",
+					);
+				}
+			}
 		}
 	}
 	const attempted = confirmed + pending + failed;
@@ -466,7 +549,9 @@ export function runVerify(paths: AnchorPaths): VerifyReport {
 			attempted === 0
 				? "nothing anchored off-box yet"
 				: `${confirmed} confirmed, ${pending} pending a Bitcoin block` +
-					(failed ? `, ${failed} FAILED to reach a calendar` : ""),
+					(failed ? `, ${failed} FAILED to reach a calendar` : "") +
+					`; proofs carry ${calendarAttestations} calendar and ${bitcoinAttestations} ` +
+					"bitcoin attestation(s), neither kind confirmation on its own",
 		problems: anchorProblems,
 	});
 
