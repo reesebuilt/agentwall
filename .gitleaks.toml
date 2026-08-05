@@ -1,3 +1,9 @@
+# An allowlist with no rules REPLACES the default ruleset rather than extending it, and a
+# scanner that matches nothing reports a clean tree forever. Extending keeps the defaults
+# and applies the allowlist below on top of them.
+[extend]
+useDefault = true
+
 [allowlist]
 # A DLP engine has to contain secret-shaped strings to be testable. Allowlist the exact
 # literals, not whole directories: broad `tests/.*` or `docs/.*` path globs switch secret
@@ -10,7 +16,9 @@ regexes = [
   '''AKIAIOSFODNN7EXAMPLE''',
   '''FAKE_GITHUB_PAT_EXAMPLE''',
   '''sk-test-1234567890''',
-  '''alice@example.com'''
+  '''alice@example.com''',
+  # The DLP engine's own github-pat detector needs a PAT-shaped literal to detect.
+  '''ghp_aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789'''
 ]
 
 # The conformance corpus signs synthetic checkpoints, so it has to carry the private key
