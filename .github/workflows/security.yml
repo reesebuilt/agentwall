@@ -23,12 +23,18 @@ jobs:
           # so. A secret scan that errors out is indistinguishable from one that passes
           # if nobody reads the log, so fetch the full history it actually needs.
           fetch-depth: 0
+      - name: Install gitleaks
+        run: |
+          curl -sSfL https://github.com/gitleaks/gitleaks/releases/download/v8.24.3/gitleaks_8.24.3_linux_x64.tar.gz \
+            | tar xz -C "$RUNNER_TEMP"
       - name: Run gitleaks
-        uses: gitleaks/gitleaks-action@v2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          config-path: .gitleaks.toml
+        # The gitleaks ACTION computes a git range from the push event as
+        # <oldest-commit>^..<newest>. On a fresh repository's first push the oldest commit
+        # IS the root, its parent does not exist, and the scan dies with "unknown
+        # revision" — a scanner erroring out is indistinguishable from one passing unless
+        # someone reads the log. Run the binary directly over full history instead; the
+        # checkout above fetches it.
+        run: "$RUNNER_TEMP/gitleaks" detect --redact --source . --config .gitleaks.toml --verbose
 
   dependency-audit:
     name: Dependency audit (moderate+)
