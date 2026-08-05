@@ -12,3 +12,11 @@ regexes = [
   '''sk-test-1234567890''',
   '''alice@example.com'''
 ]
+
+# The conformance corpus signs synthetic checkpoints, so it has to carry the private key
+# that signed them: a verifier cannot be shown to reject a forged signature without a real
+# one to compare against. The pattern stays narrow, one filename under one testdata tree,
+# rather than excusing a directory. These keys sign synthetic corpus data and secure nothing.
+paths = [
+  '''verifier/testdata/.*checkpoint-key\.pem'''
+]
