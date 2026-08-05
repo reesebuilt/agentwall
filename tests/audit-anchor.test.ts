@@ -1,9 +1,8 @@
 import { afterEach, describe, expect, it } from "@jest/globals";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
+import { appendFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import {
-	anchorCheckpoint,
 	anchorCoverage,
 	anchorDigest,
 	anchorToOpenTimestamps,
@@ -65,7 +64,11 @@ describe("anchoring", () => {
 		const r = await anchorToOpenTimestamps(cp, poster, () => new Date(), dir);
 		expect(r.status).toBe("pending");
 		expect(r.error).toBeUndefined();
-		expect(r.proofPath).toBe(join(dir, `${cp.chainIndex}.ots`));
+		expect(r.proofPath).toBe(join(dir, `${anchorDigest(cp)}.ots`));
+		// Not the chain index. That counter is the sealed segment count, so it stays 0 on a
+		// deployment that has never rotated and names every pass's proof identically, which
+		// makes each pass delete the evidence the previous one collected.
+		expect(r.proofPath).not.toBe(join(dir, `${cp.chainIndex}.ots`));
 		expect(readFileSync(r.proofPath as string)).toEqual(proofBytes);
 	});
 
@@ -81,12 +84,19 @@ describe("anchoring", () => {
 		expect(r.error).toMatch(/all calendars failed/);
 	});
 
-	it("writes a record and never throws when the calendars are down", async () => {
+	it("returns an error record instead of throwing when the calendars are down", async () => {
+		// A recorded gap is the point. An exception aborts the caller and leaves no trace
+		// that anchoring was attempted, which reads identically to never having tried.
 		const log = join(tmp(), "anchors.jsonl");
-		const records = await anchorCheckpoint(checkpoint(), log, throwing());
-		expect(records).toHaveLength(1);
-		expect(records.every((r) => r.error)).toBe(true);
-		expect(readFileSync(log, "utf8").trim().split("\n")).toHaveLength(1);
+		const r = await anchorToOpenTimestamps(checkpoint(), throwing());
+		expect(r.error).toMatch(/all calendars failed/);
+		expect(r.proofPath).toBeUndefined();
+
+		// The failure has to survive serialization into the log, or it is not evidence.
+		appendFileSync(log, JSON.stringify(r) + "\n");
+		const lines = readFileSync(log, "utf8").trim().split("\n");
+		expect(lines).toHaveLength(1);
+		expect((JSON.parse(lines[0]) as AnchorRecord).error).toMatch(/all calendars failed/);
 	});
 
 	it("coverage reports the highest anchored index, so gaps are visible", async () => {
