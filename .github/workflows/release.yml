@@ -266,10 +266,13 @@ jobs:
       actions: read
       # Sign the provenance against the workflow's own OIDC identity.
       id-token: write
-      # Read only. Inside the generator, contents: write belongs to its upload-assets job, which
-      # is guarded by `if: inputs.upload-assets` and therefore never runs here: the release job
-      # below attaches the provenance, so one job stays in charge of what the release contains.
-      contents: read
+      # contents: write is required to START, not to run. GitHub validates a called workflow's
+      # DECLARED permissions statically, and the generator declares an upload-assets job needing
+      # contents: write. That job is guarded by `if: inputs.upload-assets`, which is false here,
+      # so it never executes, but granting less makes the whole workflow fail to instantiate with
+      # no job ever running. Reasoning about runtime behaviour does not satisfy a static check.
+      # The release job below is still the only thing that attaches assets.
+      contents: write
     uses: slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@v2.1.0
     with:
       base64-subjects: ${{ needs.build.outputs.hashes }}
