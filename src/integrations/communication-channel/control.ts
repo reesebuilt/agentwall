@@ -15,7 +15,9 @@ export const CommunicationChannelGuardrailRequestSchema = z.object({
   plane: PlaneSchema,
   action: z.string().trim().min(1),
   text: z.string().optional(),
-  payload: z.record(z.unknown()).optional(),
+  // Key schema is explicit because the record is keyed by arbitrary caller-supplied
+  // strings, so nothing here constrains which keys may appear.
+  payload: z.record(z.string(), z.unknown()).optional(),
 });
 
 export type CommunicationChannelGuardrailRequest = z.infer<typeof CommunicationChannelGuardrailRequestSchema>;
