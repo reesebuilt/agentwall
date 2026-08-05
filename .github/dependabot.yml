@@ -1,0 +1,19 @@
+# Dependency updates. An OpenSSF Scorecard signal, and the cheapest way to avoid
+# shipping a known-vulnerable transitive dep in a security product.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      # One PR for routine patches keeps the review queue honest; majors stay
+      # separate because they need real attention.
+      minor-and-patch:
+        update-types: ["minor", "patch"]
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly

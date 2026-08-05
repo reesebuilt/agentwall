@@ -1,0 +1,527 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Agentwall Control Room</title>
+    <link rel="icon" type="image/svg+xml" href="/assets/brand/favicon.svg" />
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body data-app-view="dashboard" data-console-mode="core">
+    <div class="app-shell">
+      <aside class="app-rail" aria-label="Workspace navigation">
+        <div class="rail-brand">
+          <div class="rail-mark" aria-hidden="true">
+            <img id="brand-mark-img" src="/assets/brand/icon_idle.svg" alt="" />
+          </div>
+          <div class="rail-brand-copy">
+            <span class="rail-eyebrow">Agentwall</span>
+            <strong>Control Room</strong>
+          </div>
+        </div>
+
+        <nav class="rail-nav" aria-label="Primary navigation">
+          <p class="rail-section">Workspace</p>
+          <a id="nav-dashboard" class="rail-link" href="/dashboard" data-app-nav="dashboard">
+            <span class="rail-link-glyph" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg></span>
+            <span class="rail-link-text">Dashboard</span>
+          </a>
+          <a id="nav-knowledge-base" class="rail-link advanced-panel" href="/dashboard/knowledge-base" data-app-nav="knowledge-base">
+            <span class="rail-link-glyph" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h10" stroke-linecap="round"/></svg></span>
+            <span class="rail-link-text">Knowledge Base</span>
+          </a>
+
+          <p class="rail-section">Protection</p>
+          <a class="rail-link rail-link-sub" href="#control-room-panel" data-jump-anchor="control-room-panel">
+            <span class="rail-link-dot rail-dot-runtime" aria-hidden="true"></span>
+            <span class="rail-link-text">Local Runtime</span>
+          </a>
+          <a class="rail-link rail-link-sub" href="#channel-firewall-panel" data-jump-anchor="channel-firewall-panel">
+            <span class="rail-link-dot rail-dot-channel" aria-hidden="true"></span>
+            <span class="rail-link-text">Guardrails</span>
+          </a>
+          <a class="rail-link rail-link-sub" href="#damage-control-panel" data-jump-anchor="damage-control-panel">
+            <span class="rail-link-dot rail-dot-bash" aria-hidden="true"></span>
+            <span class="rail-link-text">Bash Firewall</span>
+          </a>
+          <a class="rail-link rail-link-sub advanced-panel" href="#policy-panel" data-jump-anchor="policy-panel">
+            <span class="rail-link-dot" aria-hidden="true"></span>
+            <span class="rail-link-text">Advanced</span>
+          </a>
+        </nav>
+
+        <div class="rail-footer">
+          <div class="advanced-user-control" aria-label="Console depth" data-route-view="dashboard">
+            <div class="advanced-user-copy">
+              <p class="eyebrow">Console Depth</p>
+              <strong id="console-mode-label">Operator View</strong>
+              <span id="console-mode-summary">Simple by default. Enable Advanced User for granular controls.</span>
+            </div>
+            <button id="advanced-user-slider" class="advanced-user-slider" type="button" role="switch" aria-checked="false" data-console-mode-toggle aria-label="Advanced User mode">
+              <span class="slider-track" aria-hidden="true"><span class="slider-thumb"></span></span>
+              <span class="slider-copy"><span>Advanced User</span><small>Granular control</small></span>
+            </button>
+          </div>
+        </div>
+      </aside>
+
+      <div class="app-main">
+        <header class="topbar" role="banner">
+          <div class="topbar-titles">
+            <p class="topbar-eyebrow">Agentwall · Local Operator Cockpit</p>
+            <h1>Security Command Center</h1>
+          </div>
+          <div class="topbar-meta">
+            <div id="service-badge" class="live-pill" aria-live="polite">
+              <span class="live-dot"></span>
+              Connecting
+            </div>
+            <div id="generated-at" class="timestamp">Syncing Agentwall runtime…</div>
+            <div class="time-range-group" aria-label="Dashboard time range">
+              <button class="time-range-button" type="button" data-time-range="15m">15m</button>
+              <button class="time-range-button" type="button" data-time-range="1h">1h</button>
+              <button class="time-range-button" type="button" data-time-range="24h">24h</button>
+              <button class="time-range-button" type="button" data-time-range="7d">7d</button>
+            </div>
+            <button id="command-palette-trigger" class="command-trigger" type="button" aria-haspopup="dialog" aria-controls="command-palette">
+              <span aria-hidden="true">⌘K</span> Command
+            </button>
+          </div>
+          <div id="service-facts" class="fact-strip" aria-label="Runtime facts"></div>
+        </header>
+
+        <main class="layout" data-route-view="dashboard">
+          <section class="ops-hero" id="command-center" aria-label="Operational posture">
+            <article class="hero-card">
+              <header class="hero-statement">
+                <p class="eyebrow">Operational Posture</p>
+                <h2 id="service-status">Loading control posture</h2>
+                <p id="service-summary" class="hero-summary muted">Connecting to live Agentwall state.</p>
+              </header>
+              <div id="hero-brief" class="hero-brief"></div>
+            </article>
+            <div id="hero-metrics" class="hero-metrics" aria-label="Operator metrics"></div>
+          </section>
+
+          <div id="operator-notice" class="operator-notice" hidden></div>
+
+          <section class="ops-workboard" aria-label="Operator work queue">
+            <section id="approvals-summary-panel" class="panel panel-board panel-approvals">
+              <div class="panel-head">
+                <div>
+                  <p class="eyebrow">Approvals</p>
+                  <h3>Operator Queue</h3>
+                </div>
+                <button class="chip chip-button chip-neutral" type="button" data-jump-panel="approvals">Open all</button>
+              </div>
+              <div id="approvals-summary" class="stack"></div>
+            </section>
+
+            <section id="activity-summary-panel" class="panel panel-board panel-activity">
+              <div class="panel-head">
+                <div>
+                  <p class="eyebrow">Activity</p>
+                  <h3>Live Runtime Feed</h3>
+                </div>
+                <button class="chip chip-button chip-neutral" type="button" data-jump-panel="event-feed">Deep feed</button>
+              </div>
+              <div id="activity-summary" class="feed core-feed"></div>
+            </section>
+          </section>
+
+          <section class="ops-surfaces" aria-label="Protection surfaces">
+            <section id="control-room-panel" class="panel surface-panel" data-surface="runtime">
+              <div class="panel-head">
+                <div>
+                  <span class="surface-tag">Surface · Runtime</span>
+                  <h3>Local Runtime Controller</h3>
+                  <p class="panel-subcopy">Native Agentwall controls live here. Restart, reload policy, and tune approvals against the local service.</p>
+                </div>
+                <span class="pillar-badge surface-badge">01</span>
+              </div>
+              <div id="control-room" class="stack"></div>
+            </section>
+
+            <section id="channel-firewall-panel" class="panel surface-panel" data-surface="channel">
+              <div class="panel-head">
+                <div>
+                  <span class="surface-tag">Surface · Telegram Guardrails</span>
+                  <h3>Rules for Telegram Channels</h3>
+                  <p class="panel-subcopy">Start with one Telegram topic. Configure one Telegram channel, prove the deny path, then expand. Set the agent to Answer only, prove file writes and secrets are blocked, then add the next channel.</p>
+                </div>
+                <span class="pillar-badge surface-badge">02</span>
+              </div>
+              <div id="channel-firewall" class="stack"></div>
+            </section>
+
+            <section id="damage-control-panel" class="panel surface-panel" data-surface="bash">
+              <div class="panel-head">
+                <div>
+                  <span class="surface-tag">Surface · Damage Control</span>
+                  <h3>Bash Firewall</h3>
+                  <p class="panel-subcopy">Bash is the damage funnel. One command can delete code, data, infra, or secrets. Preflight any command against the L1–L5 ladder before an agent runs it.</p>
+                </div>
+                <span class="pillar-badge surface-badge">03</span>
+              </div>
+              <div id="damage-control" class="stack"></div>
+            </section>
+          </section>
+
+          <section class="panel advanced-panel">
+            <div class="panel-head">
+              <div>
+                <p class="eyebrow">Detection Timeline</p>
+                <h3>What Happened and What Needs Action</h3>
+              </div>
+            </div>
+            <div id="operator-timeline" class="stack"></div>
+          </section>
+
+          <section class="panel panel-wide advanced-panel">
+            <div class="panel-head">
+              <div>
+                <p class="eyebrow">Command Deck</p>
+                <h3>Today, Waiting, Risks, Approvals, Auto-handled</h3>
+              </div>
+            </div>
+            <div id="command-deck" class="stack grid-deck"></div>
+          </section>
+
+          <section class="panel advanced-panel">
+            <div class="panel-head">
+              <div>
+                <p class="eyebrow">Control Surface</p>
+                <h3>Security Controls</h3>
+              </div>
+            </div>
+            <div id="control-matrix" class="stack grid-cards"></div>
+          </section>
+
+          <section class="panel advanced-panel">
+            <div class="panel-head">
+              <div>
+                <p class="eyebrow">Operator Workbench</p>
+                <h3>Approval and Session Controls</h3>
+              </div>
+            </div>
+            <div id="operator-workbench" class="stack"></div>
+          </section>
+
+          <section class="panel advanced-panel">
+            <div class="panel-head">
+              <div>
+                <p class="eyebrow">Priority Queue</p>
+                <h3>Operator Attention</h3>
+              </div>
+            </div>
+            <div id="priority-queue" class="stack"></div>
+          </section>
+
+          <section class="panel advanced-panel">
+            <div class="panel-head">
+              <div>
+                <p class="eyebrow">Incident Command</p>
+                <h3>Guided Containment</h3>
+              </div>
+            </div>
+            <div id="incident-command" class="stack"></div>
+          </section>
+
+          <section class="panel advanced-panel">
+            <div class="panel-head">
+              <div>
+                <p class="eyebrow">Threat Hunt</p>
+                <h3>Investigation Workbench</h3>
+              </div>
+            </div>
+            <div id="investigation-workbench" class="stack"></div>
+          </section>
+
+          <section class="panel advanced-panel">
+            <div class="panel-head">
+              <div>
+                <p class="eyebrow">System Health</p>
+                <h3>Control Plane Status</h3>
+              </div>
+            </div>
+            <div id="system-health" class="stack"></div>
+          </section>
+
+          <section id="organization-panel" class="panel panel-wide advanced-panel">
+            <div class="panel-head">
+              <div>
+                <p class="eyebrow">Organization Control Plane</p>
+                <h3>Instances, Gateways, Agents, and Channels</h3>
+              </div>
+            </div>
+            <div id="org-control-plane" class="stack"></div>
+          </section>
+
+          <section id="policy-panel" class="panel panel-wide advanced-panel">
+            <div class="panel-head">
+              <div>
+                <p class="eyebrow">Policy Execution</p>
+                <h3>Decision Distribution, Hot Rules, and Scoped Guardrails</h3>
+              </div>
+            </div>
+            <div class="dual-grid">
+              <div>
+                <div class="subhead">Decision Mix</div>
+                <div id="policy-stats" class="stack"></div>
+              </div>
+              <div>
+                <div class="subhead">High-Frequency Rules</div>
+                <div id="policy-hotspots" class="stack"></div>
+              </div>
+            </div>
+            <div class="dual-grid">
+              <div>
+                <div class="subhead">Scoped Guardrails</div>
+                <div id="policy-scoped-rules" class="stack"></div>
+              </div>
+              <div>
+                <div class="subhead">Guardrail editor</div>
+                <div id="policy-guardrail-editor" class="stack"></div>
+              </div>
+            </div>
+            <div>
+              <div class="subhead">Communication Channels</div>
+              <div id="policy-channel-inventory" class="stack"></div>
+            </div>
+          </section>
+
+          <section class="panel advanced-panel">
+            <div class="panel-head">
+              <div>
+                <p class="eyebrow">Risk Posture</p>
+                <h3>Key Risk Signals</h3>
+              </div>
+            </div>
+            <div id="risk-posture" class="stack"></div>
+          </section>
+
+          <section class="panel panel-wide approvals-panel advanced-panel">
+            <div class="panel-head">
+              <div>
+                <p class="eyebrow">Approvals</p>
+                <h3>Queue and Resolution</h3>
+              </div>
+            </div>
+            <div id="approvals" class="stack"></div>
+          </section>
+
+          <section class="panel panel-wide advanced-panel">
+            <div class="panel-head">
+              <div>
+                <p class="eyebrow">Live Runtime</p>
+                <h3>Runtime Flows and Sessions</h3>
+              </div>
+            </div>
+            <div class="dual-grid">
+              <div>
+                <div class="subhead">Runtime Flows</div>
+                <div id="runtime-flows" class="stack"></div>
+              </div>
+              <div>
+                <div class="subhead">Tracked Sessions</div>
+                <div id="sessions" class="stack"></div>
+              </div>
+            </div>
+          </section>
+
+          <section class="panel panel-wide advanced-panel">
+            <div class="panel-head">
+              <div>
+                <p class="eyebrow">Evidence Graph</p>
+                <h3>Evidence Ledger and Task Graph</h3>
+              </div>
+            </div>
+            <div class="dual-grid">
+              <div>
+                <div class="subhead">Evidence Ledger</div>
+                <div id="evidence-ledger" class="stack"></div>
+              </div>
+              <div>
+                <div class="subhead">Task Graph</div>
+                <div id="task-graph" class="stack"></div>
+              </div>
+            </div>
+          </section>
+
+          <section class="panel panel-wide advanced-panel">
+            <div class="panel-head">
+              <div>
+                <p class="eyebrow">Drilldown</p>
+                <h3>Operator Investigation</h3>
+              </div>
+            </div>
+            <div id="drilldown" class="stack"></div>
+          </section>
+
+          <section class="panel panel-wide advanced-panel">
+            <div class="panel-head">
+              <div>
+                <p class="eyebrow">Audit Feed</p>
+                <h3>Runtime Decisions</h3>
+              </div>
+            </div>
+            <div id="audit-feed" class="feed"></div>
+          </section>
+
+          <section class="panel panel-wide advanced-panel">
+            <div class="panel-head">
+              <div>
+                <p class="eyebrow">Inspection Activity</p>
+                <h3>Tool, Network, and Content Flows</h3>
+              </div>
+            </div>
+            <div class="triple-grid">
+              <div>
+                <div class="subhead">Inspection Telemetry</div>
+                <div id="inspection-activity" class="stack"></div>
+              </div>
+              <div>
+                <div class="subhead">Prompt Risk</div>
+                <div id="prompt-risk-events" class="stack"></div>
+              </div>
+              <div>
+                <div class="subhead">Active Agents</div>
+                <div id="agents" class="stack"></div>
+              </div>
+            </div>
+          </section>
+
+          <section class="panel panel-wide advanced-panel">
+            <div class="panel-head">
+              <div>
+                <p class="eyebrow">Event Feed</p>
+                <h3>Cross-Plane Runtime Activity</h3>
+              </div>
+            </div>
+            <div id="event-feed" class="feed"></div>
+          </section>
+        </main>
+
+        <main class="layout knowledge-layout" data-route-view="knowledge-base">
+          <section class="panel panel-wide kb-hero">
+            <div class="panel-head">
+              <div>
+                <p class="eyebrow">Knowledge Base</p>
+                <h3>Agentwall Mission Control Reference</h3>
+              </div>
+            </div>
+            <div class="kb-hero-grid">
+              <div>
+                <p id="kb-summary" class="muted">Loading knowledge base entries and access metadata.</p>
+              </div>
+              <div>
+                <div class="subhead">Canonical Access</div>
+                <div id="kb-access-panel" class="stack"></div>
+              </div>
+            </div>
+          </section>
+
+          <section class="panel panel-wide">
+            <div class="panel-head">
+              <div>
+                <p class="eyebrow">Quick Tutorials</p>
+                <h3>Learn the Control Loop Fast</h3>
+              </div>
+            </div>
+            <div class="tutorial-card-grid">
+              <article class="tutorial-card">
+                <img src="/assets/tutorials/telegram-answer-only.webp" alt="Abstract Agentwall Telegram answer-only tutorial thumbnail" loading="lazy" />
+                <span class="kb-label">60-90s</span>
+                <h4>Telegram Answer Only</h4>
+                <p>Set one Telegram topic to answer-only and prove file writes, secret reads, and unsafe egress stay blocked.</p>
+                <button class="chip chip-button chip-active" data-kb-filter="tutorials" type="button">Show tutorials</button>
+              </article>
+              <article class="tutorial-card">
+                <img src="/assets/tutorials/demo-verification.webp" alt="Abstract Agentwall demo verification tutorial thumbnail" loading="lazy" />
+                <span class="kb-label">45-60s</span>
+                <h4>Run Demo Verification</h4>
+                <p>Use synthetic evidence to understand the expected-deny path without touching real runtime actions.</p>
+                <button class="chip chip-button" data-kb-filter="tutorials" type="button">Open script</button>
+              </article>
+              <article class="tutorial-card">
+                <img src="/assets/tutorials/advanced-user-mode.webp" alt="Abstract Agentwall advanced user mode tutorial thumbnail" loading="lazy" />
+                <span class="kb-label">30-45s</span>
+                <h4>Operator View vs Advanced User</h4>
+                <p>Learn when to stay focused and when to reveal policy, federation, audit, and runtime telemetry.</p>
+                <button class="chip chip-button" data-kb-filter="tutorials" type="button">Open scripts</button>
+              </article>
+            </div>
+          </section>
+
+          <section class="panel panel-wide">
+            <div class="panel-head">
+              <div>
+                <p class="eyebrow">Index</p>
+                <h3>Knowledge Domains</h3>
+              </div>
+            </div>
+            <div id="kb-index-cards" class="kb-index-grid"></div>
+          </section>
+
+          <section class="panel panel-wide">
+            <div class="panel-head">
+              <div>
+                <p class="eyebrow">Search</p>
+                <h3>Find KB Entries</h3>
+              </div>
+            </div>
+            <div class="kb-search-bar">
+              <label class="kb-search-field" for="kb-search">
+                <span class="sr-only">Search knowledge base</span>
+                <input id="kb-search" type="search" placeholder="Search sources, concepts, articles, questions, file paths, and runtime context" autocomplete="off" />
+              </label>
+              <button id="kb-clear-search" class="mode-tab kb-clear-button" type="button">Clear filters</button>
+              <div id="kb-filter-chips" class="chip-row"></div>
+            </div>
+            <div id="kb-search-meta" class="meta"></div>
+          </section>
+
+          <section class="panel panel-wide">
+            <div class="panel-head">
+              <div>
+                <p class="eyebrow">Runtime Context</p>
+                <h3>Explicit Context Probes</h3>
+              </div>
+            </div>
+            <div id="kb-runtime-context" class="kb-runtime-grid"></div>
+          </section>
+
+          <section class="panel panel-wide">
+            <div class="panel-head">
+              <div>
+                <p class="eyebrow">Entries</p>
+                <h3>Curated Mission Control Material</h3>
+              </div>
+            </div>
+            <div id="kb-entry-list" class="stack"></div>
+          </section>
+        </main>
+      </div>
+    </div>
+
+    <div id="command-palette" class="command-palette" role="dialog" aria-modal="true" aria-labelledby="command-palette-title" hidden>
+      <div class="command-palette-backdrop" data-command-close="true"></div>
+      <div class="command-palette-panel">
+        <div class="command-palette-head">
+          <div>
+            <p class="eyebrow">Command Palette</p>
+            <h2 id="command-palette-title">Go to Agentwall surface</h2>
+          </div>
+          <button class="chip chip-button chip-neutral" type="button" data-command-close="true">Esc</button>
+        </div>
+        <label class="command-search-field" for="command-palette-input">
+          <span class="sr-only">Search commands</span>
+          <input id="command-palette-input" type="search" placeholder="Search approvals, panels, agents, channels, sessions…" autocomplete="off" />
+        </label>
+        <div id="command-palette-results" class="command-results" role="listbox"></div>
+      </div>
+    </div>
+
+    <script type="module" src="/app.js?v=cockpit-revamp-2026-05-12"></script>
+  </body>
+</html>

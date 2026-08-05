@@ -1,0 +1,7 @@
+<svg width="128" height="128" viewBox="0 0 128 128" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Agentwall logo">
+  <defs><linearGradient id="awG" x1="16" y1="14" x2="112" y2="114" gradientUnits="userSpaceOnUse"><stop stop-color="#8AF2DB"/><stop offset="1" stop-color="#23C9A3"/></linearGradient></defs>
+  <rect x="10" y="10" width="108" height="108" rx="28" fill="#071321" stroke="url(#awG)" stroke-width="3"/>
+  <path d="M25 79L42 45H52L70 79H58L54 69H39L35 79H25ZM43 60H50L46.5 51L43 60Z" fill="url(#awG)"/>
+  <path d="M66 45H76L86 63L96 45H106V79H96V61L86 77L76 61V79H66V45Z" fill="url(#awG)"/>
+  <circle cx="102" cy="27" r="4" fill="#8AF2DB" fill-opacity="0.9"/>
+</svg>

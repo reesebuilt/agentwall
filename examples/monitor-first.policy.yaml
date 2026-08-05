@@ -1,0 +1,315 @@
+# Monitor-first policy pack: what a staged rollout looks like for an agent
+# harness sitting behind Agentwall.
+#
+# Rules prefixed `monitor-first:` are hand-written and are the part worth copying.
+# Rules prefixed `channel-firewall:` are what the dashboard writes back to this file
+# when an operator applies a channel-firewall profile to one (agent, chat topic) lane.
+# One `answer_only` lane is included verbatim so you can see the expansion before you
+# run it. The chat id below is Telegram's documentation placeholder, not a live chat.
+version: '1'
+rules:
+  - id: monitor-first:allow-approved-ai-and-research-egress
+    description: Allow approved AI and research destinations
+    plane: network
+    match:
+      type: hostname-equals
+      values:
+        - api.openai.com
+        - generativelanguage.googleapis.com
+        - wttr.in
+        - search.brave.com
+    decision: allow
+    riskLevel: low
+    reason: Approved external destination
+  - id: monitor-first:approve-untrusted-or-derived-egress
+    description: >-
+      Require approval when untrusted or derived content drives outbound network
+      access
+    plane: network
+    match:
+      flow:
+        direction: egress
+      provenance:
+        source:
+          - web
+          - email
+          - tool_output
+          - memory
+        trustLabel:
+          - untrusted
+          - derived
+    decision: approve
+    riskLevel: high
+    reason: External or derived content is attempting to drive egress
+  - id: monitor-first:approve-shell-exec
+    description: Require approval for shell-like execution from the agent harness
+    plane: tool
+    match:
+      action:
+        includes:
+          - exec
+          - shell
+          - bash
+          - terminal
+    decision: approve
+    riskLevel: high
+    reason: Shell execution is a high-risk control point
+  - id: monitor-first:deny-finance-analyst-agent-file-write-in-shared-slack
+    description: >-
+      Shared Slack finance room cannot drive filesystem writes through the
+      finance analyst agent
+    plane: tool
+    match:
+      action:
+        includes:
+          - write
+          - patch
+      actor:
+        channelId:
+          - slack:finance-room
+      subject:
+        agentId:
+          - finance-analyst-agent
+    decision: deny
+    riskLevel: high
+    reason: >-
+      Shared business channels cannot mutate the finance analyst agent
+      filesystem
+  - id: monitor-first:approve-destructive-tooling
+    description: Require approval when a tool action looks destructive
+    plane: tool
+    match:
+      action:
+        includes:
+          - delete
+          - remove
+          - unlink
+          - terminate
+    decision: approve
+    riskLevel: high
+    reason: Destructive tool action requires review
+  - id: monitor-first:approve-credential-access
+    description: Require approval for credential or vault access
+    plane: identity
+    match:
+      flow:
+        labels:
+          - credential_access
+    decision: approve
+    riskLevel: critical
+    reason: Credential access is high impact and should be operator-visible
+  - id: monitor-first:approve-secret-reads-by-payload
+    description: Fallback matcher for secret or token access requests
+    plane: identity
+    match:
+      payload:
+        includes:
+          - secret
+          - token
+          - password
+          - credential
+          - vault
+          - 1password
+          - op://
+    decision: approve
+    riskLevel: critical
+    reason: Secret-bearing identity operation requires approval
+  - id: monitor-first:approve-browser-oauth
+    description: >-
+      Require approval for OAuth / authorization completion in browser
+      automations
+    plane: browser
+    match:
+      payload:
+        includes:
+          - oauth
+          - authorize
+          - grant_access
+          - allow_access
+    decision: approve
+    riskLevel: high
+    reason: OAuth browser actions need explicit review
+  - id: monitor-first:deny-browser-payment
+    description: Do not let browser automation complete payment or billing flows
+    plane: browser
+    match:
+      payload:
+        includes:
+          - payment
+          - checkout
+          - billing
+          - credit card
+    decision: deny
+    riskLevel: critical
+    reason: Payment actions must stay human-only
+  - id: monitor-first:approve-manifest-drift
+    description: Require approval if tooling or MCP manifests drift
+    plane: tool
+    match:
+      flow:
+        labels:
+          - manifest_drift
+    decision: approve
+    riskLevel: critical
+    reason: Manifest drift can silently expand agent authority
+  - id: monitor-first:deny-shared-channel-secret-reads-when-answer-only
+    description: >-
+      Shared incident channels can discuss issues but may not retrieve secrets
+      during answer-only containment
+    plane: identity
+    match:
+      actor:
+        channelId:
+          - telegram:group:incident-room
+          - discord:war-room
+      control:
+        executionMode:
+          - answer_only
+    decision: deny
+    riskLevel: critical
+    reason: Answer-only containment disables secret retrieval in shared channels
+  - id: monitor-first:deny-moderator-shell-when-read-only
+    description: >-
+      Freeze mutating shell actions for moderator/operator roles during
+      read-only containment
+    plane: tool
+    match:
+      action:
+        includes:
+          - exec
+          - bash
+          - shell
+      actor:
+        roleId:
+          - moderator
+          - operator
+      control:
+        executionMode:
+          - read_only
+    decision: deny
+    riskLevel: high
+    reason: Read-only containment blocks moderator shell execution
+  - id: >-
+      channel-firewall:agent-1-6ff3b3bd11:telegram-1001234567890-4242-f5b93bedce:allow-replies
+    description: 'Answer only: allow safe channel replies'
+    plane: content
+    match:
+      action:
+        includes:
+          - reply
+          - summarize
+      actor:
+        channelId:
+          - telegram:-1001234567890:4242
+      subject:
+        agentId:
+          - agent-1
+    decision: allow
+    riskLevel: low
+    reason: >-
+      Answer only profile for agent-1 in
+      telegram:-1001234567890:4242; safe replies and summaries are allowed.
+    enabled: true
+  - id: >-
+      channel-firewall:agent-1-6ff3b3bd11:telegram-1001234567890-4242-f5b93bedce:tool-control
+    description: 'Answer only: tool action control'
+    plane: tool
+    match:
+      actor:
+        channelId:
+          - telegram:-1001234567890:4242
+      subject:
+        agentId:
+          - agent-1
+    decision: deny
+    riskLevel: critical
+    reason: >-
+      Answer only profile for agent-1 in
+      telegram:-1001234567890:4242; tool actions are blocked.
+    enabled: true
+  - id: >-
+      channel-firewall:agent-1-6ff3b3bd11:telegram-1001234567890-4242-f5b93bedce:network-control
+    description: 'Answer only: network action control'
+    plane: network
+    match:
+      actor:
+        channelId:
+          - telegram:-1001234567890:4242
+      subject:
+        agentId:
+          - agent-1
+    decision: deny
+    riskLevel: critical
+    reason: >-
+      Answer only profile for agent-1 in
+      telegram:-1001234567890:4242; network actions are blocked.
+    enabled: true
+  - id: >-
+      channel-firewall:agent-1-6ff3b3bd11:telegram-1001234567890-4242-f5b93bedce:browser-control
+    description: 'Answer only: browser action control'
+    plane: browser
+    match:
+      actor:
+        channelId:
+          - telegram:-1001234567890:4242
+      subject:
+        agentId:
+          - agent-1
+    decision: deny
+    riskLevel: critical
+    reason: >-
+      Answer only profile for agent-1 in
+      telegram:-1001234567890:4242; browser actions are blocked.
+    enabled: true
+  - id: >-
+      channel-firewall:agent-1-6ff3b3bd11:telegram-1001234567890-4242-f5b93bedce:identity-control
+    description: 'Answer only: identity and secret access control'
+    plane: identity
+    match:
+      actor:
+        channelId:
+          - telegram:-1001234567890:4242
+      subject:
+        agentId:
+          - agent-1
+    decision: deny
+    riskLevel: critical
+    reason: >-
+      Answer only profile for agent-1 in
+      telegram:-1001234567890:4242; secrets and credentials are blocked from
+      this channel.
+    enabled: true
+  - id: >-
+      channel-firewall:agent-1-6ff3b3bd11:telegram-1001234567890-4242-f5b93bedce:governance-control
+    description: 'Answer only: governance action control'
+    plane: governance
+    match:
+      actor:
+        channelId:
+          - telegram:-1001234567890:4242
+      subject:
+        agentId:
+          - agent-1
+    decision: deny
+    riskLevel: critical
+    reason: >-
+      Answer only profile for agent-1 in
+      telegram:-1001234567890:4242; governance actions are blocked.
+    enabled: true
+  - id: >-
+      channel-firewall:agent-1-6ff3b3bd11:telegram-1001234567890-4242-f5b93bedce:lockdown
+    description: 'Answer only: deny all channel actions'
+    plane: all
+    match:
+      actor:
+        channelId:
+          - telegram:-1001234567890:4242
+      subject:
+        agentId:
+          - agent-1
+    decision: deny
+    riskLevel: critical
+    reason: >-
+      Answer only profile for agent-1 in
+      telegram:-1001234567890:4242; every action from this channel is blocked.
+    enabled: false

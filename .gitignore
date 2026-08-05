@@ -1,0 +1,29 @@
+node_modules/
+dist/
+.env
+.env.local
+*.log
+coverage/
+.DS_Store
+# An operator's live config and policy. Anchored to the repository root with a leading
+# slash: a bare `policy.yaml` matches at ANY depth, which silently swallowed the shipped
+# examples/policy.yaml. It survived only because it was tracked before the rule existed,
+# so the breakage was invisible here and would have appeared for anyone building the tree
+# without git history.
+/agentwall-approvals.json
+/agentwall.config.local.yaml
+/agentwall.config.yaml
+/agentwall.config.yaml.init-default
+/agentwall.lan.yaml
+/policy.yaml
+/state/
+/.codex/
+
+# Editor and rescue copies. A backup of an ignored file is not itself ignored by the
+# rule that ignores the original, so an operator's live config can reach a public repo
+# through `git add -A` the moment someone snapshots it before an edit.
+*.bak
+*.bak-*
+*.orig
+*~
+*.swp

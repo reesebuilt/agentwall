@@ -1,0 +1,14 @@
+[allowlist]
+# A DLP engine has to contain secret-shaped strings to be testable. Allowlist the exact
+# literals, not whole directories: broad `tests/.*` or `docs/.*` path globs switch secret
+# scanning off across most of the repo, which defeats the point of running it.
+#
+# AKIAIOSFODNN7EXAMPLE is AWS's own documentation key. FAKE_GITHUB_PAT_EXAMPLE is a
+# placeholder that replaced a PAT-shaped string which used to trip scanners.
+description = "Allow the specific fake secrets this repo needs in order to test detection"
+regexes = [
+  '''AKIAIOSFODNN7EXAMPLE''',
+  '''FAKE_GITHUB_PAT_EXAMPLE''',
+  '''sk-test-1234567890''',
+  '''alice@example.com'''
+]

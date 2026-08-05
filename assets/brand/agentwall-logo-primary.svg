@@ -1,0 +1,14 @@
+<svg width="1200" height="320" viewBox="0 0 1200 320" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="aw-gradient" x1="40" y1="32" x2="240" y2="264" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#5B8CFF"/>
+      <stop offset="1" stop-color="#00C2A8"/>
+    </linearGradient>
+  </defs>
+  <rect x="40" y="32" width="224" height="224" rx="28" fill="#0E152A"/>
+  <path d="M88 196L152 92L216 196" stroke="url(#aw-gradient)" stroke-width="20" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M120 164H184" stroke="url(#aw-gradient)" stroke-width="16" stroke-linecap="round"/>
+  <path d="M78 236H226" stroke="#1E2A44" stroke-width="10" stroke-linecap="round"/>
+  <text x="312" y="178" fill="#0E152A" font-family="Inter, 'Segoe UI', system-ui, sans-serif" font-size="108" font-weight="700" letter-spacing="-2">Agentwall</text>
+  <text x="316" y="226" fill="#4B5B78" font-family="Inter, 'Segoe UI', system-ui, sans-serif" font-size="34" font-weight="500" letter-spacing="1.2">Agent Control Plane</text>
+</svg>

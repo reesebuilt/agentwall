@@ -1,0 +1,58 @@
+name: Security
+
+on:
+  push:
+    branches: ["main", "master"]
+  pull_request:
+  schedule:
+    - cron: "17 6 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  secret-scan:
+    name: Secret scan (gitleaks)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # gitleaks walks git history. The default shallow clone leaves it without the
+          # commits to scan, and it fails with "stderr is not empty" rather than saying
+          # so. A secret scan that errors out is indistinguishable from one that passes
+          # if nobody reads the log, so fetch the full history it actually needs.
+          fetch-depth: 0
+      - name: Run gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          config-path: .gitleaks.toml
+
+  dependency-audit:
+    name: Dependency audit (moderate+)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install
+        run: npm ci
+      - name: Audit
+        run: npm audit --audit-level=moderate
+
+  dependency-review:
+    name: Dependency review (PR)
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - name: Dependency review
+        uses: actions/dependency-review-action@v4

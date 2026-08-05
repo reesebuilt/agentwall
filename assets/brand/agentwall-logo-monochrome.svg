@@ -1,0 +1,6 @@
+<svg width="1200" height="320" viewBox="0 0 1200 320" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect x="40" y="32" width="224" height="224" rx="28" fill="#111111"/>
+  <path d="M88 196L152 92L216 196" stroke="#FFFFFF" stroke-width="20" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M120 164H184" stroke="#FFFFFF" stroke-width="16" stroke-linecap="round"/>
+  <text x="312" y="190" fill="#111111" font-family="Inter, 'Segoe UI', system-ui, sans-serif" font-size="108" font-weight="700" letter-spacing="-2">Agentwall</text>
+</svg>

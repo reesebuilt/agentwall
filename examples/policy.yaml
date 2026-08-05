@@ -1,0 +1,73 @@
+# Agentwall policy examples.
+# This file is loadable via policy.configPath in agentwall.config.yaml.
+# Changes are picked up automatically by a running Agentwall process.
+
+version: "1"
+
+rules:
+  - id: "custom:approve-untrusted-web-egress"
+    description: "Require approval when web-derived content triggers outbound delivery"
+    plane: "content"
+    match:
+      provenance:
+        source: ["web"]
+        trustLabel: ["untrusted", "derived"]
+      flow:
+        direction: "egress"
+        labels:
+          - "external_egress"
+    decision: "approve"
+    riskLevel: "high"
+    reason: "Untrusted web content is driving outbound content flow"
+
+  - id: "custom:allow-agent-api"
+    description: "Explicitly allow access to the organization's approved agent API"
+    plane: "network"
+    match:
+      type: "hostname-equals"
+      values:
+        - "api.openai.com"
+    decision: "allow"
+    riskLevel: "low"
+    reason: "Approved egress destination"
+
+  - id: "custom:deny-finance-agent-file-write-in-shared-slack"
+    description: "Shared Slack finance room cannot drive filesystem writes through the finance analyst agent"
+    plane: "tool"
+    match:
+      action:
+        includes: ["write", "patch"]
+      actor:
+        channelId: ["slack:finance-room"]
+      subject:
+        agentId: ["finance-analyst-agent"]
+    decision: "deny"
+    riskLevel: "high"
+    reason: "Shared business channels cannot mutate the finance analyst agent filesystem"
+
+  - id: "custom:deny-discord-moderator-shell-when-read-only"
+    description: "Freeze shell execution for Discord moderators during read-only containment"
+    plane: "tool"
+    match:
+      action:
+        includes: ["exec", "shell", "bash"]
+      actor:
+        channelId: ["discord:ops"]
+        roleId: ["moderator"]
+      control:
+        executionMode: ["read_only"]
+    decision: "deny"
+    riskLevel: "high"
+    reason: "Read-only containment forbids shell execution for this role/channel scope"
+
+  - id: "custom:answer-only-for-shared-channel-secrets"
+    description: "In answer-only mode, shared channels may discuss but not retrieve credentials"
+    plane: "identity"
+    match:
+      actor:
+        channelId: ["telegram:shared-ops", "discord:war-room"]
+      control:
+        executionMode: ["answer_only"]
+    decision: "deny"
+    riskLevel: "critical"
+    reason: "Answer-only containment disables secret retrieval in shared channels"

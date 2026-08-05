@@ -1,0 +1,54 @@
+# Agentwall monitor-first config for an agent-harness sidecar rollout.
+# Safe default: loopback only, file-backed approvals, watchdog in monitor mode.
+
+port: 3015
+host: "127.0.0.1"
+logLevel: "info"
+
+dashboard:
+  # Optional canonical public URL used in the Knowledge Base access panel.
+  # publicBaseUrl: "https://mission-control.example.com"
+
+approval:
+  mode: "auto"
+  timeoutMs: 30000
+  backend: "file"
+  persistencePath: "./state/monitor-first-approvals.json"
+  # Optional operator webhook for queued/resolved approval notifications.
+  # Receives JSON events: approval.pending and approval.resolved.
+  # webhookUrl: "https://operator.example/webhooks/agentwall-approvals"
+
+policy:
+  # Keep default deny in the engine so decisions reflect the target end state,
+  # but callers should initially enforce only critical categories.
+  defaultDecision: "deny"
+  configPath: "./examples/monitor-first.policy.yaml"
+
+dlp:
+  enabled: true
+  redactSecrets: true
+
+egress:
+  enabled: true
+  defaultDeny: true
+  allowPrivateRanges: false
+  allowedHosts:
+    - "api.openai.com"
+    - "api.anthropic.com"
+    - "generativelanguage.googleapis.com"
+    - "wttr.in"
+    - "search.brave.com"
+  allowedSchemes:
+    - "https"
+  allowedPorts:
+    - 443
+
+manifestIntegrity:
+  enabled: true
+  approvedHashesPath: "./state/monitor-first-approved-manifests.json"
+
+watchdog:
+  enabled: true
+  staleAfterMs: 30000
+  timeoutMs: 120000
+  killSwitchMode: "monitor"

@@ -1,0 +1,6 @@
+<svg width="128" height="128" viewBox="0 0 128 128" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Agentwall logo mark">
+  <defs><linearGradient id="awMark" x1="16" y1="14" x2="112" y2="114" gradientUnits="userSpaceOnUse"><stop stop-color="#8AF2DB"/><stop offset="1" stop-color="#23C9A3"/></linearGradient></defs>
+  <rect x="10" y="10" width="108" height="108" rx="28" fill="#071321" stroke="url(#awMark)" stroke-width="3"/>
+  <path d="M36 74L64 34L92 74" stroke="url(#awMark)" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M50 74H78" stroke="#8CB8FF" stroke-width="8" stroke-linecap="round"/>
+</svg>
