@@ -39,16 +39,15 @@ const SKIP_GO = process.env.CONFORMANCE_SKIP_GO === "1";
 
 /**
  * Cases where the bundled TypeScript verifier returns something other than the format's
- * verdict. Each entry states what it returns instead and why, in one line. These are gaps in
- * the bundled verifier, not opinions about the corpus.
+ * verdict, each stating what it returns instead and why, in one line.
+ *
+ * Empty is an assertion, not dead scaffolding: it says the two implementations currently
+ * disagree about nothing in this corpus. The harness enforces that in both directions. A
+ * change that makes them disagree fails the run because the divergence is undeclared, and
+ * papering over one by adding an entry here turns an empty object into a reviewable diff
+ * carrying a human-written reason, rather than a gap that quietly becomes normal.
  */
-const DIVERGENCES = {
-	"b11-torn-tail": {
-		exit: 1,
-		layers: { chained: false },
-		why: "it reports a partial final line as a broken chain rather than as the torn tail a hard kill leaves behind",
-	},
-};
+const DIVERGENCES = {};
 
 function fail(message) {
 	process.stderr.write(`${message}\n`);

@@ -153,9 +153,8 @@ by the same people in the same language as the writer proves the code agrees wit
 parses JSON with a different parser, verifies Ed25519 with a different cryptography stack, and
 implements [docs/audit-format.md](docs/audit-format.md) rather than importing anything from `src/`.
 That document is the only thing the two programs have in common, so when both accept a file, the
-agreement is evidence about the FORMAT. Where they disagree one of them is wrong, and those cases
-are listed in [Where the two verifiers disagree today](#where-the-two-verifiers-disagree-today)
-rather than buried.
+agreement is evidence about the FORMAT. Where they disagree one of them is wrong, and the
+conformance harness fails on the disagreement rather than burying it.
 
 Every command below runs against evidence committed to this repository, so it reproduces from a
 bare checkout. Point `--audit` at your own file to check your own records; both CLI commands also
@@ -187,6 +186,13 @@ would hide which guarantee you actually have. Exit status is 0 only when all thr
 left untouched: the `chained` layer then fails with
 `line 2: hash mismatch, record altered after write`, names the file by absolute path, and the
 command exits 1.
+
+The `anchored` layer judges an anchor record by its evidence rather than by what the record says
+about itself. It recomputes each record's digest from the checkpoint the record embeds
+(`digest-mismatch`), requires non-empty proof bytes behind any submission that reached a calendar
+(`proof-missing`), and parses that proof against the submitted digest (`proof-parse-error`). A
+submission recorded with an error is exempt: it never reached a calendar, so it has no proof to
+point at and is already counted as failed.
 
 `anchored` fails until an anchor exists. `agentwall anchor` seals the live segment, signs an
 Ed25519 checkpoint over the head, and submits its digest to OpenTimestamps, which needs network
@@ -356,10 +362,7 @@ The run prints one line per case. Its tail:
 ```
 ok         b9-anchor-digest-altered  exit=1 chained=true linked=true anchored=false
 ok         b10-proof-truncated  exit=1 chained=true linked=true anchored=false
-DIVERGENCE b11-torn-tail
-             format expects exit=1 chained=true linked=true anchored=false
-             typescript returns exit=1 chained=false linked=true anchored=false
-             it reports a partial final line as a broken chain rather than as the torn tail a hard kill leaves behind
+ok         b11-torn-tail  exit=1 chained=true linked=true anchored=false
 ok         b12-duplicate-key-shadowed  exit=1 chained=false linked=true anchored=false
 ok         b13-confirmed-without-proof  exit=1 chained=true linked=true anchored=false
 ok         b14-submission-never-reached-calendar  exit=1 chained=true linked=true anchored=false
@@ -369,7 +372,7 @@ ok         b17-sealed-segment-missing  exit=1 chained=true linked=false anchored
 ok         l1-confirmed-with-pending-proof  exit=0 chained=true linked=true anchored=true
 ok         l2-legacy-canon-unmarked  exit=1 chained=false linked=true anchored=false
 
-26 cases, typescript and go: 25 agreed, 1 declared divergence(s), 0 failure(s)
+26 cases, typescript and go: 26 agreed, 0 declared divergence(s), 0 failure(s)
 ```
 
 Each case is copied to a temp directory before it runs, so a verifier cannot alter what it checks.
@@ -381,25 +384,11 @@ npm run gen:corpus && git status --porcelain verifier/testdata
 
 That prints nothing, because the regenerated tree is byte identical to the committed one.
 
-### Where the two verifiers disagree today
-
-One corpus case gets different verdicts from the two verifiers. Both reject the file, and the
-bundled verifier blames the chain instead of naming the torn tail:
-
-| Case | The edit | Bundled TypeScript verifier | Go verifier |
-| --- | --- | --- | --- |
-| `b11-torn-tail` | a partial final line, as a hard kill leaves behind | `chained` FAIL, exit 1. It condemns the whole chain over one partial write | `torn-tail` reported distinctly, `chained` PASS, exit 1 because nothing is anchored |
-
-That naming gap is a limit of the bundled verifier as it ships today. The harness prints every entry
-in this list on each run and fails if one of them starts agreeing
-([`scripts/conformance.js:40-51`](scripts/conformance.js)), so the list cannot rot into a set of
-excuses, and it is why the summary line above reports one declared divergence instead of agreement on
-every case.
-
-The bundled verifier recomputes each anchor record's digest from the checkpoint the record embeds,
-requires a non-empty proof file behind any submission that reached a calendar, and parses that proof
-against the submitted digest. So an altered digest, a deleted proof, and a truncated proof all fail
-the `anchored` layer in both verifiers rather than in one.
+Both verifiers return the same verdict on every case, which is why the summary declares no
+divergences. That is agreement across the 26 cases the corpus contains, not a proof that the two
+implementations are equivalent: a forgery nobody has written a case for has been put to neither of
+them. The harness fails the run if they ever stop agreeing on a case it does contain
+([`scripts/conformance.js:40-50`](scripts/conformance.js)).
 
 ### What verification does not prove
 
@@ -542,7 +531,7 @@ Stated plainly, because a security tool that oversells itself is worse than no t
 | Anchoring is pending, not instant | An OpenTimestamps anchor stays `pending` until a Bitcoin block confirms, roughly one to six hours. `verify` reports pending as pending. Pending is not proof. |
 | Anchoring proves no alteration, not completeness | An anchor shows that what was written was not altered afterwards. It cannot show that everything which should have been written was. Silent omission at write time is a different, unsolved problem. |
 | A signature is necessary, not sufficient | It proves a key holder vouched. On a host where the audited principal can read the key, an agent with root can sign anything the operator can. Off-box anchoring is what closes that gap. |
-| The bundled verifier is the less strict of the two | Four conformance cases (`b9`, `b10`, `b11`, `b13`) get different verdicts from the two verifiers. In `b9`, `b10`, and `b13` the bundled TypeScript verifier accepts evidence the format rejects; in `b11` both reject the file and the bundled one blames the chain rather than naming the torn tail. They are listed in [Where the two verifiers disagree today](#where-the-two-verifiers-disagree-today), and the conformance harness fails if any of them starts agreeing. |
+| Verifier agreement is bounded by the corpus | The bundled TypeScript verifier and the independent Go verifier return the same verdict on all 26 conformance cases. That is agreement about the cases the corpus contains, not a proof that the two implementations are equivalent, and it says nothing about a forgery neither has been asked to judge. The harness fails if they ever stop agreeing on a case the corpus does contain. |
 | No TLS interception | CONNECT traffic is visible at hostname and port level only. Request paths, headers, and bodies stay opaque. This is deliberate: MITM would need a CA in every runtime trust store, which breaks the framework-agnostic property the proxy exists for. |
 | Attribution is Linux-only | It reads `/proc/net/tcp` and `/proc/<pid>/fd`. There is no macOS or Windows equivalent here. The rest of the server is portable; process attribution is not. |
 | Channel containment is Telegram only | Slack and Discord appear in the platform schema ([`src/integrations/communication-channel/control.ts:5`](src/integrations/communication-channel/control.ts)) with no route implementation behind them. |

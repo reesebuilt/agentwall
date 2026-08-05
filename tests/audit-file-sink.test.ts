@@ -8,7 +8,9 @@ import {
   classifyLockOwner,
   createFileSink,
   LockOwnerProbe,
+  verifyChainFile,
 } from "../src/audit/file-sink";
+import { chainAuditEvent, rehashAuditEvent } from "../src/audit/chain";
 import { AuditEvent } from "../src/types";
 
 /**
@@ -210,5 +212,91 @@ describe("audit writer lock claim", () => {
     const lines = fs.readFileSync(auditPath, "utf8").trimEnd().split("\n");
     expect(lines).toHaveLength(2);
     expect(JSON.parse(lines[1]).id).toBe("evt-2");
+  });
+});
+
+/**
+ * A torn tail against interior corruption.
+ *
+ * A hard kill mid-append leaves exactly one partial line and it is always the last, with no
+ * terminator. Calling that a broken chain sends an operator hunting a tamperer who does not
+ * exist, so the two are told apart on the one signal that separates them. That boundary is the
+ * whole distinction, and it is pinned from both sides here: move the same damaged bytes off
+ * the end, or give them a terminator, and they are an edit again.
+ */
+describe("verifyChainFile torn tail", () => {
+  function chainedLines(count: number): string[] {
+    const lines: string[] = [];
+    let previousHash: string | null = null;
+    for (let i = 0; i < count; i++) {
+      const event = chainAuditEvent(
+        {
+          id: `evt-${i}`,
+          timestamp: "2026-08-04T00:00:00.000Z",
+          agentId: "agent-1",
+          plane: "network",
+          action: "http.request",
+          decision: "allow",
+          riskLevel: "low",
+          matchedRules: [],
+          reasons: [],
+          requiresApproval: false,
+          highRiskFlow: false,
+        },
+        { chainIndex: i, previousHash }
+      );
+      lines.push(JSON.stringify(event));
+      previousHash = event.integrity.hash;
+    }
+    return lines;
+  }
+
+  function auditFile(contents: string): string {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agentwall-torn-tail-"));
+    tempDirs.push(dir);
+    const auditPath = path.join(dir, "audit.jsonl");
+    fs.writeFileSync(auditPath, contents);
+    return auditPath;
+  }
+
+  it("names a partial final line a torn tail and leaves the chain standing", () => {
+    const lines = chainedLines(3);
+    const file = auditFile(`${lines.join("\n")}\n${lines[2].slice(0, 64)}`);
+
+    const result = verifyChainFile(file, rehashAuditEvent);
+    expect(result.problems).toEqual([]);
+    expect(result.ok).toBe(true);
+    expect(result.notes.join("\n")).toMatch(/line 4: torn-tail/);
+  });
+
+  it("fails a truncated line in the middle of a file as corruption", () => {
+    // The same damaged bytes, moved off the end. No interrupted append can put a partial
+    // line in front of complete ones, so this is an edit and stays fatal.
+    const lines = chainedLines(3);
+    const file = auditFile(`${lines[0]}\n${lines[1].slice(0, 64)}\n${lines[2]}\n`);
+
+    const result = verifyChainFile(file, rehashAuditEvent);
+    expect(result.ok).toBe(false);
+    expect(result.notes).toEqual([]);
+    expect(result.problems.join("\n")).toMatch(/line 2: not valid JSON/);
+  });
+
+  it("fails a partial last line that still carries its terminator", () => {
+    // A truncation followed by a newline was not left by a kill part way through the write:
+    // the terminator is proof that something wrote after the record was cut short.
+    const lines = chainedLines(3);
+    const file = auditFile(`${lines.join("\n")}\n${lines[2].slice(0, 64)}\n`);
+
+    const result = verifyChainFile(file, rehashAuditEvent);
+    expect(result.ok).toBe(false);
+    expect(result.notes).toEqual([]);
+    expect(result.problems.join("\n")).toMatch(/line 4: not valid JSON/);
+  });
+
+  it("keeps an intact file free of both problems and notes", () => {
+    const file = auditFile(`${chainedLines(3).join("\n")}\n`);
+
+    const result = verifyChainFile(file, rehashAuditEvent);
+    expect(result).toMatchObject({ ok: true, records: 3, problems: [], notes: [] });
   });
 });

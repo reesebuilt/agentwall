@@ -298,6 +298,12 @@ export interface ChainVerification {
   ok: boolean;
   records: number;
   problems: string[];
+  /**
+   * Findings that are reported but do not condemn the file. Only a torn tail lands here:
+   * it is damage a crash produces, not evidence of an edit, so it is surfaced without
+   * failing the layer.
+   */
+  notes: string[];
 }
 
 /**
@@ -310,16 +316,25 @@ export function verifyChainFile(
   rehash: (event: AuditEvent) => string
 ): ChainVerification {
   const problems: string[] = [];
-  if (!existsSync(path)) return { ok: false, records: 0, problems: ["file does not exist"] };
+  const notes: string[] = [];
+  if (!existsSync(path)) return { ok: false, records: 0, problems: ["file does not exist"], notes };
 
-  const lines = readFileSync(path, "utf8")
-    .split("\n")
-    .filter((l) => l.trim() !== "");
+  const raw = readFileSync(path, "utf8");
+  // Whether the file ends with its terminator is the whole distinction between a hard kill
+  // and an edit, and a filtered split destroys it, so it is read off the raw bytes first.
+  // Only the trailing chunk can be unterminated: every earlier one was followed by an LF.
+  const chunks = raw.split("\n");
+  const unterminated = raw.endsWith("\n") ? -1 : chunks.length - 1;
+  const lines: { text: string; torn: boolean }[] = [];
+  chunks.forEach((text, i) => {
+    if (text.trim() === "") return;
+    lines.push({ text, torn: i === unterminated });
+  });
 
   let expectedIndex: number | null = null;
   let expectedPrev: string | null = null;
 
-  lines.forEach((line, i) => {
+  lines.forEach(({ text: line, torn }, i) => {
     // Checked on the raw bytes, because JSON.parse silently collapses a duplicate member
     // and the evidence of it is gone the moment the line is parsed. Such a record counts
     // toward nothing: it does not advance the expected index or the expected link, so the
@@ -337,6 +352,20 @@ export function verifyChainFile(
     try {
       ev = JSON.parse(line) as AuditEvent;
     } catch {
+      if (torn) {
+        // A process killed mid-append leaves exactly one partial line: the last, with no
+        // terminator. Calling that a broken chain sends an operator hunting a tamperer
+        // through a log that was never touched, and a security tool that cries wolf on
+        // every hard kill gets its alerts ignored. The complete records before it still
+        // chain, so it is named and the file stands. An unparseable line ANYWHERE else,
+        // or one that carries its terminator, was not produced by an interrupted append
+        // and stays fatal.
+        notes.push(
+          `line ${i + 1}: torn-tail, the final line has no terminator and does not parse, ` +
+            "which is what a hard kill mid-append leaves; the records before it are complete",
+        );
+        return;
+      }
       problems.push(`line ${i + 1}: not valid JSON`);
       return;
     }
@@ -360,5 +389,5 @@ export function verifyChainFile(
     expectedPrev = integ.hash;
   });
 
-  return { ok: problems.length === 0, records: lines.length, problems };
+  return { ok: problems.length === 0, records: lines.length, problems, notes };
 }

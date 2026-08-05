@@ -140,28 +140,24 @@ it checks. From the repository root:
     cd verifier && go build -o agentwall-verify . && cd ..
     node scripts/conformance.js
 
-    26 cases, typescript and go: 25 agreed, 1 declared divergence(s), 0 failure(s)
+    26 cases, typescript and go: 26 agreed, 0 declared divergence(s), 0 failure(s)
 
 `go test ./...` in this directory runs the unit tests plus a corpus walk that asserts every case's
 `expected.json` against this verifier alone.
 
-## Where the two verifiers disagree today
+## Where the two verifiers stand
 
-One corpus case gets different verdicts from the two verifiers. Both reject the file, and the bundled
-verifier blames the chain instead of naming the torn tail:
+Both verifiers return the same verdict on every case in the corpus, and the harness declares no
+divergences. That is agreement about the 26 cases the corpus contains, not a proof that the two
+implementations are equivalent: a forgery nobody has written a case for has been put to neither of
+them. The harness fails the run if they ever stop agreeing on a case it does contain.
 
-| Case | The edit | Bundled TypeScript verifier | This verifier |
-| --- | --- | --- | --- |
-| `b11-torn-tail` | a partial final line, as a hard kill leaves behind | `chained` FAIL, exit 1. It condemns the whole chain over one partial write | `torn-tail` reported distinctly, `chained` PASS, exit 1 because nothing is anchored |
-
-That naming gap is a limit of the bundled verifier as it ships today. The harness declares it in
-`scripts/conformance.js`, prints it on every run, and fails if it starts agreeing, so the list cannot
-rot into a set of excuses.
-
-On the `anchored` layer the two verifiers agree case for case. The bundled one recomputes each anchor
-record's digest from the embedded checkpoint, requires non-empty proof bytes behind any submission
-that reached a calendar, and parses the proof against the submitted digest under the same caps as this
-one, so `digest-mismatch`, `proof-missing`, and `proof-parse-error` are reported by both.
+On the `anchored` layer the bundled verifier recomputes each anchor record's digest from the
+embedded checkpoint, requires non-empty proof bytes behind any submission that reached a calendar,
+and parses the proof against the submitted digest under the same caps as this one, so
+`digest-mismatch`, `proof-missing`, and `proof-parse-error` are reported by both. On the `chained`
+layer both report a partial final line as `torn-tail` rather than as a broken chain, because a hard
+kill mid-append leaves exactly one and calling it tampering would cry wolf.
 
 ## Exit codes
 
