@@ -31,10 +31,13 @@ jobs:
         # The gitleaks ACTION computes a git range from the push event as
         # <oldest-commit>^..<newest>. On a fresh repository's first push the oldest commit
         # IS the root, its parent does not exist, and the scan dies with "unknown
-        # revision" — a scanner erroring out is indistinguishable from one passing unless
+        # revision". A scanner erroring out is indistinguishable from one passing unless
         # someone reads the log. Run the binary directly over full history instead; the
-        # checkout above fetches it.
-        run: "$RUNNER_TEMP/gitleaks" detect --redact --source . --config .gitleaks.toml --verbose
+        # checkout above fetches it. (The whole command is a block scalar: a value that
+        # opens with a quote and continues unquoted is a YAML parse error, which is how
+        # this step shipped broken the first time.)
+        run: |
+          "$RUNNER_TEMP/gitleaks" detect --redact --source . --config .gitleaks.toml --verbose
 
   dependency-audit:
     name: Dependency audit (moderate+)
