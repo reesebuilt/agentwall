@@ -225,6 +225,38 @@ jobs:
         env:
           VERSION: ${{ steps.meta.outputs.version }}
 
+      # The Go binary is checked above. These are the surfaces a Node deployment reports, and
+      # they used to be three separate string literals: GET /health and the telemetry scope both
+      # answered 0.1.0 for months after package.json moved, and `agentwall doctor` green-checked
+      # a Node version that `engines` refuses to install on. They all derive from
+      # dist/version.js now, so asserting that module and the CLI covers every one of them.
+      #
+      # This is the difference between "we fixed the four surfaces" and "the four surfaces
+      # cannot silently diverge again". A release does not ship while any of them disagrees
+      # with the tag.
+      - name: Every version surface agrees with the tag
+        run: |
+          set -euo pipefail
+          module="$(node -p "require('./dist/version').packageVersion")"
+          cli="$(node dist/cli.js --version)"
+          echo "dist/version.js: ${module}"
+          echo "agentwall --version: ${cli}"
+          failed=0
+          for surface in "dist/version.js=${module}" "agentwall --version=${cli}"; do
+            name="${surface%%=*}"
+            got="${surface#*=}"
+            if [ "$got" != "${VERSION}" ]; then
+              echo "${name} reports '${got}', expected '${VERSION}'." >&2
+              failed=1
+            fi
+          done
+          [ "$failed" -eq 0 ] || {
+            echo "a version surface disagrees with the tag; do not publish this build." >&2
+            exit 1
+          }
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+
       # Sorted with a fixed collation so the file is byte-identical across runs of the same
       # inputs, and so the SLSA subject list below is stable.
       #
