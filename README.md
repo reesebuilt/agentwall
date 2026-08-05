@@ -183,7 +183,7 @@ Anchored
   checkpoint hash   3b7cd8dfdd69dd40f3d2a5171b1fb5eed84d2fed1c0cbd24b6c7dd6be09a3a18
   covers            7 records (0 sealed segment(s) + 7 live)
   calendar          https://alice.btc.calendar.opentimestamps.org/digest
-  proof             audit-dir/proofs/0.ots
+  proof             audit-dir/proofs/b829ef597c9769f3ac41b1f74348dc25935a553cf199d2bc03a4b1b33010bcd4.ots
   status            pending
 ```
 

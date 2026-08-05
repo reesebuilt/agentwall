@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "@jest/globals";
-import { appendFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
+import { appendFileSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { runAnchorPass, runVerify, resolvePaths } from "../src/audit/anchor-service";
@@ -99,6 +99,53 @@ describe("anchor pass", () => {
 		appendFileSync(audit, rec(10));
 		const b = await runAnchorPass({ auditPath: audit }, () => new Date(), okPoster);
 		expect(a.checkpoint?.hash).not.toBe(b.checkpoint?.hash);
+	});
+
+	it("two passes with no rotation keep two distinct proofs instead of overwriting one", async () => {
+		// The scheduled case, and the reason proof names cannot key on the chain index:
+		// that counter is the SEALED SEGMENT COUNT, so a deployment which has never
+		// rotated reports 0 on every pass. One name for every proof means each pass
+		// deletes the merkle path the previous one collected, and an anchor without its
+		// merkle path cannot be verified by anyone.
+		const d = tmp();
+		const audit = join(d, "audit.jsonl");
+		write(audit, 10);
+		const r = resolvePaths({ auditPath: audit });
+
+		// Distinct bodies, so an overwrite is detected rather than merely suspected.
+		let call = 0;
+		const distinctProofs: HttpPoster = {
+			post: async () => ({ status: 200, body: Buffer.from(`proof-${++call}`) }),
+		};
+		// Two passes six hours apart, the interval a scheduler would use.
+		let t = Date.parse("2026-01-01T00:00:00.000Z");
+		const clock = (): Date => new Date((t += 6 * 60 * 60 * 1000));
+
+		const first = await runAnchorPass({ auditPath: audit }, clock, distinctProofs);
+		appendFileSync(audit, rec(10));
+		const second = await runAnchorPass({ auditPath: audit }, clock, distinctProofs);
+
+		// Zero rotations: the condition under which the old naming collided.
+		expect(readManifest(r.manifestPath)).toHaveLength(0);
+		expect(first.checkpoint?.chainIndex).toBe(0);
+		expect(second.checkpoint?.chainIndex).toBe(0);
+
+		const a = first.records?.[0].proofPath as string;
+		const b = second.records?.[0].proofPath as string;
+		expect(a).toBeDefined();
+		expect(b).toBeDefined();
+		expect(a).not.toBe(b);
+		expect(readFileSync(a, "utf8")).toBe("proof-1");
+		expect(readFileSync(b, "utf8")).toBe("proof-2");
+
+		// Both log records still point at a file that is there, so either anchor can be
+		// checked on its own.
+		const logged = readFileSync(r.anchorLogPath, "utf8")
+			.trim()
+			.split("\n")
+			.map((line) => (JSON.parse(line) as { proofPath?: string }).proofPath as string);
+		expect(logged).toEqual([a, b]);
+		expect(logged.every((p) => existsSync(p))).toBe(true);
 	});
 
 	it("records an anchor failure instead of throwing when the calendar is down", async () => {
