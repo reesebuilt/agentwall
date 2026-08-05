@@ -15,14 +15,19 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
   evaluated, matching the independent Go verifier.
 
 ### Changed
-- The bundled verifier's `anchored` layer judges an anchor record by the evidence instead of by what
-  the record says about itself. It recomputes each record's digest from the checkpoint the record
-  embeds and reports `digest-mismatch` when they differ, requires non-empty proof bytes behind any
-  submission that reached a calendar and reports `proof-missing` when they are absent, and parses the
-  proof against the submitted digest, reporting `proof-parse-error` when the container does not
-  parse. An anchor claiming `confirmed` with no proof file behind it fails the layer. A submission
-  recorded with an `error` is exempt: it never reached a calendar, so it has no proof to point at and
-  is already counted as failed.
+- The bundled verifier returns the same verdict as the independent Go verifier on every case in the
+  conformance corpus, and the harness declares no divergences. Two parts of the report moved. The
+  `anchored` layer judges an anchor record by the evidence instead of by what the record says about
+  itself: it recomputes each record's digest from the checkpoint the record embeds and reports
+  `digest-mismatch` when they differ, requires non-empty proof bytes behind any submission that
+  reached a calendar and reports `proof-missing` when they are absent, and parses the proof against
+  the submitted digest, reporting `proof-parse-error` when the container does not parse. An anchor
+  claiming `confirmed` with no proof file behind it fails the layer. A submission recorded with an
+  `error` is exempt: it never reached a calendar, so it has no proof to point at and is already
+  counted as failed. The `chained` layer reports a partial final line as `torn-tail` and does not
+  fail over it, because a hard kill mid-append leaves exactly one and calling that tampering would
+  cry wolf on every crash; a line that does not parse anywhere else, or one that carries its
+  terminator, stays a fatal failure.
 - `agentwall anchor` parses a calendar response before keeping it, and treats one that does not parse
   as a submission failure rather than writing it as a proof. A broken or hostile answer therefore
   leaves a recorded gap instead of a file that a later verify reports as corrupt evidence.

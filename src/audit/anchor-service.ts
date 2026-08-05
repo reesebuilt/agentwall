@@ -343,6 +343,10 @@ export function runVerify(paths: AnchorPaths): VerifyReport {
 	);
 	segPaths.add(resolve(r.auditPath));
 	const chainProblems: string[] = [];
+	// Kept apart from the problems so a torn tail is surfaced to the operator without
+	// deciding the verdict. What fails the layer is evidence of an edit, and a partial
+	// trailing line is not that.
+	const chainNotes: string[] = [];
 	let totalRecords = 0;
 	let walked = 0;
 	for (const p of segPaths) {
@@ -375,12 +379,13 @@ export function runVerify(paths: AnchorPaths): VerifyReport {
 		} else {
 			for (const problem of v.problems) chainProblems.push(`${p}: ${problem}`);
 		}
+		for (const note of v.notes) chainNotes.push(`${p}: ${note}`);
 	}
 	layers.push({
 		name: "chained",
 		ok: chainProblems.length === 0,
 		detail: `${totalRecords} records across ${walked} segment(s)`,
-		problems: chainProblems,
+		problems: [...chainProblems, ...chainNotes],
 	});
 
 	// Layer 2: segment linkage.

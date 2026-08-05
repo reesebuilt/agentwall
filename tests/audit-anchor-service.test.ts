@@ -4,6 +4,7 @@ import { tmpdir } from "os";
 import { join } from "path";
 import { runAnchorPass, runVerify, resolvePaths } from "../src/audit/anchor-service";
 import { readManifest } from "../src/audit/rotation";
+import { chainAuditEvent } from "../src/audit/chain";
 import type { HttpPoster } from "../src/audit/anchor";
 import { pendingProof } from "./ots-fixtures";
 
@@ -579,5 +580,43 @@ describe("verify", () => {
 		// And it read the proof rather than skipping it: the attestation count comes from the
 		// bytes, not from the record's status field.
 		expect(anchored?.detail).toMatch(/proofs carry 1 calendar and 0 bitcoin attestation\(s\)/);
+	});
+
+	it("reports a torn tail on the chained layer without failing it", () => {
+		// A partial final line is what a hard kill mid-append leaves. Failing the layer over
+		// it tells an operator their log was tampered with when a process merely died, and a
+		// tool that raises tampering on every crash gets its alerts ignored. It is reported,
+		// because a record was genuinely lost, and it does not condemn the complete ones.
+		// Real hashes here, because the point is a chain that verifies apart from the tear.
+		const d = tmp();
+		const audit = join(d, "audit.jsonl");
+		const lines: string[] = [];
+		let previousHash: string | null = null;
+		for (let i = 0; i < 4; i++) {
+			const event = chainAuditEvent(
+				{
+					id: `e${i}`,
+					timestamp: "2026-08-04T00:00:00.000Z",
+					agentId: "agent-1",
+					plane: "network",
+					action: "test",
+					decision: "allow",
+					riskLevel: "low",
+					matchedRules: [],
+					reasons: [],
+					requiresApproval: false,
+					highRiskFlow: false,
+				},
+				{ chainIndex: i, previousHash },
+			);
+			lines.push(JSON.stringify(event));
+			previousHash = event.integrity.hash;
+		}
+		writeFileSync(audit, `${lines.join("\n")}\n${lines[3].slice(0, 40)}`);
+
+		const chained = runVerify({ auditPath: audit }).layers.find((l) => l.name === "chained");
+		expect(chained?.ok).toBe(true);
+		expect(chained?.problems.join("\n")).toMatch(/line 5: torn-tail/);
+		expect(chained?.problems.join("\n")).not.toMatch(/not valid JSON/);
 	});
 });
