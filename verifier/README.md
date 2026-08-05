@@ -140,29 +140,28 @@ it checks. From the repository root:
     cd verifier && go build -o agentwall-verify . && cd ..
     node scripts/conformance.js
 
-    26 cases, typescript and go: 22 agreed, 4 declared divergence(s), 0 failure(s)
+    26 cases, typescript and go: 25 agreed, 1 declared divergence(s), 0 failure(s)
 
 `go test ./...` in this directory runs the unit tests plus a corpus walk that asserts every case's
 `expected.json` against this verifier alone.
 
 ## Where the two verifiers disagree today
 
-Four corpus cases get different verdicts from the two verifiers. In three of them the bundled
-TypeScript verifier accepts evidence the format rejects, which makes this verifier the stricter of
-the two today. In the fourth both reject the file, and the bundled verifier blames the chain instead
-of naming the torn tail:
+One corpus case gets different verdicts from the two verifiers. Both reject the file, and the bundled
+verifier blames the chain instead of naming the torn tail:
 
 | Case | The edit | Bundled TypeScript verifier | This verifier |
 | --- | --- | --- | --- |
-| `b9-anchor-digest-altered` | the anchor record's `digest` field altered | `anchored` PASS, exit 0. It reports the digest the record claims was submitted and never recomputes one from the checkpoint the record embeds | `digest-mismatch`, `anchored` FAIL, exit 1 |
-| `b10-proof-truncated` | the OTS proof truncated inside a length prefix | `anchored` PASS, exit 0. It never opens a proof file, so a proof that cannot be parsed still counts as an anchor | `proof-parse-error`, `anchored` FAIL, exit 1 |
 | `b11-torn-tail` | a partial final line, as a hard kill leaves behind | `chained` FAIL, exit 1. It condemns the whole chain over one partial write | `torn-tail` reported distinctly, `chained` PASS, exit 1 because nothing is anchored |
-| `b13-confirmed-without-proof` | an anchor claiming `confirmed` with its proof file deleted | `anchored` PASS, exit 0. It counts the status field, so a claim of confirmation passes with no proof bytes behind it | `proof-missing`, `anchored` FAIL, exit 1 |
 
-Those three acceptance gaps are limits of the bundled verifier as it ships today. The harness
-declares all four in
-`scripts/conformance.js`, prints them on every run, and fails if one of them starts agreeing, so the
-list cannot rot into a set of excuses.
+That naming gap is a limit of the bundled verifier as it ships today. The harness declares it in
+`scripts/conformance.js`, prints it on every run, and fails if it starts agreeing, so the list cannot
+rot into a set of excuses.
+
+On the `anchored` layer the two verifiers agree case for case. The bundled one recomputes each anchor
+record's digest from the embedded checkpoint, requires non-empty proof bytes behind any submission
+that reached a calendar, and parses the proof against the submitted digest under the same caps as this
+one, so `digest-mismatch`, `proof-missing`, and `proof-parse-error` are reported by both.
 
 ## Exit codes
 

@@ -810,7 +810,8 @@ The bundled implementation of this format is in
 [`src/audit/file-sink.ts`](../src/audit/file-sink.ts) for the writer and the per-file chain
 walk, [`src/audit/rotation.ts`](../src/audit/rotation.ts) for the manifest,
 [`src/audit/signing.ts`](../src/audit/signing.ts) for checkpoints,
-[`src/audit/anchor.ts`](../src/audit/anchor.ts) for anchor records and proof persistence, and
+[`src/audit/anchor.ts`](../src/audit/anchor.ts) for anchor records and proof persistence,
+[`src/audit/ots-proof.ts`](../src/audit/ots-proof.ts) for the proof grammar above, and
 [`src/audit/anchor-service.ts`](../src/audit/anchor-service.ts) for the three-layer verify.
 
 Where that code and this document disagree, this document is correct and the code has a bug.

@@ -1,10 +1,11 @@
 import { afterEach, describe, expect, it } from "@jest/globals";
-import { appendFileSync, existsSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "fs";
+import { appendFileSync, cpSync, existsSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { runAnchorPass, runVerify, resolvePaths } from "../src/audit/anchor-service";
 import { readManifest } from "../src/audit/rotation";
 import type { HttpPoster } from "../src/audit/anchor";
+import { pendingProof } from "./ots-fixtures";
 
 /**
  * The wired anchor path.
@@ -45,9 +46,15 @@ function write(path: string, count: number, seed = "h"): void {
 	writeFileSync(path, Array.from({ length: count }, (_, i) => rec(i, seed)).join(""));
 }
 
-/** A calendar that always answers with a plausible proof. */
+/**
+ * A calendar that answers with a genuine pending proof.
+ *
+ * The submitted digest is the request body, and every answer names a distinct calendar, so
+ * repeated passes produce distinct proof bytes and an overwrite would be visible.
+ */
+let calendarCall = 0;
 const okPoster: HttpPoster = {
-	post: async () => ({ status: 200, body: Buffer.from("proofbytes-ots") }),
+	post: async () => ({ status: 200, body: pendingProof(`https://calendar-${++calendarCall}.example.com`) }),
 };
 const deadPoster: HttpPoster = {
 	post: async () => {
@@ -112,10 +119,11 @@ describe("anchor pass", () => {
 		write(audit, 10);
 		const r = resolvePaths({ auditPath: audit });
 
-		// Distinct bodies, so an overwrite is detected rather than merely suspected.
+		// Distinct bodies, so an overwrite is detected rather than merely suspected. Each is a
+		// real proof, because the writer refuses a body it cannot parse.
 		let call = 0;
 		const distinctProofs: HttpPoster = {
-			post: async () => ({ status: 200, body: Buffer.from(`proof-${++call}`) }),
+			post: async () => ({ status: 200, body: pendingProof(`https://calendar-${++call}.example.com`) }),
 		};
 		// Two passes six hours apart, the interval a scheduler would use.
 		let t = Date.parse("2026-01-01T00:00:00.000Z");
@@ -135,8 +143,8 @@ describe("anchor pass", () => {
 		expect(a).toBeDefined();
 		expect(b).toBeDefined();
 		expect(a).not.toBe(b);
-		expect(readFileSync(a, "utf8")).toBe("proof-1");
-		expect(readFileSync(b, "utf8")).toBe("proof-2");
+		expect(readFileSync(a)).toEqual(pendingProof("https://calendar-1.example.com"));
+		expect(readFileSync(b)).toEqual(pendingProof("https://calendar-2.example.com"));
 
 		// Both log records still point at a file that is there, so either anchor can be
 		// checked on its own.
@@ -461,5 +469,115 @@ describe("verify", () => {
 		expect(chained?.problems.join(" ")).toMatch(/dup-key/);
 		expect(anchored?.ok).toBe(false);
 		expect(anchored?.problems.join(" ")).toMatch(/live-tail-mismatch/);
+	});
+
+	it("detects an anchor record whose digest does not describe the checkpoint it carries", async () => {
+		// One edit to a field nobody recomputed. The signature still verifies and the proof
+		// still parses, because nothing tied the proof to a particular checkpoint: the digest
+		// is that tie. Left unchecked, a forger points a record at a checkpoint whose state
+		// was never timestamped and keeps a proof that attests to something else entirely.
+		const d = tmp();
+		const audit = join(d, "audit.jsonl");
+		write(audit, 8);
+		await runAnchorPass({ auditPath: audit }, () => new Date(), okPoster);
+
+		const r = resolvePaths({ auditPath: audit });
+		const line = JSON.parse(readFileSync(r.anchorLogPath, "utf8").trim());
+		const claimed = `0${line.digest.slice(1)}`;
+		writeFileSync(r.anchorLogPath, JSON.stringify({ ...line, digest: claimed }) + "\n");
+
+		const anchored = runVerify({ auditPath: audit }).layers.find((l) => l.name === "anchored");
+		expect(anchored?.ok).toBe(false);
+		expect(anchored?.problems.join(" ")).toMatch(/digest-mismatch/);
+	});
+
+	it("refuses a confirmed claim with no proof bytes behind it", async () => {
+		// The worst of the acceptance gaps. `status` is what the record says about itself, so
+		// counting it means a line of JSON claiming Bitcoin-grade evidence passes with an
+		// empty proof directory. Trusting a self-reported status is the overclaim this whole
+		// layer exists to refuse.
+		const d = tmp();
+		const audit = join(d, "audit.jsonl");
+		write(audit, 8);
+		await runAnchorPass({ auditPath: audit }, () => new Date(), okPoster);
+
+		const r = resolvePaths({ auditPath: audit });
+		const line = JSON.parse(readFileSync(r.anchorLogPath, "utf8").trim());
+		writeFileSync(r.anchorLogPath, JSON.stringify({ ...line, status: "confirmed" }) + "\n");
+		rmSync(line.proofPath);
+
+		const report = runVerify({ auditPath: audit });
+		const anchored = report.layers.find((l) => l.name === "anchored");
+		expect(report.confirmed).toBe(1);
+		expect(anchored?.ok).toBe(false);
+		expect(anchored?.problems.join(" ")).toMatch(/proof-missing/);
+	});
+
+	it("refuses a proof file that exists but is empty", async () => {
+		// Truncating a proof to nothing leaves the recorded path resolving, so an existence
+		// check alone passes. Zero bytes attest to nothing.
+		const d = tmp();
+		const audit = join(d, "audit.jsonl");
+		write(audit, 8);
+		const pass = await runAnchorPass({ auditPath: audit }, () => new Date(), okPoster);
+		writeFileSync(pass.records?.[0].proofPath as string, "");
+
+		const anchored = runVerify({ auditPath: audit }).layers.find((l) => l.name === "anchored");
+		expect(anchored?.ok).toBe(false);
+		expect(anchored?.problems.join(" ")).toMatch(/proof-missing/);
+	});
+
+	it("refuses a proof whose bytes do not parse", async () => {
+		// Cut inside a length prefix, as the corpus forgery does. Unopened, a proof is a file
+		// name, and an anchor backed by a file name is a claim that an HTTP request happened.
+		const d = tmp();
+		const audit = join(d, "audit.jsonl");
+		write(audit, 8);
+		const pass = await runAnchorPass({ auditPath: audit }, () => new Date(), okPoster);
+		const proofPath = pass.records?.[0].proofPath as string;
+		const full = readFileSync(proofPath);
+		writeFileSync(proofPath, full.subarray(0, full.length - 5));
+
+		const anchored = runVerify({ auditPath: audit }).layers.find((l) => l.name === "anchored");
+		expect(anchored?.ok).toBe(false);
+		expect(anchored?.problems.join(" ")).toMatch(/proof-parse-error/);
+		// A damaged proof is an anchoring failure and nothing else, so the linkage verdict it
+		// says nothing about must not move with it.
+		expect(runVerify({ auditPath: audit }).layers.find((l) => l.name === "linked")?.ok).toBe(true);
+	});
+
+	it("does not demand a proof from a submission that never reached a calendar", async () => {
+		// A recorded failure has no proof to point at, and it is already counted as failed.
+		// Reporting a missing proof on top would blame the operator's evidence for a third
+		// party being unreachable, and bury the failure that actually happened.
+		const d = tmp();
+		const audit = join(d, "audit.jsonl");
+		write(audit, 5);
+		await runAnchorPass({ auditPath: audit }, () => new Date(), deadPoster);
+
+		const report = runVerify({ auditPath: audit });
+		const anchored = report.layers.find((l) => l.name === "anchored");
+		expect(report.failed).toBe(1);
+		expect(anchored?.problems.join(" ")).not.toMatch(/proof-missing/);
+		expect(anchored?.problems.join(" ")).not.toMatch(/proof-parse-error/);
+	});
+
+	it("finds a proof by its recorded base name after the evidence is copied elsewhere", async () => {
+		// An operator checks evidence on a machine that is not the one that wrote it, so the
+		// absolute path in the record points at a directory that does not exist here. The
+		// base name inside the proof directory is what survives the copy; failing here would
+		// report every anchor as unproven on any host but the original.
+		const origin = tmp();
+		const copy = tmp();
+		write(join(origin, "audit.jsonl"), 9);
+		await runAnchorPass({ auditPath: join(origin, "audit.jsonl") }, () => new Date(), okPoster);
+		cpSync(origin, copy, { recursive: true });
+
+		const anchored = runVerify({ auditPath: join(copy, "audit.jsonl") }).layers.find((l) => l.name === "anchored");
+		expect(anchored?.problems).toEqual([]);
+		expect(anchored?.ok).toBe(true);
+		// And it read the proof rather than skipping it: the attestation count comes from the
+		// bytes, not from the record's status field.
+		expect(anchored?.detail).toMatch(/proofs carry 1 calendar and 0 bitcoin attestation\(s\)/);
 	});
 });

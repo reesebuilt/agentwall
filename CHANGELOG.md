@@ -7,6 +7,26 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+### Added
+- An OpenTimestamps proof parser, `src/audit/ots-proof.ts`, implementing the proof grammar of
+  `docs/audit-format.md`. It is bounded against hostile input with caps on argument size, total
+  size, fork depth, operation count, and working message length, because the file being verified is
+  attacker-influenced by definition. RIPEMD-160 and Keccak-256 operations are declined rather than
+  evaluated, matching the independent Go verifier.
+
+### Changed
+- The bundled verifier's `anchored` layer judges an anchor record by the evidence instead of by what
+  the record says about itself. It recomputes each record's digest from the checkpoint the record
+  embeds and reports `digest-mismatch` when they differ, requires non-empty proof bytes behind any
+  submission that reached a calendar and reports `proof-missing` when they are absent, and parses the
+  proof against the submitted digest, reporting `proof-parse-error` when the container does not
+  parse. An anchor claiming `confirmed` with no proof file behind it fails the layer. A submission
+  recorded with an `error` is exempt: it never reached a calendar, so it has no proof to point at and
+  is already counted as failed.
+- `agentwall anchor` parses a calendar response before keeping it, and treats one that does not parse
+  as a submission failure rather than writing it as a proof. A broken or hostile answer therefore
+  leaves a recorded gap instead of a file that a later verify reports as corrupt evidence.
+
 ## [0.2.0] - 2026-08-05
 
 The first tagged release. It freezes the on-disk evidence format and makes that format

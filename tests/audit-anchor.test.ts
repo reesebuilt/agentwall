@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "@jest/globals";
-import { appendFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
+import { appendFileSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import {
@@ -10,6 +10,7 @@ import {
 	type HttpPoster,
 } from "../src/audit/anchor";
 import { loadOrCreateKeys, signCheckpoint } from "../src/audit/signing";
+import { pendingProof } from "./ots-fixtures";
 
 /**
  * Off-box anchoring.
@@ -58,7 +59,7 @@ describe("anchoring", () => {
 		// the aggregated root. The returned bytes ARE the proof and must be written, or the
 		// anchor cannot later be verified or upgraded to a full attestation.
 		const dir = tmp();
-		const proofBytes = Buffer.from("f00891c256e9dade", "hex");
+		const proofBytes = pendingProof("https://alice.btc.calendar.opentimestamps.org");
 		const poster: HttpPoster = { async post() { return { status: 200, body: proofBytes }; } };
 		const cp = checkpoint();
 		const r = await anchorToOpenTimestamps(cp, poster, () => new Date(), dir);
@@ -76,6 +77,29 @@ describe("anchoring", () => {
 		// An empty body is not a timestamp; a 0-byte .ots file would masquerade as evidence.
 		const r = await anchorToOpenTimestamps(checkpoint(), ok(""), () => new Date(), tmp());
 		expect(r.error).toMatch(/empty proof body|all calendars failed/);
+		expect(r.proofPath).toBeUndefined();
+	});
+
+	it("refuses a 200 whose body is not a parseable proof, instead of filing it as evidence", async () => {
+		// A broken calendar, or an on-path answer, returns bytes that lead nowhere. Keeping
+		// them would put a file on disk that verify later reports as a corrupt proof, telling
+		// the operator their evidence was damaged when it was never a proof. A recorded
+		// failure is the honest outcome, and nothing is written for a forger to point at.
+		const dir = tmp();
+		const r = await anchorToOpenTimestamps(checkpoint(), ok("not a merkle path"), () => new Date(), dir);
+		expect(r.error).toMatch(/unparseable proof/);
+		expect(r.proofPath).toBeUndefined();
+		expect(readdirSync(dir)).toEqual([]);
+	});
+
+	it("refuses a proof that parses but reaches no attestation", async () => {
+		// Operations alone attest to nothing. Accepting them would count an anchor whose
+		// proof names no calendar and no block.
+		const noAttestation: HttpPoster = {
+			async post() { return { status: 200, body: Buffer.from("f0081122334455667788", "hex") }; },
+		};
+		const r = await anchorToOpenTimestamps(checkpoint(), noAttestation, () => new Date(), tmp());
+		expect(r.error).toMatch(/reaches no attestation|unparseable proof/);
 		expect(r.proofPath).toBeUndefined();
 	});
 
