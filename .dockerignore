@@ -1,0 +1,25 @@
+# Deny by default, then name the build inputs.
+#
+# An allowlist is the right shape for this repository specifically: the root holds
+# operator-local files that are gitignored but still sit on disk (agentwall.config.yaml,
+# agentwall-approvals.json, .env, *.bak rescue copies). A denylist ignores what someone
+# remembered to list; anything created later lands in the build context and then in an
+# image layer, where `docker history` hands it to whoever pulls the image. Deny-by-default
+# means a new file has to be named here before it can ship.
+*
+
+# Build stage inputs: dependency manifests, the compiler config, and the sources.
+!package.json
+!package-lock.json
+!tsconfig.json
+!src
+
+# Runtime stage inputs: the dashboard's static assets and the shipped example configs,
+# one of which the image runs as its default configuration.
+!public
+!examples
+
+# Never, even if a rule above widens: source maps and declarations are emitted into dist
+# by the build stage inside the image, so a stale host dist/ must not shadow them.
+dist
+node_modules
