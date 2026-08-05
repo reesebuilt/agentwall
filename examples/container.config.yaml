@@ -1,0 +1,63 @@
+# Agentwall configuration baked into the container image.
+#
+# It is examples/monitor-first.config.yaml with two container-shaped changes and nothing
+# else, because the shipped posture does not change just because the process is in a
+# container: monitor-first, default-deny policy engine, watchdog observing.
+#
+# Change 1, the bind address. A container has its own loopback interface, so a server
+# bound to 127.0.0.1 inside one is unreachable from `docker run -p`, including by the
+# operator who published the port. The isolation that 127.0.0.1 provides on a host is
+# provided here by the network namespace plus the ports the operator chooses to publish.
+# Read the limit plainly: under `--network=host` there is no network namespace, so this
+# bind covers every interface on the host. Non-health routes still answer 401 until
+# AGENTWALL_OPERATOR_TOKEN is set, but an operator running with host networking should
+# pass a config that binds a specific address.
+#
+# Change 2, port 3000 rather than 3015, matching the port the image EXPOSEs, the
+# healthcheck, and the /health example in docs/install.md.
+#
+# Override the whole file with `-e AGENTWALL_CONFIG=/etc/agentwall/config.yaml` plus a
+# read-only mount.
+
+port: 3000
+host: "0.0.0.0"
+logLevel: "info"
+
+approval:
+  mode: "auto"
+  timeoutMs: 30000
+  backend: "file"
+  persistencePath: "./state/agentwall-approvals.json"
+
+policy:
+  # Default deny in the engine so decisions reflect the target end state, while the
+  # caller enforces only the categories it is ready to enforce.
+  defaultDecision: "deny"
+  configPath: "./examples/monitor-first.policy.yaml"
+
+dlp:
+  enabled: true
+  redactSecrets: true
+
+egress:
+  enabled: true
+  defaultDeny: true
+  allowPrivateRanges: false
+  allowedHosts:
+    - "api.openai.com"
+    - "api.anthropic.com"
+    - "generativelanguage.googleapis.com"
+  allowedSchemes:
+    - "https"
+  allowedPorts:
+    - 443
+
+manifestIntegrity:
+  enabled: true
+  approvedHashesPath: "./state/approved-manifests.json"
+
+watchdog:
+  enabled: true
+  staleAfterMs: 30000
+  timeoutMs: 120000
+  killSwitchMode: "monitor"
