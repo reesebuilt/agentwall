@@ -311,6 +311,36 @@ Records that share a `chainIndex` inside one file are a distinct diagnosis from 
 altered record. Many records but few distinct indexes is the signature of two processes each
 keeping their own chain state and appending to one file, not of an edit.
 
+### The gap declaration record
+
+A writer that produces a record and cannot store it has a choice about what to leave behind.
+Writing the next record anyway puts an index jump and a broken link into the file, which is
+byte for byte the shape of a record someone deleted; an operator reading that report is sent
+hunting a tamperer through a log nobody touched. So a conforming writer MUST NOT advance the
+chain past a record it did not store. The next record it does store takes the index and the
+`previousHash` the lost one would have taken, and the file stays contiguous.
+
+Contiguity alone makes the loss invisible, so a writer SHOULD then record what happened. A gap
+declaration is an ordinary record in every respect: it occupies its own index, it links, and
+its hash is computed exactly as any other. It is recognisable by two members:
+
+| Member | Value |
+| --- | --- |
+| `action` | `"audit:chain-gap"` |
+| `metadata.droppedRecords` | Decimal count of records that were produced and not stored, as a string |
+
+A verifier MAY report such a record, and the bundled implementations do, as a non-fatal
+finding named `chain-gap-declared`. Two rules bound what it means:
+
+- A verifier MUST NOT let a declaration excuse anything. An index gap, a link break, and a
+  hash mismatch are judged the same whether or not a declaration is present. The record is the
+  writer's account of a hole, not a licence to have one, and treating it as a licence would
+  hand an attacker a member to add to a rewritten file.
+- A verifier MUST NOT treat the absence of a declaration as proof that nothing was lost. The
+  declaration can only be written once storage accepts writes again, so a process that dies
+  during the outage never writes one. This is the completeness limit the format already has,
+  not a new one.
+
 ### Worked example: two records chained
 
 The record from the worked example above is followed on the next line by:
@@ -747,6 +777,12 @@ reports otherwise is wrong.
 - **Completeness of capture.** Every hash and every signature is computed over records that
   exist. Nothing here can show that an action which was never written down did not happen. An
   anchor proves records were not altered afterwards; it does not prove the log is complete.
+- **That a gap was declared.** A writer keeps the chain contiguous across records it could not
+  store, so a storage outage leaves no linkage failure to find. The
+  [gap declaration record](#the-gap-declaration-record) is the only in-band trace, and it can
+  be written only once storage recovers. A file that ends where the disk filled, or a process
+  that died before recovery, carries no trace at all. This is the completeness limit above,
+  stated for the case an operator is most likely to meet.
 - **Authorship, without a pinned key.** A checkpoint signature verified against the key the
   checkpoint itself carries proves only internal consistency. Anyone who can write the file
   can generate a key, sign their version, and produce a set of records that verifies
@@ -790,6 +826,8 @@ A verifier written from this document is conforming when all of the following ho
 - It reports `chained`, `linked`, and `anchored` separately, and reports counts of pending,
   confirmed, and failed anchors.
 - It distinguishes a torn final line from other parse failures.
+- It judges an index gap, a link break, and a hash mismatch identically whether or not the
+  file contains a gap declaration record.
 - It resolves a relative manifest `path` against the manifest's directory, never against its
   own working directory.
 - It checks every manifest entry against the segment it names, reports both a missing segment

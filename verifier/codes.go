@@ -41,4 +41,11 @@ const (
 	// signing is expected and is not a mismatch: the committed prefix is searched for within the
 	// current file.
 	codeLiveTailMismatch = "live-tail-mismatch"
+	// codeChainGapDeclared reports a record in which the writer states that records it
+	// produced could not be stored. It is not fatal: the chain is contiguous across such a
+	// loss by construction, so there is no linkage failure to report, and the only thing the
+	// evidence can offer is the writer's own account of the hole. It is surfaced because a
+	// silent hole is indistinguishable from nothing having happened. It never excuses an
+	// index gap or a link break; those are judged before this and stay fatal.
+	codeChainGapDeclared = "chain-gap-declared"
 )

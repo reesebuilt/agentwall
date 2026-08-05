@@ -52,7 +52,9 @@ export async function buildServer(config: AgentwallConfig): Promise<AgentwallSer
   if (auditPath) {
     const resumed = resumeChainState(auditPath);
     seedAuditChain(resumed.state);
-    registerAuditSink(createFileSink(auditPath));
+    // Durable: this file is what `verify` walks, so a record it refuses is a record that
+    // does not exist and the chain must not link across it.
+    registerAuditSink(createFileSink(auditPath), { durable: true });
     if (resumed.discontinuity) {
       app.log.warn({ auditPath, reason: resumed.discontinuity },
         "audit chain discontinuity: starting a NEW chain");

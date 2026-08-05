@@ -4,7 +4,6 @@ import { AgentContextSchema, PolicyEvaluationResponse } from "../types";
 import { emit } from "../audit/logger";
 import { RuntimeState } from "../dashboard/state";
 import { detectionCatalog } from "../policy/detections";
-import { issueCapabilityTicket } from "../runtime/capabilities";
 import { RuntimeFloodGuard } from "../runtime/floodguard";
 import { DecisionTraceExporter } from "../telemetry/otel";
 
@@ -94,7 +93,6 @@ export async function policyRoutes(
 
     const result = engine.evaluate(ctx);
     const auditEvent = emit(ctx, result);
-    const capabilityTicket = issueCapabilityTicket(ctx, result);
     runtime.recordAuditEvent(auditEvent);
 
     const response: PolicyEvaluationResponse = {
@@ -106,7 +104,6 @@ export async function policyRoutes(
       highRiskFlow: result.highRiskFlow,
       detections: result.detections,
       auditEventId: auditEvent.id,
-      capabilityTicket,
     };
 
     await telemetry.export({

@@ -5,14 +5,16 @@ import {
   writeFileSync,
   existsSync,
   fstatSync,
+  ftruncateSync,
   mkdirSync,
   openSync,
   readFileSync,
   readSync,
+  statSync,
 } from "fs";
 import { dirname } from "path";
 import { AuditEvent } from "../types";
-import { AuditChainState, findDuplicateKey } from "./chain";
+import { AUDIT_CHAIN_GAP_ACTION, AuditChainState, findDuplicateKey } from "./chain";
 
 /**
  * Durable JSONL sink for the audit chain.
@@ -173,16 +175,86 @@ export function claimWriter(
   });
 }
 
-/** One audit record per line, nothing else in the file. */
-export function createFileSink(path: string): (event: AuditEvent) => void {
+/**
+ * Undo an append that ran out of space part way through.
+ *
+ * A write that fails with ENOSPC can still have moved bytes: the kernel copies what fits and
+ * reports the shortfall, leaving a headless fragment with no terminator. The next append
+ * lands on that same line and fuses the two into one unparseable record, so a full disk
+ * destroys a record that WAS written on top of the one that was not.
+ *
+ * Only ever removes bytes this sink just wrote. `mark` is the length after the last append
+ * that completed and claimWriter guarantees no other process appends between the two, so the
+ * bytes past it are ours. Anything that does not match that picture is left alone, because a
+ * truncate aimed at the wrong offset deletes records instead of a fragment.
+ */
+function discardPartialAppend(path: string, mark: number): boolean {
+  let fd: number | undefined;
+  try {
+    fd = openSync(path, "r+");
+    if (fstatSync(fd).size <= mark) return false; // nothing of ours landed
+    if (mark > 0) {
+      const boundary = Buffer.alloc(1);
+      readSync(fd, boundary, 0, 1, mark - 1);
+      if (boundary[0] !== 0x0a) return false; // the mark is not a record boundary
+    }
+    ftruncateSync(fd, mark);
+    return true;
+  } catch {
+    return false;
+  } finally {
+    if (fd !== undefined) {
+      try {
+        closeSync(fd);
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+}
+
+/**
+ * One audit record per line, nothing else in the file.
+ *
+ * Throws when the record did not reach the file. The caller decides what a refusal means for
+ * the chain; swallowing it here is what let the chain advance past records that were never
+ * stored.
+ *
+ * `append` is injectable for the same reason the lock probe is: the failure that matters here
+ * is a short write on a full filesystem, which a test process cannot stage on demand, and it
+ * is the case that decides whether a record that WAS written survives the one that was not.
+ */
+export function createFileSink(
+  path: string,
+  append: (target: string, data: string) => void = appendFileSync,
+): (event: AuditEvent) => void {
   mkdirSync(dirname(path), { recursive: true });
   claimWriter(path);
+  // Length as of the last append that completed. Tracked rather than measured per record
+  // because the repair needs it BEFORE the write, and a stat on every record would put a
+  // syscall on the proxy's per-request path to serve an error case that almost never runs.
+  let committed = existsSync(path) ? statSync(path).size : 0;
   return (event: AuditEvent) => {
-    // Flag "a" opens O_APPEND, so the kernel makes the seek-to-end and the write a
-    // single atomic operation against the file offset. That is the guarantee that keeps
-    // records from interleaving, not PIPE_BUF, which governs pipes and is only 4096 on
-    // Linux, well under a typical record carrying full detections.
-    appendFileSync(path, JSON.stringify(event) + "\n", { encoding: "utf8" });
+    // Handed over as a string, not a Buffer this function built. appendFileSync converts
+    // internally either way, and doing it here measures about 5 microseconds per record
+    // slower, which the proxy pays on every request.
+    const line = JSON.stringify(event) + "\n";
+    try {
+      // Flag "a" opens O_APPEND, so the kernel makes the seek-to-end and the write a
+      // single atomic operation against the file offset. That is the guarantee that keeps
+      // records from interleaving, not PIPE_BUF, which governs pipes and is only 4096 on
+      // Linux, well under a typical record carrying full detections.
+      append(path, line);
+    } catch (err) {
+      const discarded = discardPartialAppend(path, committed);
+      throw new Error(
+        `audit append to ${path} failed: ${(err as Error).message}` +
+          (discarded ? "; the partial write was rolled back" : ""),
+      );
+    }
+    // Bytes, not characters: a record carrying non-ASCII metadata occupies more of the file
+    // than its length, and a mark short of the real end would leave a fragment behind.
+    committed += Buffer.byteLength(line, "utf8");
   };
 }
 
@@ -384,6 +456,16 @@ export function verifyChainFile(
     }
     if (rehash(ev) !== integ.hash) {
       problems.push(`line ${i + 1}: hash mismatch, record altered after write`);
+    }
+    if (ev.action === AUDIT_CHAIN_GAP_ACTION) {
+      // The writer's own statement, inside the chain, that records it produced could not be
+      // stored. Surfaced because the chain is contiguous across such a loss and would
+      // otherwise pass in silence. It is NOT a licence: the index and link checks above ran
+      // first and still stand, so a marker cannot be used to excuse a removed record.
+      notes.push(
+        `line ${i + 1}: chain-gap-declared, the writer recorded that ` +
+          `${ev.metadata?.droppedRecords ?? "an unstated number of"} record(s) could not be written here`,
+      );
     }
     expectedIndex = integ.chainIndex + 1;
     expectedPrev = integ.hash;

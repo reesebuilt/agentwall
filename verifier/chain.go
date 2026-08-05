@@ -22,6 +22,11 @@ import (
 // problem per record; without a cap a hostile file could make the report itself a memory sink.
 const problemCap = 200
 
+// chainGapAction is the action a writer puts on the record that declares it could not store
+// records it produced. The value is part of the evidence format, not of this program, so it
+// matches the writer's constant exactly; the two are held together by the format spec.
+const chainGapAction = "audit:chain-gap"
+
 type chainResult struct {
 	records  int
 	problems []problem
@@ -113,6 +118,16 @@ func verifyChainFile(path string) chainResult {
 				// words because an independent verifier cannot tell the two apart.
 				problems = append(problems, problem{code: codeHashMismatchOrLegacy, text: fmt.Sprintf("%s line %d: cu1 hash does not match; record is either altered or hashed under the legacy locale canon this verifier does not implement", base, lineNo), fatal: true})
 			}
+		}
+
+		if action, ok := v.field("action"); ok && action.kind == kindString && action.str == chainGapAction {
+			dropped := "an unstated number of"
+			if meta, ok := v.field("metadata"); ok && meta.kind == kindObject {
+				if n, ok := meta.field("droppedRecords"); ok && n.kind == kindString {
+					dropped = n.str
+				}
+			}
+			problems = append(problems, problem{code: codeChainGapDeclared, text: fmt.Sprintf("%s line %d: the writer recorded that %s record(s) could not be written here", base, lineNo, dropped), fatal: false})
 		}
 
 		have = true
