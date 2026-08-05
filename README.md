@@ -1,16 +1,20 @@
-<p align="center"><img src=".github/assets/logo.jpg" width="120" alt="Agentwall"></p>
+<p align="center"><img src=".github/assets/logo.jpg" width="140" alt="Agentwall"></p>
 
 <h1 align="center">Agentwall</h1>
 
-<p align="center">A runtime firewall for AI agents. It observes what agents actually do on the host, decides whether each action is allowed, and keeps a record that cannot be quietly rewritten.</p>
+<p align="center"><strong>A runtime firewall for AI agents.</strong></p>
 
 <p align="center">
+It observes what agents actually do on the host, attributes each action to the process that took it,<br/>
+and keeps a record that cannot be quietly rewritten.
+</p>
+
+<p align="center">
+  <a href="https://github.com/reesebuilt/agentwall/actions/workflows/ci.yml"><img src="https://github.com/reesebuilt/agentwall/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-22d3ee?style=flat-square&labelColor=0b0f14" alt="License: Apache-2.0"></a>
   <img src="https://img.shields.io/badge/TypeScript-5.x-22d3ee?style=flat-square&labelColor=0b0f14&logo=typescript&logoColor=22d3ee" alt="TypeScript">
   <img src="https://img.shields.io/badge/Node-%E2%89%A520-22d3ee?style=flat-square&labelColor=0b0f14&logo=node.js&logoColor=22d3ee" alt="Node >= 20">
-  <img src="https://img.shields.io/badge/Fastify-5.x-22d3ee?style=flat-square&labelColor=0b0f14&logo=fastify&logoColor=22d3ee" alt="Fastify 5">
   <img src="https://img.shields.io/badge/platform-Linux-22d3ee?style=flat-square&labelColor=0b0f14&logo=linux&logoColor=22d3ee" alt="Platform: Linux">
-  <a href="CONTRIBUTING.md"><img src="https://img.shields.io/badge/PRs-welcome-22d3ee?style=flat-square&labelColor=0b0f14" alt="PRs welcome"></a>
 </p>
 
 ---
@@ -25,12 +29,14 @@ holds a dozen API keys, a small team sharing a build box, anyone operating a fle
 autonomous jobs. It runs locally, needs no account, has no paid tier, and the operator console
 is part of the tool.
 
+<p align="center"><img src="docs/assets/agentwall-console-hero.png" width="900" alt="The Agentwall operator console: live decisions, per-agent evidence, and the audit chain"></p>
+
 ## Read this before the feature list
 
 Two properties matter more than anything below, and both are limits.
 
 **It ships observing, not blocking.** Egress through the proxy is recorded and allowed. The
-shipped entrypoint hard-codes the allow decision ([`src/index.ts:30`](src/index.ts)), so
+shipped entrypoint hard-codes the allow decision ([`src/index.ts:29`](src/index.ts)), so
 monitor mode is not a default you might drift off, it is the only behaviour the proxy has
 today. Blocking is a posture you move to deliberately, once your own ledger shows what your
 agents legitimately reach. A firewall that starts by breaking your tooling gets switched off,
@@ -164,7 +170,7 @@ FAIL  chained   7 records across 1 segment(s)
 
 `verify` reports more than a single edited line. Records sharing a chain index are reported as
 index reuse — the signature of concurrent writers each keeping their own chain state rather
-than of one altered record ([`src/audit/anchor-service.ts:157-167`](src/audit/anchor-service.ts)).
+than of one altered record ([`src/audit/anchor-service.ts:157-175`](src/audit/anchor-service.ts)).
 That failure mode is what the single-writer lock below exists to prevent.
 
 ```bash
@@ -210,7 +216,7 @@ rather than a constant. Resolving a socket for a process not seen recently walks
 `/proc`; a recently-seen process is checked directly from a 16-entry cache. Measured on a
 430-process host: 19.7 ms cold, 0.48 ms warm (medians). On a busier machine the same walk
 measured roughly 44 ms cold and 1.6 ms warm, recorded at
-[`src/proxy/forward-proxy.ts:69-71`](src/proxy/forward-proxy.ts). For HTTPS the walk happens
+[`src/proxy/forward-proxy.ts:60-71`](src/proxy/forward-proxy.ts). For HTTPS the walk happens
 after the tunnel is established, off the connection's critical path. Attribution failure
 degrades to `pid: null` and never blocks egress.
 
@@ -224,7 +230,7 @@ The policy engine ([`src/policy/engine.ts`](src/policy/engine.ts)) scores an act
 planes (`network`, `tool`, `content`, `browser`, `identity`, `governance`) and returns one of
 `allow`, `redact`, `approve`, `deny`. Every matching rule contributes; the most restrictive
 wins, ordered `deny` > `approve` > `redact` > `allow`
-([`src/policy/engine.ts:12-17`](src/policy/engine.ts)). Results carry matched rule IDs, plain
+([`src/policy/engine.ts:12-16`](src/policy/engine.ts)). Results carry matched rule IDs, plain
 reasons, a risk level, and detections mapped to MITRE ATT&CK technique IDs, so an operator and
 an audit record agree on why something happened.
 
@@ -263,7 +269,7 @@ Three properties make the file survive real operation rather than only a demo:
 - **Single-writer lock.** An `O_EXCL` lock file holds the writer's pid. A second writer starts
   only if the first is provably unable to append, and "I could not tell" is not proof: an
   unverifiable live owner refuses the takeover with an explanation
-  ([`src/audit/file-sink.ts:125-157`](src/audit/file-sink.ts)). Two processes appending would
+  ([`src/audit/file-sink.ts:121-174`](src/audit/file-sink.ts)). Two processes appending would
   interleave two chains into one file and destroy the property the log exists for.
 - **Torn-tail recovery.** A crash mid-append leaves a partial record. On restart Agentwall
   resumes from the last intact one and reports what it dropped
@@ -304,7 +310,7 @@ Stated plainly, because a security tool that oversells itself is worse than no t
 
 | Limit | What it means |
 | --- | --- |
-| Monitor-first, no blocking | The proxy records and allows. `decide` is hard-coded to `allow` at [`src/index.ts:30`](src/index.ts). Enforcement is a posture you build toward, not something you get by installing this. |
+| Monitor-first, no blocking | The proxy records and allows. `decide` is hard-coded to `allow` at [`src/index.ts:29`](src/index.ts). Enforcement is a posture you build toward, not something you get by installing this. |
 | Cooperative capture | Proxy environment variables are honoured voluntarily. A process that ignores them egresses unobserved. No iptables or nftables redirection is installed. |
 | Anchoring is pending, not instant | An OpenTimestamps anchor stays `pending` until a Bitcoin block confirms, roughly one to six hours. `verify` reports pending as pending. Pending is not proof. |
 | Anchoring proves no alteration, not completeness | An anchor shows that what was written was not altered afterwards. It cannot show that everything which should have been written was. Silent omission at write time is a different, unsolved problem. |
@@ -312,8 +318,8 @@ Stated plainly, because a security tool that oversells itself is worse than no t
 | No TLS interception | CONNECT traffic is visible at hostname and port level only. Request paths, headers, and bodies stay opaque. This is deliberate: MITM would need a CA in every runtime trust store, which breaks the framework-agnostic property the proxy exists for. |
 | Attribution is Linux-only | It reads `/proc/net/tcp` and `/proc/<pid>/fd`. There is no macOS or Windows equivalent here. The rest of the server is portable; process attribution is not. |
 | Channel containment is Telegram only | Slack and Discord appear in the platform schema ([`src/integrations/communication-channel/control.ts:5`](src/integrations/communication-channel/control.ts)) with no route implementation behind them. |
-| The watchdog does not auto-deny | It evaluates heartbeat age and exposes a kill-switch flag, and a rule denies on the `watchdog_timeout` flow label ([`src/policy/rules.ts:389`](src/policy/rules.ts)), but nothing wires staleness to that label automatically. Treat it as a signal you act on, not an automatic containment. |
-| Telemetry is off by default | The OTLP/HTTP JSON decision-trace exporter is hand-rolled over Node `http`/`https` with no OpenTelemetry SDK dependency, and is disabled unless configured ([`src/config.ts:137`](src/config.ts)). |
+| The watchdog does not auto-deny | It evaluates heartbeat age and exposes a kill-switch flag, and a rule denies on the `watchdog_timeout` flow label ([`src/policy/rules.ts:394`](src/policy/rules.ts)), but nothing wires staleness to that label automatically. Treat it as a signal you act on, not an automatic containment. |
+| Telemetry is off by default | The OTLP/HTTP JSON decision-trace exporter is hand-rolled over Node `http`/`https` with no OpenTelemetry SDK dependency, and is disabled unless configured ([`src/config.ts:136`](src/config.ts)). |
 | Bearer tokens, not identity | A shared token, not OIDC or mTLS. There is no identity-provider integration. |
 | Single host | Multiple instances can be polled into one summary view. There is no clustered or highly-available control plane. |
 
@@ -340,7 +346,7 @@ GET  /health              GET /ready                    # liveness; /ready needs
 
 Config resolution order: `--config <path>`, `$AGENTWALL_CONFIG`, `./agentwall.config.yaml`,
 `./agentwall.config.yml`, `./examples/config.yaml`
-([`src/config.ts:179-185`](src/config.ts)). Paths inside the config are relative to the working
+([`src/config.ts:179-187`](src/config.ts)). Paths inside the config are relative to the working
 directory, so run Agentwall from the directory you ran `init` in.
 
 | Variable | Effect |
@@ -399,7 +405,7 @@ flowchart TD
 ```
 
 Egress observed by the proxy enters the same hash chain, attributed to the originating process
-([`src/index.ts:39-72`](src/index.ts)).
+([`src/index.ts:27-83`](src/index.ts)).
 
 ## Built with
 
