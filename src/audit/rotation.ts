@@ -203,10 +203,11 @@ export interface ManifestVerification {
  * span are checked alongside it so a truncation or an extension is named directly rather
  * than surfacing only as a hash difference.
  *
- * A segment the manifest names but that is absent from disk is NOT reported here. It is
- * already reported as missing by the per-record layer, and the two diagnoses are
- * different: absent evidence is not the same finding as evidence that contradicts its
- * seal, and an operator needs to be able to tell them apart.
+ * A segment the manifest names but that is absent from disk is reported here too, as a
+ * distinct finding. Absent evidence is not the same as evidence that contradicts its seal,
+ * and an operator needs to tell the two apart, but both are this layer's business: each is
+ * the manifest failing to account for a file it vouches for. Leaving absence to the
+ * per-record layer would let this one pass while a sealed segment is simply gone.
  *
  * Reports ALL problems rather than stopping at the first, because an operator
  * investigating tampering needs the shape of the damage, not just its earliest point.
@@ -226,7 +227,7 @@ export function verifyManifest(manifestPath: string): ManifestVerification {
 		if (e.previousSegmentHash !== expectedPrev) {
 
 			problems.push(
-				`segment ${i} (${e.path}): expected previousSegmentHash ${expectedPrev ?? "null"}, found ${e.previousSegmentHash ?? "null"} — a segment may have been removed or reordered`,
+				`segment ${i} (${e.path}): expected previousSegmentHash ${expectedPrev ?? "null"}, found ${e.previousSegmentHash ?? "null"}; a segment may have been removed or reordered`,
 			);
 		}
 
@@ -253,10 +254,18 @@ export function verifyManifest(manifestPath: string): ManifestVerification {
 			}
 			if (differences.length > 0) {
 				problems.push(
-					`segment ${i} (${e.path}): segment-content-mismatch, the file no longer matches its seal — ` +
+					`segment ${i} (${e.path}): segment-content-mismatch, the file no longer matches its seal: ` +
 						differences.join("; "),
 				);
 			}
+		} else {
+			// The degenerate case of the check above: bytes that are not there cannot be
+			// compared. It belongs beside its sibling rather than on the per-record layer,
+			// because both are the manifest failing to account for a segment it names, and
+			// an operator reading `linked` needs to see every such failure in one place.
+			problems.push(
+				`segment ${i} (${e.path}): segment-missing, the manifest names it and it is not on disk at ${resolved}`,
+			);
 		}
 
 		expectedPrev = e.finalHash;

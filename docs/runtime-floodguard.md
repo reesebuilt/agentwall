@@ -4,11 +4,11 @@
 
 **Runtime FloodGuard** is an inline protection layer for Agentwall control-plane APIs (`/evaluate`, `/approval/request`, `/approval/:id/respond`) that defends agent systems from:
 
-1. **Request floods** — high-rate policy checks that starve runtime
-2. **Tool abuse floods** — repeated high-risk tool actions (e.g. shell loops)
-3. **Approval floods** — mass approval requests intended to overwhelm operators
-4. **Queue floods** — unbounded pending-approval backlog growth
-5. **Cost floods** — sustained behavior that drives hidden runtime/cognitive spend
+1. **Request floods**: high-rate policy checks that starve runtime
+2. **Tool abuse floods**: repeated high-risk tool actions (e.g. shell loops)
+3. **Approval floods**: mass approval requests intended to overwhelm operators
+4. **Queue floods**: unbounded pending-approval backlog growth
+5. **Cost floods**: sustained behavior that drives hidden runtime/cognitive spend
 
 FloodGuard is not a replacement for policy. It is a **rate + queue + budget safety envelope** around policy and approvals.
 

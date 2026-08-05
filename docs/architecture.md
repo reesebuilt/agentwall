@@ -11,12 +11,12 @@ Execution flow:
 5. Optional approval loop gates execution
 
 ## Core modules
-- `src/policy/*` — rule model, matching engine, runtime policy loader, detection catalog
-- `src/planes/network/*` — SSRF/private-range/egress inspection
-- `src/planes/identity/*` — content and DLP classification
-- `src/approval/*` — approval queue, persistence, response handling
-- `src/audit/*` — structured event emission
-- `src/dashboard/*` + `src/routes/*` — operator state APIs
+- `src/policy/*`: rule model, matching engine, runtime policy loader, detection catalog
+- `src/planes/network/*`: SSRF/private-range/egress inspection
+- `src/planes/identity/*`: content and DLP classification
+- `src/approval/*`: approval queue, persistence, response handling
+- `src/audit/*`: structured event emission
+- `src/dashboard/*` + `src/routes/*`: operator state APIs
 
 ## Canonical data model
 ### AgentContext (input)

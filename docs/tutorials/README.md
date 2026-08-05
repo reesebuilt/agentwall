@@ -14,12 +14,12 @@ Each quick tutorial should have:
 
 ## Tutorials
 
-1. `01-telegram-answer-only.md` — set a Telegram topic to Answer only and prove containment.
-2. `02-run-demo-verification.md` — run demo verification and read the expected deny path.
-3. `03-advanced-user-mode.md` — switch from Operator View to Advanced User without getting lost.
-4. `04-approval-queue.md` — review, approve, or deny a pending action.
-5. `05-knowledge-base.md` — search the Agentwall KB and open the right reference.
-6. `06-first-real-telegram-topic.md` — bring up the first live Telegram topic with the bringup helper script and prove containment.
+1. `01-telegram-answer-only.md`: set a Telegram topic to Answer only and prove containment.
+2. `02-run-demo-verification.md`: run demo verification and read the expected deny path.
+3. `03-advanced-user-mode.md`: switch from Operator View to Advanced User without getting lost.
+4. `04-approval-queue.md`: review, approve, or deny a pending action.
+5. `05-knowledge-base.md`: search the Agentwall KB and open the right reference.
+6. `06-first-real-telegram-topic.md`: bring up the first live Telegram topic with the bringup helper script and prove containment.
 
 ## Writing a tutorial
 

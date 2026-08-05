@@ -14,7 +14,7 @@ import { AuditEvent } from "../src/types";
 /**
  * The audit chain is only a proof if exactly one process ever appends to the file. These
  * tests pin the reclaim decision in claimWriter(), because getting it wrong does not throw
- * or corrupt anything visibly — it silently produces a file with two interleaved hash
+ * or corrupt anything visibly; it silently produces a file with two interleaved hash
  * chains, which no later verification can untangle.
  */
 
@@ -144,7 +144,7 @@ describe("audit writer lock claim", () => {
     expect(() => claimWriter(auditPath, blindProbe)).toThrow(/Refusing to reclaim/);
 
     // The regression this guards: the old code swallowed the /proc failure into an empty
-    // cmdline, concluded "not an agentwall", and rewrote the lock with its own pid — so a
+    // cmdline, concluded "not an agentwall", and rewrote the lock with its own pid, so a
     // still-appending writer lost the lock and two hash chains merged into one file.
     expect(fs.readFileSync(lockPath, "utf8")).toBe(String(HELD_BY));
   });
