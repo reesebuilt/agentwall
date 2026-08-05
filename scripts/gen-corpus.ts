@@ -40,8 +40,8 @@
  *   b1  one decision flipped from deny to allow, hash left alone.
  *       Trusts the hash field the record carries instead of recomputing it.
  *   b2  a record removed, then the whole tail relinked and rehashed, indexes untouched.
- *       Checks previousHash links only. Every link here is perfect; the index sequence is
- *       the only survivor of the edit.
+ *       Checks previousHash links only. Every link here is perfect; the index sequence and
+ *       the prefix the checkpoint committed to are what survive the edit.
  *   b3  a record removed and nothing else touched.
  *       Stops at the first problem, so it reports one broken link and never reports that the
  *       index sequence lost a step.
@@ -52,7 +52,8 @@
  *       Verifies segment-to-segment linkage and never recomputes an entry's own hash.
  *   b6  the middle manifest entry removed.
  *       Accepts a manifest that is internally consistent after the removal, because the
- *       surviving entries do link, just not to the segment that vanished.
+ *       surviving entries do link, just not to the segment that vanished, and never asks the
+ *       checkpoint how many segments it was signed over.
  *   b7  one bit flipped in the checkpoint signature.
  *       Reads the checkpoint's fields and never verifies the signature over them.
  *   b8  the checkpoint re-signed by a different key, self-consistently.
@@ -69,25 +70,27 @@
  *   b12 a duplicate key smuggled in ahead of the real one.
  *       Parses with last-key-wins, sees the original value, recomputes the original hash and
  *       passes the record, while a first-key-wins reader downstream sees allow where the
- *       audit trail says deny.
+ *       audit trail says deny. A record two implementations read differently is malformed,
+ *       so it also cannot count toward what the checkpoint committed to.
  *   b13 an anchor claiming confirmed with its proof file deleted.
  *       Counts the status field. Confirmed is a claim; the proof bytes are the evidence.
  *   b14 a submission that never reached a calendar, recorded with status pending.
  *       Counts it as pending and reports the chain as anchored off-box when nothing ever
  *       left the machine.
  *
+ *   b15 a sealed segment rewritten end to end and internally relinked, manifest untouched.
+ *       Checks the manifest against itself and never against the bytes it names, so the
+ *       anchor ends up binding a manifest that binds only itself.
+ *   b16 the live file's last record rewritten and rehashed after the checkpoint was signed.
+ *       Checks the signature and stops, so it never asks whether the composite still
+ *       describes anything on disk.
+ *
  * LIMIT CASES. These pass. They are in the corpus because the format binds less than a
  * reader assumes, and a limit pinned by a case is a limit that cannot be quietly forgotten.
  *
- *   l1  a sealed segment rewritten and internally relinked, manifest untouched.
- *       Nothing compares a manifest entry's finalHash with the last record of the file it
- *       names, so the anchor binds the manifest and the manifest binds only itself.
- *   l2  an anchor claiming confirmed whose proof carries only a pending attestation.
+ *   l1  an anchor claiming confirmed whose proof carries only a pending attestation.
  *       Nothing compares the status claim against the attestations in the proof.
- *   l3  the live file's last record rewritten after the checkpoint was signed.
- *       The checkpoint commits to a live tail hash and count, and no verifier re-derives
- *       them, because the live file legitimately grows after signing.
- *   l4  records hashed under the pre-marker locale-collated form, with no canon marker.
+ *   l2  records hashed under the pre-marker locale-collated form, with no canon marker.
  *       Treats every hash it cannot reproduce as tampering. A record written before the
  *       canonical form was named is unverifiable here, which is a different statement.
  */
@@ -545,7 +548,13 @@ async function main(): Promise<void> {
 		// Indexes are kept, so the tail links and hashes perfectly and the gap in the index
 		// sequence is the only evidence left that a record was taken out.
 		writeLines(LIVE, [...head, ...relink(lines.slice(4), { chainIndex: 0, previousHash }, true)]);
-		return { exit: 1, layers: { chained: false, linked: true, anchored: true }, go_codes_include: ["index-gap"] };
+		// The live file is a record shorter than the prefix the checkpoint committed to, and no
+		// other eligible file carries that prefix, so the anchored layer loses its footing too.
+		return {
+			exit: 1,
+			layers: { chained: false, linked: true, anchored: false },
+			go_codes_include: ["index-gap"],
+		};
 	});
 
 	await buildCase("b3-record-removed", async (at) => {
@@ -554,7 +563,7 @@ async function main(): Promise<void> {
 		writeLines(LIVE, [...lines.slice(0, 3), ...lines.slice(4)]);
 		return {
 			exit: 1,
-			layers: { chained: false, linked: true, anchored: true },
+			layers: { chained: false, linked: true, anchored: false },
 			go_codes_include: ["index-gap", "link-break"],
 		};
 	});
@@ -593,9 +602,13 @@ async function main(): Promise<void> {
 		await baseline(at);
 		const entries = readLines(MANIFEST);
 		writeLines(MANIFEST, [entries[0], entries[2]]);
+		// The checkpoint was signed over three sealed segments, so a manifest now holding two
+		// cannot supply the head it committed to. Dropping the newest entries breaks no
+		// previousSegmentHash link, because what remains still chains, and the checkpoint is the
+		// only thing that notices.
 		return {
 			exit: 1,
-			layers: { chained: true, linked: false, anchored: true },
+			layers: { chained: true, linked: false, anchored: false },
 			go_codes_include: ["manifest-link-break"],
 		};
 	});
@@ -709,7 +722,14 @@ async function main(): Promise<void> {
 		// first-key-wins semantics.
 		lines[target] = `{"decision":"allow",${lines[target].slice(1)}`;
 		writeLines(LIVE, lines);
-		return { exit: 1, layers: { chained: false, linked: true, anchored: true }, go_codes_include: ["dup-key"] };
+		// A record two implementations can read differently is not evidence, so the format calls
+		// it malformed. It therefore cannot count toward the prefix the checkpoint committed to
+		// either, and the anchored layer loses the record it needs to reproduce that prefix.
+		return {
+			exit: 1,
+			layers: { chained: false, linked: true, anchored: false },
+			go_codes_include: ["dup-key"],
+		};
 	});
 
 	await buildCase("b13-confirmed-without-proof", async (at) => {
@@ -739,27 +759,28 @@ async function main(): Promise<void> {
 		};
 	});
 
-	await buildCase("l1-sealed-segment-rewritten", async (at) => {
+	await buildCase("b15-sealed-segment-rewritten", async (at) => {
 		await baseline(at);
 		const segment = SEGMENTS[1];
 		const lines = readLines(segment);
 		const first = JSON.parse(lines[0]) as AuditEvent;
 		const target = mustFind(lines, '"decision":"deny"');
 		lines[target] = mustReplace(lines[target], '"decision":"deny"', '"decision":"allow"');
+		// Rewritten end to end and relinked, so the segment's own chain verifies and every
+		// manifest rule that looks only at the manifest still passes. What catches it is the
+		// entry's finalHash, which folds in every record in the file it names.
 		writeLines(
 			segment,
 			relink(lines, { chainIndex: first.integrity.chainIndex, previousHash: first.integrity.previousHash }, false),
 		);
-		return ANCHORED_OK;
+		return {
+			exit: 1,
+			layers: { chained: true, linked: false, anchored: true },
+			go_codes_include: ["segment-content-mismatch"],
+		};
 	});
 
-	await buildCase("l2-confirmed-with-pending-proof", async (at) => {
-		await baseline(at);
-		writeAnchorRecords(anchorRecords().map((r) => ({ ...r, status: "confirmed" })));
-		return ANCHORED_OK;
-	});
-
-	await buildCase("l3-live-tail-rewritten-after-checkpoint", async (at) => {
+	await buildCase("b16-live-tail-rewritten-after-checkpoint", async (at) => {
 		await baseline(at);
 		const lines = readLines(LIVE);
 		const last = JSON.parse(lines[lines.length - 1]) as AuditEvent;
@@ -768,14 +789,27 @@ async function main(): Promise<void> {
 			`"host":"${last.metadata?.host}"`,
 			'"host":"attacker.example"',
 		);
+		// Rehashed, so the live file's own chain verifies. The checkpoint committed to a prefix
+		// of this file, and a rewritten prefix produces a different hash at that count and
+		// reproduces from nothing else eligible.
 		writeLines(LIVE, [
 			...lines.slice(0, -1),
 			...relink(lines.slice(-1), { chainIndex: last.integrity.chainIndex, previousHash: last.integrity.previousHash }, true),
 		]);
+		return {
+			exit: 1,
+			layers: { chained: true, linked: true, anchored: false },
+			go_codes_include: ["live-tail-mismatch"],
+		};
+	});
+
+	await buildCase("l1-confirmed-with-pending-proof", async (at) => {
+		await baseline(at);
+		writeAnchorRecords(anchorRecords().map((r) => ({ ...r, status: "confirmed" })));
 		return ANCHORED_OK;
 	});
 
-	await buildCase("l4-legacy-canon-unmarked", () => {
+	await buildCase("l2-legacy-canon-unmarked", () => {
 		const legacyClock = clock();
 		writeLines(
 			LIVE,

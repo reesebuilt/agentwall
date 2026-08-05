@@ -3,9 +3,9 @@
   "layers": {
     "chained": true,
     "linked": false,
-    "anchored": false
+    "anchored": true
   },
   "go_codes_include": [
-    "manifest-link-break"
+    "segment-content-mismatch"
   ]
 }
