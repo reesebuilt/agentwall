@@ -223,7 +223,7 @@ describe("verify", () => {
 		expect(text).toMatch(/only 4 distinct chain indexes/);
 		expect(text).toMatch(/\.\.\. and \d+ more/);
 		// The whole point: output for a damaged segment is BOUNDED. One header, a few
-		// examples, one tally — not one line per broken record.
+		// examples, one tally; not one line per broken record.
 		const fromDamaged = chained!.problems.filter((x) => x.includes("audit.jsonl.damaged"));
 		expect(fromDamaged).toHaveLength(5);
 	});

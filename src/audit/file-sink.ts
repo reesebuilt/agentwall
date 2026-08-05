@@ -18,7 +18,7 @@ import { AuditChainState, findDuplicateKey } from "./chain";
  * Durable JSONL sink for the audit chain.
  *
  * Why this exists: the chain is only tamper-evident if it is COMPLETE. `stdoutSink`
- * alone sends the record to stdout and, under systemd, into journald — which
+ * alone sends the record to stdout and, under systemd, into journald, which
  * rate-limits (RateLimitBurst defaults to 10000/30s) and vacuums. A dropped entry is
  * indistinguishable from a deleted one, so rate limiting silently destroys the exact
  * property the hash chain exists to provide.
@@ -33,7 +33,7 @@ import { AuditChainState, findDuplicateKey } from "./chain";
  *
  * The only status that permits a reclaim is proof that the previous writer can never
  * append again. "I could not tell" is not that proof and must never be rounded down to
- * it — see {@link classifyLockOwner} for the bug that behaviour caused.
+ * it. See {@link classifyLockOwner} for the bug that behaviour caused.
  */
 export type LockOwnerStatus =
   /** kill(pid, 0) answered ESRCH: no such process. The only authoritative death. */
@@ -47,8 +47,8 @@ export type LockOwnerStatus =
 
 /**
  * The two syscalls behind {@link classifyLockOwner}, injectable because their interesting
- * failures — EPERM from a foreign uid, an unreadable /proc under a `hidepid=` mount or a
- * pid namespace — cannot be staged from a test process on demand.
+ * failures (EPERM from a foreign uid, an unreadable /proc under a `hidepid=` mount or a
+ * pid namespace) cannot be staged from a test process on demand.
  */
 export interface LockOwnerProbe {
   /** Signal-0 liveness check. Throws ESRCH when gone, EPERM when alive but not ours. */
@@ -70,7 +70,7 @@ export const procLockOwnerProbe: LockOwnerProbe = {
  * The bug this replaces: the /proc read was wrapped in a catch that swallowed every
  * failure into `cmdline = ""`, which then failed the "agentwall" test, so a live writer's
  * lock was reclaimed whenever its identity merely could not be read. Two processes then
- * appended to the same file, interleaving two hash chains into one — permanently
+ * appended to the same file, interleaving two hash chains into one, permanently
  * destroying the integrity proof the lock exists to protect. Liveness and identity are
  * separate questions and only the first has an authoritative answer.
  */
@@ -99,7 +99,7 @@ export function classifyLockOwner(
   }
   // Liveness alone is not enough: the kernel recycles pids, so an unrelated process
   // inheriting the number would otherwise wedge startup forever and silently end the
-  // trial. A successful but EMPTY read lands here too — that is a zombie or a kernel
+  // trial. A successful but EMPTY read lands here too: that is a zombie or a kernel
   // thread, which holds no descriptors and cannot append, so reclaiming is safe.
   return cmdline.includes("agentwall")
     ? { kind: "holding", cmdline }
@@ -148,8 +148,8 @@ export function claimWriter(
           `audit file ${path} is locked by pid ${owner}, which is STILL RUNNING, and this ` +
             `process cannot confirm what it is: ${status.reason}. Refusing to reclaim the ` +
             `lock: stealing it from a live writer would interleave two hash chains into one ` +
-            `file and destroy the audit integrity proof. Verify pid ${owner} yourself — if ` +
-            `it is not an agentwall, stop it or delete ${lock} by hand.`
+            `file and destroy the audit integrity proof. Verify pid ${owner} yourself. ` +
+            `If it is not an agentwall, stop it or delete ${lock} by hand.`
         );
       }
     }
@@ -180,7 +180,7 @@ export function createFileSink(path: string): (event: AuditEvent) => void {
   return (event: AuditEvent) => {
     // Flag "a" opens O_APPEND, so the kernel makes the seek-to-end and the write a
     // single atomic operation against the file offset. That is the guarantee that keeps
-    // records from interleaving — not PIPE_BUF, which governs pipes and is only 4096 on
+    // records from interleaving, not PIPE_BUF, which governs pipes and is only 4096 on
     // Linux, well under a typical record carrying full detections.
     appendFileSync(path, JSON.stringify(event) + "\n", { encoding: "utf8" });
   };
@@ -197,8 +197,8 @@ export interface ChainResume {
  *
  * Without this the chain restarts at index 0 on every process start. Under
  * `Restart=always` a crash loop therefore produces several disjoint chains that each
- * verify internally — worse than no chain, because a verifier passes while the record
- * has holes.
+ * verify internally. That is worse than no chain, because a verifier passes while the
+ * record has holes.
  *
  * Reads backwards from EOF so startup cost does not grow with the log. Returns the
  * reason on failure instead of silently starting over: a new chain is a real event and
@@ -230,7 +230,7 @@ export function resumeChainState(path: string): ChainResume {
 
       // The final record must be bounded on BOTH sides before we trust it. Records end
       // in "\n", so a single newline is always present after the first chunk and would
-      // accept a truncated fragment for any record larger than CHUNK — which then fails
+      // accept a truncated fragment for any record larger than CHUNK, which then fails
       // to parse and silently restarts the chain. Requiring two newlines means we have
       // seen the delimiter that opens the last line as well as the one that closes it.
       // A single-record file terminates via pos === 0 instead.
@@ -303,7 +303,7 @@ export interface ChainVerification {
 /**
  * Verify a JSONL audit file end to end: every hash reproducible from its own payload,
  * every record linked to its predecessor, no gaps in the index sequence. Gaps are
- * reported rather than tolerated — that is the entire point of the structure.
+ * reported rather than tolerated: that is the entire point of the structure.
  */
 export function verifyChainFile(
   path: string,

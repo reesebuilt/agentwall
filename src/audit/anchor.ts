@@ -65,7 +65,7 @@ export interface AnchorRecord {
 	submittedAt: string;
 	/**
 	 * Rekor is immediate. OpenTimestamps is "pending" until a Bitcoin block confirms,
-	 * which is a real state and not an error — reporting it as complete would be the lie.
+	 * which is a real state and not an error; reporting it as complete would be the lie.
 	 */
 	status: "confirmed" | "pending";
 	/** Set when the submission failed. The record is still written: silence is worse. */

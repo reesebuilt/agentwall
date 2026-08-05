@@ -207,8 +207,8 @@ export interface AuditIntegrity {
   /**
    * What the writer attests at write time, NOT a verification result.
    * "chained-local": hash-linked into the local chain when written. It says nothing
-   * about whether the chain has since been verified, signed, or anchored off-box —
-   * the previous label ("verified-local") implied all three and delivered none.
+   * about whether the chain has since been verified, signed, or anchored off-box. The
+   * previous label ("verified-local") implied all three and delivered none.
    */
   status: "chained-local";
   /**

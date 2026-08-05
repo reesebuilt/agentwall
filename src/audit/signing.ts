@@ -115,7 +115,7 @@ export interface CheckpointVerification {
  * Verify a checkpoint's signature.
  *
  * `expectedPublicKey` is optional but strongly recommended. Without it this only proves
- * the checkpoint is internally consistent — self-signed by whatever key it carries —
+ * the checkpoint is internally consistent (self-signed by whatever key it carries),
  * which a forger can trivially satisfy by signing with their own key. Pin the key you
  * expect, or the check is close to decorative.
  */

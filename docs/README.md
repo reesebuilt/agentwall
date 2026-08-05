@@ -6,29 +6,29 @@ than a narrative document.
 
 ## Getting started
 
-- [Install](install.md) — requirements, install, first run, and how to point an agent at
+- [Install](install.md): requirements, install, first run, and how to point an agent at
   the proxy.
-- [Tutorials](tutorials/) — short, task-shaped walkthroughs. Each states how long it
+- [Tutorials](tutorials/): short, task-shaped walkthroughs. Each states how long it
   takes and what you should see when it works.
 
 ## Understanding the system
 
-- [Architecture](architecture.md) — the components, how a request flows through them, and
+- [Architecture](architecture.md): the components, how a request flows through them, and
   where decisions are made.
-- [Threat model](threat-model.md) — what AgentWall defends against, what it explicitly
+- [Threat model](threat-model.md): what AgentWall defends against, what it explicitly
   does not, and the assumptions behind both. Read this before relying on it for anything.
 - [Audit evidence format](audit-format.md): the normative on-disk spec. Record hashing,
   canonicalization, rotation manifest, checkpoints, and OpenTimestamps proofs, with worked
   examples and a statement of what the format does not prove.
-- [FloodGuard](runtime-floodguard.md) — runtime rate and burst control, including how
+- [FloodGuard](runtime-floodguard.md): runtime rate and burst control, including how
   shield mode changes behaviour.
 
 ## Elsewhere in the repository
 
-- [README](../README.md) — what AgentWall is, its limits, and a quick start.
-- [SECURITY](../SECURITY.md) — how to report a vulnerability.
-- [CONTRIBUTING](../CONTRIBUTING.md) — how to propose a change.
-- [CHANGELOG](../CHANGELOG.md) — what changed and when.
+- [README](../README.md): what AgentWall is, its limits, and a quick start.
+- [SECURITY](../SECURITY.md): how to report a vulnerability.
+- [CONTRIBUTING](../CONTRIBUTING.md): how to propose a change.
+- [CHANGELOG](../CHANGELOG.md): what changed and when.
 
 ## What this tree is for
 
