@@ -1,16 +1,18 @@
 import { createHash } from "crypto";
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from "fs";
-import { dirname, join } from "path";
+import { dirname, join, resolve } from "path";
 import { anchorToOpenTimestamps, fetchPoster, type AnchorRecord } from "./anchor";
 import { verifyChainFile } from "./file-sink";
-import { chainAuditEvent } from "./chain";
+import { chainAuditEvent, findDuplicateKey } from "./chain";
 import { loadOrCreateKeys, signCheckpoint, verifyCheckpoint, type Checkpoint } from "./signing";
 import {
 	adoptExistingSegments,
 	discoverClosedSegments,
 	readManifest,
+	resolveSegmentPath,
 	summarizeSegment,
 	verifyManifest,
+	type SegmentRecord,
 } from "./rotation";
 import type { AuditEvent } from "../types";
 
@@ -111,15 +113,11 @@ export async function runAnchorPass(
 
 	// The checkpoint commits to BOTH sealed history and the live tail, so one anchor
 	// covers everything on disk rather than only the rotated part.
-	const composite = createHash("sha256")
-		.update(
-			JSON.stringify({
-				manifestHead: manifest.head,
-				segments: manifest.segments,
-				liveTail: live ? { finalHash: live.finalHash, count: live.count } : null,
-			}),
-		)
-		.digest("hex");
+	const composite = compositeDigest(
+		manifest.head,
+		manifest.segments,
+		live ? { finalHash: live.finalHash, count: live.count } : null,
+	);
 
 	const keys = loadOrCreateKeys(r.keyPath);
 	const checkpoint = signCheckpoint(manifest.segments, composite, keys, now);
@@ -142,6 +140,107 @@ export async function runAnchorPass(
 		segments: manifest.segments,
 		liveRecords: live?.count ?? 0,
 	};
+}
+
+/** What a checkpoint says the live file held at signing time. */
+interface LiveTail {
+	finalHash: string;
+	count: number;
+}
+
+/**
+ * The exact bytes a checkpoint commits to.
+ *
+ * Signing and verification share this function so the two cannot drift. If they computed
+ * the composite separately, a change to one side would make every existing checkpoint
+ * look tampered with, and the check meant to detect tampering would report nothing else.
+ */
+function compositeDigest(manifestHead: string | null, segments: number, liveTail: LiveTail | null): string {
+	return createHash("sha256").update(JSON.stringify({ manifestHead, segments, liveTail })).digest("hex");
+}
+
+/**
+ * Every live tail a checkpoint that sealed `segments` could honestly have committed, read
+ * from disk now.
+ *
+ * The composite is a hash, so the committed finalHash and count are not readable from the
+ * checkpoint. Re-deriving them means reconstructing candidates from the evidence and
+ * asking whether any of them reproduces the signed composite.
+ *
+ * WHY GROWTH IS NOT TAMPERING. A checkpoint commits the live file's first `count` records
+ * and the hash that ends them. That hash folds in every record before it, so it is a
+ * commitment to a PREFIX, not to the file's length. Appending after the checkpoint leaves
+ * that prefix byte for byte identical, so the commitment still reproduces and a growing
+ * file stays silent. Every prefix of the live file is offered for exactly this reason: a
+ * healthy deployment anchors on a timer and appends continuously, and a check that
+ * compared against the file's CURRENT end would fail on every pass but the last.
+ *
+ * WHY ROTATION IS NOT TAMPERING EITHER. Rotation moves that prefix into a closed segment
+ * and starts a new live file, so a checkpoint older than the last rotation reproduces
+ * from a rotated file rather than from the live one.
+ *
+ * WHICH FILES ARE ELIGIBLE. Only the ones the committed tail can legitimately be in: the
+ * current live file, and segments that closed AFTER this checkpoint. A segment already
+ * sealed when the checkpoint was signed was not the live file at that moment, so letting
+ * it excuse a tail would widen the check for nothing. The manifest is append-only, so
+ * "sealed after" is exactly the entries from index `segments` onward, and closed segments
+ * still awaiting a seal are eligible too, since verification runs between anchor passes.
+ * Each eligible entry also offers its recorded pair, which covers a rotated segment whose
+ * file is gone: that absence is already reported as missing, and reporting it a second
+ * time under a tampering code would tell an operator the wrong thing.
+ *
+ * WHAT IS LEFT IS THE ATTACK. A prefix that was rewritten, truncated, or reordered
+ * produces a different hash at that count and reproduces from nothing eligible. That is
+ * the only condition this reports.
+ */
+function liveTailCandidates(
+	r: ResolvedPaths,
+	entries: readonly SegmentRecord[],
+	segments: number,
+): LiveTail[] {
+	const alreadyClosed = new Set<string>(
+		entries.slice(0, segments).map((e) => resolveSegmentPath(r.manifestPath, e.path)),
+	);
+	const eligible = new Set<string>([resolve(r.auditPath)]);
+	for (const p of discoverClosedSegments(r.auditPath)) {
+		const full = resolve(p);
+		if (!alreadyClosed.has(full)) eligible.add(full);
+	}
+	for (const e of entries.slice(segments)) eligible.add(resolveSegmentPath(r.manifestPath, e.path));
+
+	const seen = new Set<string>();
+	const out: LiveTail[] = [];
+	const offer = (t: LiveTail): void => {
+		const key = `${t.count}:${t.finalHash}`;
+		if (seen.has(key)) return;
+		seen.add(key);
+		out.push(t);
+	};
+
+	for (const file of eligible) {
+		if (!existsSync(file)) continue;
+		let count = 0;
+		for (const line of readFileSync(file, "utf8").split("\n")) {
+			if (!line.trim()) continue;
+			// Skipped exactly as summarizeSegment skips them, because the count a checkpoint
+			// committed came from there. A malformed record counts toward no live tail, so a
+			// duplicate member smuggled into a committed prefix stops that prefix reproducing.
+			if (findDuplicateKey(line) !== null) continue;
+			let ev: AuditEvent;
+			try {
+				ev = JSON.parse(line) as AuditEvent;
+			} catch {
+				// summarizeSegment skips a torn tail rather than refusing the file, and the
+				// counts a checkpoint committed came from it, so skip identically here.
+				continue;
+			}
+			if (!ev.integrity) continue;
+			count++;
+			offer({ finalHash: ev.integrity.hash, count });
+		}
+	}
+	for (const e of entries.slice(segments)) offer({ finalHash: e.finalHash, count: e.count });
+	return out;
 }
 
 /** Problems shown per segment before summarizing. */
@@ -195,8 +294,10 @@ export interface VerifyReport {
  * into one green tick is exactly the overclaiming this project exists to avoid:
  *
  *   chained  - records link, so an edit inside a segment is detectable
- *   linked   - segments link, so removing a whole segment is detectable
- *   anchored - a hash exists off-box, so rewriting everything locally is detectable
+ *   linked   - segments link and match their entries, so removing or replacing a whole
+ *              segment is detectable
+ *   anchored - a hash exists off-box and still describes what is here, so rewriting
+ *              everything locally is detectable
  *
  * A pending anchor is reported as pending, never as verified. OpenTimestamps needs a
  * Bitcoin block, typically one to six hours.
@@ -214,8 +315,12 @@ export function runVerify(paths: AnchorPaths): VerifyReport {
 	};
 
 	// Layer 1: per-record chain, for every segment the manifest knows plus the live file.
-	const segPaths = new Set<string>(readManifest(r.manifestPath).map((e) => e.path));
-	segPaths.add(r.auditPath);
+	// Entry paths resolve against the manifest's directory, so the same evidence verifies
+	// identically whatever directory the operator runs from.
+	const segPaths = new Set<string>(
+		readManifest(r.manifestPath).map((e) => resolveSegmentPath(r.manifestPath, e.path)),
+	);
+	segPaths.add(resolve(r.auditPath));
 	const chainProblems: string[] = [];
 	let totalRecords = 0;
 	for (const p of segPaths) {
@@ -262,9 +367,10 @@ export function runVerify(paths: AnchorPaths): VerifyReport {
 	// remedy that cannot clear it: `anchor` seals closed segments, and there are none.
 	// Nothing to link is a vacuous pass. Rotated files sitting unsealed is a real one.
 	const m = verifyManifest(r.manifestPath);
-	const unsealed = discoverClosedSegments(r.auditPath).filter(
-		(p) => !readManifest(r.manifestPath).some((e) => e.path === p),
+	const sealedPaths = new Set<string>(
+		readManifest(r.manifestPath).map((e) => resolveSegmentPath(r.manifestPath, e.path)),
 	);
+	const unsealed = discoverClosedSegments(r.auditPath).filter((p) => !sealedPaths.has(resolve(p)));
 	const linkedProblems = [...m.problems];
 	if (unsealed.length > 0) {
 		linkedProblems.push(
@@ -285,12 +391,33 @@ export function runVerify(paths: AnchorPaths): VerifyReport {
 		problems: linkedProblems,
 	});
 
-	// Layer 3: checkpoint signatures and anchor state.
+	// Layer 3: checkpoint signatures, the state each checkpoint committed, and anchor
+	// state. A signature only says the composite was signed by the key. Re-deriving the
+	// composite from disk is what makes the off-box anchor describe the evidence rather
+	// than describe a number.
 	const anchorProblems: string[] = [];
 	let pending = 0;
 	let confirmed = 0;
 	let failed = 0;
 	if (existsSync(r.anchorLogPath) && existsSync(r.keyPath)) {
+		const manifestEntries = readManifest(r.manifestPath);
+		// One composite set per distinct sealed-segment count. An anchor log holds many
+		// checkpoints and every one signed between two rotations shares that count, so the
+		// eligible files and their prefixes are read once per rotation, not once per anchor.
+		const compositesBySegmentCount = new Map<number, Set<string>>();
+		const compositesFor = (segments: number): Set<string> | null => {
+			if (segments > manifestEntries.length) return null;
+			const cached = compositesBySegmentCount.get(segments);
+			if (cached) return cached;
+			const head = segments === 0 ? null : manifestEntries[segments - 1].finalHash;
+			const set = new Set<string>([compositeDigest(head, segments, null)]);
+			for (const c of liveTailCandidates(r, manifestEntries, segments)) {
+				set.add(compositeDigest(head, segments, c));
+			}
+			compositesBySegmentCount.set(segments, set);
+			return set;
+		};
+
 		const keys = loadOrCreateKeys(r.keyPath);
 		for (const line of readFileSync(r.anchorLogPath, "utf8").split("\n")) {
 			if (!line.trim()) continue;
@@ -304,6 +431,20 @@ export function runVerify(paths: AnchorPaths): VerifyReport {
 			if (rec.checkpoint) {
 				const v = verifyCheckpoint(rec.checkpoint, keys.publicKey.export({ type: "spki", format: "der" }).toString("base64"));
 				if (!v.ok) anchorProblems.push(`checkpoint ${rec.checkpoint.chainIndex}: ${v.problem}`);
+				const composites = compositesFor(rec.checkpoint.chainIndex);
+				if (!composites) {
+					anchorProblems.push(
+						`checkpoint ${rec.checkpoint.chainIndex}: live-tail-mismatch, it committed ` +
+							`${rec.checkpoint.chainIndex} sealed segment(s) and the manifest now holds ` +
+							`${manifestEntries.length}, so the state it anchored cannot be rebuilt`,
+					);
+				} else if (!composites.has(rec.checkpoint.hash)) {
+					anchorProblems.push(
+						`checkpoint ${rec.checkpoint.chainIndex}: live-tail-mismatch, the live tail it signed ` +
+							"reproduces from no segment it could have been written to, so the anchored value " +
+							"no longer describes the evidence on disk",
+					);
+				}
 			}
 			// A total submission failure is recorded as status "pending" WITH an error,
 			// because the record is written either way. Counting that as pending would

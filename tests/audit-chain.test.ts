@@ -7,6 +7,7 @@ import {
   canonicalizeAuditPayload,
   canonicalizeAuditPayloadLocaleLegacy,
   chainAuditEvent,
+  findDuplicateKey,
   rehashAuditEvent,
   type AuditChainState,
 } from "../src/audit/chain";
@@ -235,5 +236,50 @@ describe("Audit canonicalization cu1", () => {
     const tampered = { ...chained, metadata: { command: "ip" } } as AuditEvent;
 
     expect(rehashAuditEvent(tampered)).not.toBe(tampered.integrity.hash);
+  });
+});
+
+/**
+ * Duplicate members are found on the raw line, not after parsing.
+ *
+ * Parsers disagree about them and none of them say so: V8 keeps the last occurrence,
+ * other stacks keep the first, a strict decoder refuses the line. A record whose meaning
+ * depends on which language read it cannot be evidence, so it has to be caught before
+ * JSON.parse collapses the duplicate out of existence.
+ */
+describe("duplicate member detection", () => {
+  it("finds a duplicate that JSON.parse silently collapses", () => {
+    const line = '{"decision":"deny","agentId":"curl","decision":"allow"}';
+    // What the parser hands every later check: one member, no trace of the other.
+    expect(Object.keys(JSON.parse(line))).toEqual(["decision", "agentId"]);
+    expect(findDuplicateKey(line)).toBe("decision");
+  });
+
+  it("finds a duplicate nested inside metadata or an array element", () => {
+    expect(findDuplicateKey('{"a":1,"metadata":{"host":"a.example","host":"b.example"}}')).toBe("host");
+    expect(findDuplicateKey('{"matchedRules":[{"id":1,"id":2}]}')).toBe("id");
+  });
+
+  it("compares decoded keys, so an escaped spelling is the same member", () => {
+    expect(findDuplicateKey('{"a":1,"\\u0061":2}')).toBe("a");
+    expect(findDuplicateKey('{"\\ud83d\\ude00":1,"\\ud83d\\ude00":2}')).toBe("\u{1f600}");
+  });
+
+  it("accepts the same key in sibling objects, which is ordinary data", () => {
+    expect(findDuplicateKey('{"a":{"host":1},"b":{"host":2}}')).toBeNull();
+    expect(findDuplicateKey('{"rules":[{"id":1},{"id":2}]}')).toBeNull();
+  });
+
+  it("is not fooled by a duplicate spelling that appears inside a string value", () => {
+    expect(findDuplicateKey('{"reason":"\\"id\\":1,\\"id\\":2","id":7}')).toBeNull();
+  });
+
+  it("gives up quietly on a line it cannot read rather than throwing", () => {
+    // This also runs on the write path through summarizeSegment, so a corrupt line must
+    // not throw a scheduled anchor pass out of existence. The caller reports the parse
+    // failure; guessing at a broken line's structure would invent findings.
+    expect(findDuplicateKey('{"a\\qb":1}')).toBeNull();
+    expect(findDuplicateKey('{"id":"torn","integ')).toBeNull();
+    expect(findDuplicateKey("")).toBeNull();
   });
 });

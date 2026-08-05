@@ -45,7 +45,7 @@ has:
 | Layer | Question it answers | Evidence |
 | --- | --- | --- |
 | chained | Was a record altered after it was written? | Per-record hash chain inside each file |
-| linked | Was a whole rotated file removed or reordered? | Rotation manifest |
+| linked | Was a whole rotated file removed, reordered, or replaced? | Rotation manifest |
 | anchored | Was the entire local history rewritten? | Signed checkpoint plus an off-box timestamp |
 
 A verifier reports each separately. `chained` passing tells an operator nothing about whether
@@ -140,6 +140,18 @@ identically and emit differently, because each emits the bytes its own line cont
 Two members of one object with the same decoded key make the record malformed. A verifier
 reports it and MUST NOT silently keep one of them. The Agentwall writer cannot produce such a
 record; a file containing one has been edited.
+
+A verifier MUST detect the duplicate in the raw line, before handing it to a parser. This is
+not a matter of strictness. Parsers disagree about duplicates and none of them say so: some
+keep the last occurrence, some keep the first, some refuse the document. Once a parser has
+returned, the second member is gone and no later check can see it was ever there. A record
+whose meaning depends on which language read it cannot be evidence whatever hash it carries,
+which is why the disagreement itself is the failure.
+
+A malformed record therefore counts toward NOTHING. It MUST NOT link into the chain, MUST NOT
+count toward a segment's `count` or contribute its `finalHash`, and MUST NOT count toward a
+checkpoint's committed live tail. Records either side of it are judged against each other. An
+implementation MAY name this failure; the bundled one reports it as `dup-key`.
 
 ### Key ordering
 
@@ -353,10 +365,37 @@ Linkage rules:
 Removing a middle entry breaks the chain of `previousSegmentHash` values at the following
 entry. Editing an entry to hide that breaks its own `entryHash`. Both are reported.
 
+Those three rules check the manifest against itself and say nothing about the files it names.
+A verifier that stops there can be handed a segment rewritten from end to end, with its own
+per-record chain rebuilt so it verifies, and will report the `linked` layer as passing. The
+anchor would then cover a manifest that covers only itself, which is the whole of what the
+manifest is for. So the manifest is also checked against the bytes:
+
+- A verifier MUST resolve every entry's `path` and read the segment it names.
+- When that segment is present, its last record's `integrity.hash` MUST equal `finalHash`,
+  its record count MUST equal `count`, and its first and last records' `chainIndex` MUST
+  equal `firstIndex` and `lastIndex`. Any difference is a failure of the `linked` layer.
+- A present file holding no readable record MUST be reported the same way. Truncating a
+  sealed segment to nothing leaves the file in place, so presence alone is not the test.
+- A segment the manifest names but that is absent from disk is a DIFFERENT finding, reported
+  as missing, not as a content difference. Absent evidence and contradicting evidence lead an
+  operator to different places, so a verifier MUST keep them distinguishable.
+
+`finalHash` folds in every record before it, so requiring the file to still produce it is what
+turns the entry into a statement about the segment's contents rather than about the manifest
+line. `count` and the two indexes are checked alongside it so a truncation or an extension is
+named directly instead of surfacing only as a hash difference.
+
+An implementation MAY name the content failure. The bundled one reports it as
+`segment-content-mismatch`.
+
 A relative `path` resolves against the directory containing the manifest file, which keeps a
 manifest portable when a whole evidence directory is copied. An absolute `path` is used as
-recorded. `path` is advisory in one specific sense: files get moved, and a segment that is
-named in the manifest but absent from disk is reported as missing rather than assumed intact.
+recorded. A verifier MUST NOT resolve a relative `path` against its own working directory: the
+same evidence would then verify from one directory and fail from another, which makes the
+verdict a property of the operator's shell rather than of the evidence. `path` is advisory in
+one specific sense: files get moved, and a segment that is named in the manifest but absent
+from disk is reported as missing rather than assumed intact.
 
 The live audit file is never a manifest entry. It grows between seals, so sealing it would
 record a hash that is stale the moment it is written. Its current state is committed by the
@@ -418,6 +457,46 @@ it with a key they generated. When an operator supplies a pinned public key, a v
 additionally requires each checkpoint's `publicKey` to equal the pin, compared as the base64
 DER SPKI string, and reports a mismatch as a failure. Pinning is what turns a self-consistent
 signature into evidence about who signed.
+
+### Re-deriving what a checkpoint committed
+
+A valid signature says the composite was signed by the key. It says nothing about whether the
+composite still describes anything on disk. A verifier that checks only the signature reports
+the `anchored` layer as passing over evidence the anchored value no longer matches, so:
+
+- A verifier MUST rebuild the composite from the evidence files and require the checkpoint's
+  `hash` to equal one of the rebuilt values. A checkpoint whose composite cannot be rebuilt is
+  a failure of the `anchored` layer.
+- `manifestHead` is rebuilt from the checkpoint's own `chainIndex`: it is entry `chainIndex-1`'s
+  `finalHash`, or `null` when `chainIndex` is zero. The manifest is append-only, so that entry
+  is still where it was. A manifest now holding FEWER than `chainIndex` entries cannot supply
+  it, and MUST be reported: dropping the newest entries breaks no `previousSegmentHash` link,
+  because what remains still chains, and the checkpoint is the only thing that notices.
+- `liveTail` is not readable from the checkpoint, because only the composite is stored. It is
+  rebuilt by candidate: for each eligible segment file, each prefix of `c` records offers the
+  pair (that record's `integrity.hash`, `c`). The `null` tail and each eligible manifest
+  entry's own (`finalHash`, `count`) are candidates too, the latter covering a rotated segment
+  whose file is gone, which is already reported as missing.
+
+An implementation MAY name this failure. The bundled one reports it as `live-tail-mismatch`.
+
+Which files are eligible, and why this does not cry wolf on a healthy deployment:
+
+- The committed `finalHash` is the hash of the live file's record number `count`, and every
+  record hash folds in the records before it, so a checkpoint commits a PREFIX and not a
+  length. Records appended afterwards leave that prefix identical, so it still reproduces. A
+  verifier MUST NOT compare the committed pair against the live file's CURRENT end: a running
+  deployment appends between anchor passes, and every checkpoint but the newest would fail.
+- Rotation moves the committed prefix out of the live file and into a closed segment, so a
+  checkpoint older than the last rotation reproduces from a rotated file. Eligible files are
+  the live file, closed segments still awaiting a seal, and manifest entries from index
+  `chainIndex` onward, which is exactly the set that closed after this checkpoint was signed.
+- A segment already sealed when the checkpoint was signed is NOT eligible. It was not the live
+  file at that moment, so allowing it to satisfy a committed tail would widen the check for
+  nothing.
+
+What is left is the failure: a prefix that was rewritten, truncated, or reordered produces a
+different hash at that count and reproduces from nothing eligible.
 
 ### Worked example: a checkpoint
 
@@ -685,6 +764,12 @@ reports otherwise is wrong.
 - **Legacy records, in an independent implementation.** Records with no `canon` marker whose
   keys are not all lowercase ASCII were hashed under an order this format does not define.
   Reporting them as unverifiable here is correct, not a defect.
+- **Which file a committed live tail came from.** Rebuilding a checkpoint's live tail asks
+  whether the committed prefix still exists among the files it could have been written to, not
+  whether it is in the one file it originally occupied. Nothing in the evidence records that.
+  An adversary who copies the live file aside, lets the copy be sealed as a rotated segment,
+  and then rewrites the live file satisfies the check, at the price of leaving the original
+  records on disk under another name.
 
 ## Conformance checklist
 
@@ -692,11 +777,18 @@ A verifier written from this document is conforming when all of the following ho
 
 - It reuses source lexemes and never reserializes a parsed value.
 - It sorts object keys by UTF-16 code units, and emits the original key lexeme.
-- It rejects duplicate keys within one object.
+- It detects duplicate keys within one object on the raw line, before parsing, and counts
+  such a record toward no chain link, no segment count, and no committed live tail.
 - It builds each hashed byte string with the member order given here, with no whitespace.
 - It reports `chained`, `linked`, and `anchored` separately, and reports counts of pending,
   confirmed, and failed anchors.
 - It distinguishes a torn final line from other parse failures.
+- It resolves a relative manifest `path` against the manifest's directory, never against its
+  own working directory.
+- It checks every manifest entry against the segment it names, and keeps a missing segment
+  distinct from one whose contents contradict its entry.
+- It rebuilds each checkpoint's composite from the evidence and requires the checkpoint's
+  `hash` to match, treating a live file that has only grown or rotated as healthy.
 - It treats an anchor record with `error` as failed, whatever its `status`.
 - It reports a pending attestation as pending, never as proof.
 - It reports a Bitcoin attestation as a value plus a height to be compared elsewhere, never as
