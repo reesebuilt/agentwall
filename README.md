@@ -127,71 +127,290 @@ callers as a `loopback-dev` principal. Do not set it on a host reachable by anyo
 
 ## Checking the record yourself
 
-An audit file is worth only as much as your ability to check it without asking us. Both
-commands below run locally, need no account, and are the same ones used to develop the tool.
+An audit file is worth only as much as your ability to check it without trusting us. Two
+verifiers ship in this repository, and the second one carries the argument.
+
+The bundled TypeScript verifier recomputes each record's hash by calling `chainAuditEvent`, the
+same function in [`src/audit/chain.ts`](src/audit/chain.ts) that wrote that hash
+([`src/audit/anchor-service.ts:309-315`](src/audit/anchor-service.ts)). That makes it a useful
+tamper check and no evidence at all about the format: a mistake in that function is made
+identically when writing and when checking, and the comparison still passes. A verifier written
+by the same people in the same language as the writer proves the code agrees with itself.
+
+[`verifier/`](verifier/README.md) is a second program, in Go. It shares no code with the writer,
+parses JSON with a different parser, verifies Ed25519 with a different cryptography stack, and
+implements [docs/audit-format.md](docs/audit-format.md) rather than importing anything from `src/`.
+That document is the only thing the two programs have in common, so when both accept a file, the
+agreement is evidence about the FORMAT. Where they disagree one of them is wrong, and those cases
+are listed in [Where the two verifiers disagree today](#where-the-two-verifiers-disagree-today)
+rather than buried.
+
+Every command below runs against evidence committed to this repository, so it reproduces from a
+bare checkout. Point `--audit` at your own file to check your own records; both CLI commands also
+accept `AGENTWALL_AUDIT_FILE` in place of `--audit`.
+
+### The bundled verifier
 
 ```bash
-node dist/cli.js verify
+npm ci && npm run build
+node dist/cli.js verify --audit verifier/testdata/corpus/g4-anchored-pending/audit.jsonl
 ```
 
-`verify` checks three independent layers and reports each separately, because they fail
-independently and a single verdict would hide which guarantee you actually have:
-
 ```
-PASS  chained   7 records across 1 segment(s)
+PASS  chained   24 records across 4 segment(s)
             records link within each segment, so an edit inside one is detectable
-PASS  linked    no rotations yet, nothing to link
-            segments link to each other, so removing a whole segment is detectable
-FAIL  anchored  nothing anchored off-box yet
-            a fingerprint exists off-box, so rewriting everything here is detectable
-```
-
-`anchored` fails until you run `agentwall anchor`, which signs a checkpoint and submits its
-digest to OpenTimestamps. After that the same command reports:
-
-```
+PASS  linked    3 segment(s) linked, head 8759f6167246d827
+            segments link and match their files, so removing or replacing one is detectable
 PASS  anchored  0 confirmed, 1 pending a Bitcoin block
+            a fingerprint exists off-box and still matches what is here, so a local rewrite shows
 
 1 anchor(s) pending a Bitcoin block. Pending is not proof;
 re-run verify once a block confirms.
 ```
 
-Pending is not proof. OpenTimestamps batches your digest into a Bitcoin transaction, so it
-takes roughly one to six hours to confirm, and until then the anchor records only that a
-submission was accepted.
+`verify` reports three layers separately, because they fail independently and one combined verdict
+would hide which guarantee you actually have. Exit status is 0 only when all three pass, and
+`--json` gives the machine-readable form. Run the same command against corpus case
+`b1-decision-flipped`, where one decision is flipped from deny to allow and the record's own hash is
+left untouched: the `chained` layer then fails with
+`line 2: hash mismatch, record altered after write`, names the file by absolute path, and the
+command exits 1.
 
-Exit status is 0 only when all three pass. `--json` gives the machine-readable form. Edit any
-record and the layer that covers it fails by name:
-
-```
-FAIL  chained   7 records across 1 segment(s)
-            ! audit.jsonl: line 3: hash mismatch, record altered after write
-```
-
-`verify` reports more than a single edited line. Records sharing a chain index are reported as
-index reuse, which is the signature of concurrent writers each keeping their own chain state
-rather than of one altered record ([`src/audit/anchor-service.ts:157-175`](src/audit/anchor-service.ts)).
-That failure mode is what the single-writer lock below exists to prevent.
+`anchored` fails until an anchor exists. `agentwall anchor` seals the live segment, signs an
+Ed25519 checkpoint over the head, and submits its digest to OpenTimestamps, which needs network
+access and no account:
 
 ```bash
-node dist/cli.js anchor
+cp -r verifier/testdata/corpus/g3-rotated-segments /tmp/aw-anchor-demo
+node dist/cli.js anchor --audit /tmp/aw-anchor-demo/audit.jsonl
 ```
 
 ```
 Anchored
-  checkpoint index  0
-  checkpoint hash   3b7cd8dfdd69dd40f3d2a5171b1fb5eed84d2fed1c0cbd24b6c7dd6be09a3a18
-  covers            7 records (0 sealed segment(s) + 7 live)
+  checkpoint index  3
+  checkpoint hash   d8e5eac822f4d723eadc8c9a89c96597e282c22006c1d1d70437bd6a411556c3
+  covers            24 records (3 sealed segment(s) + 6 live)
   calendar          https://alice.btc.calendar.opentimestamps.org/digest
-  proof             audit-dir/proofs/b829ef597c9769f3ac41b1f74348dc25935a553cf199d2bc03a4b1b33010bcd4.ots
+  proof             /tmp/aw-anchor-demo/proofs/0475b7690ead3a875eadc85592210df784d775d405f042c9bee10d1dfab6a8bb.ots
   status            pending
+
+OpenTimestamps anchors into a Bitcoin block, so this stays pending for roughly
+one to six hours. It is not proof until a block confirms it.
 ```
 
-Both commands need `AGENTWALL_AUDIT_FILE` set, or `--audit <path>`.
+The copy exists because anchoring writes a signing key, an anchor log, and a proof file beside the
+audit file, and the corpus in git stays exactly as it was generated. The proof filename in your run
+differs from the one above: the signing key is created on first use, so your checkpoint is signed
+by a key that exists only on your machine.
 
-The evidence format is specified in [docs/audit-format.md](docs/audit-format.md), at the byte
-level, with worked examples: enough to write a verifier in another language without reading
-this one's source, and it states plainly what the format does not prove.
+### The independent verifier, from a bare checkout
+
+Go 1.22 or newer, and nothing else. The Go module lives in `verifier/`, so these commands run from
+that directory rather than from the repository root:
+
+```bash
+cd verifier
+go build -o agentwall-verify .
+./agentwall-verify --audit testdata/corpus/g4-anchored-pending/audit.jsonl
+```
+
+```
+chained  PASS  24 records across 4 segment(s)
+linked   PASS  3 segment(s) linked, head 8759f6167246d827...
+anchored PASS  0 confirmed, 1 pending a Bitcoin block; pending at https://alice.btc.calendar.opentimestamps.org/timestamp
+signatures are self-consistent; supply --pubkey to bind them to a key you expect
+overall  PASS
+```
+
+`go run . --audit <path>` runs it without producing a binary, and prints one line of its own,
+`exit status 1`, when the verifier exits nonzero.
+
+Zero dependencies is a property you check rather than a claim you accept:
+
+```bash
+go list -m all
+```
+
+```
+github.com/reesebuilt/agentwall/verifier
+```
+
+One line, and it is this module. SHA-256, Ed25519, SPKI parsing, and JSON all come from the Go
+standard library, which is why the verifier is written in Go: a program whose whole job is being
+trustworthy should not ask you to trust a supply chain first.
+
+### Pin the key, or a checkpoint signature is decoration
+
+This is the honest core of the anchored layer. Corpus case `b8-checkpoint-foreign-key` is the good
+case with its checkpoint re-signed by a different key, and it is internally consistent: the
+signature verifies against the public key the checkpoint carries. Unpinned, it passes.
+
+```bash
+./agentwall-verify --audit testdata/corpus/b8-checkpoint-foreign-key/audit.jsonl; echo "exit $?"
+```
+
+```
+chained  PASS  24 records across 4 segment(s)
+linked   PASS  3 segment(s) linked, head 8759f6167246d827...
+anchored PASS  0 confirmed, 1 pending a Bitcoin block; pending at https://alice.btc.calendar.opentimestamps.org/timestamp
+signatures are self-consistent; supply --pubkey to bind them to a key you expect
+overall  PASS
+exit 0
+```
+
+The line above the verdict is the verifier naming what it did not check. A self-signed checkpoint
+proves nothing until you pin the key, because anyone who can rewrite the log can sign the rewrite
+with a key they generated. Pin the key you expect and the same bytes fail:
+
+```bash
+./agentwall-verify --audit testdata/corpus/b8-checkpoint-foreign-key/audit.jsonl \
+                   --pubkey-file testdata/corpus/b8-checkpoint-foreign-key/pubkey.txt; echo "exit $?"
+```
+
+```
+chained  PASS  24 records across 4 segment(s)
+linked   PASS  3 segment(s) linked, head 8759f6167246d827...
+anchored FAIL  0 confirmed, 1 pending a Bitcoin block; pending at https://alice.btc.calendar.opentimestamps.org/timestamp
+    - checkpoint-key-mismatch: anchor 1: checkpoint public key does not match the pinned key
+overall  FAIL
+exit 1
+```
+
+The pin discriminates rather than refusing everything. The same pin against the honest case passes,
+because every checkpoint in the corpus except `b8`'s is signed by the key `pubkey.txt` names:
+
+```bash
+./agentwall-verify --audit testdata/corpus/g4-anchored-pending/audit.jsonl \
+                   --pubkey-file testdata/corpus/b8-checkpoint-foreign-key/pubkey.txt; echo "exit $?"
+```
+
+```
+chained  PASS  24 records across 4 segment(s)
+linked   PASS  3 segment(s) linked, head 8759f6167246d827...
+anchored PASS  0 confirmed, 1 pending a Bitcoin block; pending at https://alice.btc.calendar.opentimestamps.org/timestamp
+overall  PASS
+exit 0
+```
+
+`--pubkey <base64-spki>` takes the key inline, `--pubkey-file <path>` reads base64 or PEM. The pin
+is worth what its source is worth: a key you recorded elsewhere when it was created is worth more
+than one read out of the directory that holds the evidence. The bundled verifier has no pin flag.
+It compares each checkpoint against the public half of the signing key file beside the audit log
+([`src/audit/anchor-service.ts:421-433`](src/audit/anchor-service.ts)), which is the writer's own
+key rather than one you chose.
+
+### The conformance corpus
+
+`verifier/testdata/corpus/` holds one directory per case, each with an `expected.json` naming the
+exit code and the three layer verdicts the format requires. Good cases are written by the
+production writers in `src/audit`, so the corpus cannot drift into a private idea of the format.
+Forgeries are byte edits applied on top of a case that passed, and they are internally consistent
+on purpose, so catching one takes a property the forger cannot recompute:
+
+- `b2-record-removed-tail-relinked` removes a record, then relinks and rehashes the entire tail.
+  Every `previousHash` in the file is correct. The chain index sequence is what exposes it.
+- `b15-sealed-segment-rewritten` rewrites a sealed segment end to end and relinks it internally.
+  The manifest entry bound to that segment's bytes is what exposes it.
+- `b16-live-tail-rewritten-after-checkpoint` rewrites the last live record after the checkpoint was
+  signed. The live tail that checkpoint committed to is what exposes it, and re-committing to the
+  rewrite needs the signing key.
+- `b8-checkpoint-foreign-key` re-signs the checkpoint consistently under another key. Only a pin
+  supplied from outside the evidence exposes it.
+- `b17-sealed-segment-missing` deletes a sealed segment file and leaves the manifest naming it. Both
+  verifiers report `segment-missing` on the `linked` layer, which is the layer that made the claim.
+- `b4-index-reuse-concurrent-writers` appends a second writer's records under indexes already used.
+  Both verifiers fail the `chained` layer with an index gap and a broken link, and the message names
+  a gap, restart, or reused index, because that shape is what two processes appending to one chain
+  look like rather than one altered record. The single-writer lock exists to prevent it.
+
+Two limit cases pin what the format does not bind, so neither limit can be quietly forgotten.
+`l1-confirmed-with-pending-proof` passes: an anchor claiming `confirmed` whose proof carries only a
+pending attestation is accepted, because nothing compares the status claim against the attestations
+in the proof. `l2-legacy-canon-unmarked` fails with `hash-mismatch-or-legacy-canon`, because records
+hashed under the pre-marker key order cannot be recomputed by a verifier that does not carry ICU
+collation tables, and reporting them as unverifiable is a different statement from reporting them as
+tampered.
+
+Run both verifiers over every case:
+
+```bash
+npm run build
+cd verifier && go build -o agentwall-verify . && cd ..
+node scripts/conformance.js
+```
+
+The run prints one line per case. Its tail:
+
+```
+DIVERGENCE b9-anchor-digest-altered
+             format expects exit=1 chained=true linked=true anchored=false
+             typescript returns exit=0 chained=true linked=true anchored=true
+             it reports the digest the record claims was submitted and never recomputes one from the checkpoint the record embeds
+DIVERGENCE b10-proof-truncated
+             format expects exit=1 chained=true linked=true anchored=false
+             typescript returns exit=0 chained=true linked=true anchored=true
+             it never opens a proof file, so a proof that cannot be parsed still counts as an anchor
+DIVERGENCE b11-torn-tail
+             format expects exit=1 chained=true linked=true anchored=false
+             typescript returns exit=1 chained=false linked=true anchored=false
+             it reports a partial final line as a broken chain rather than as the torn tail a hard kill leaves behind
+ok         b12-duplicate-key-shadowed  exit=1 chained=false linked=true anchored=false
+DIVERGENCE b13-confirmed-without-proof
+             format expects exit=1 chained=true linked=true anchored=false
+             typescript returns exit=0 chained=true linked=true anchored=true
+             it counts the status field, so an anchor claiming confirmation passes with no proof bytes behind it
+ok         b14-submission-never-reached-calendar  exit=1 chained=true linked=true anchored=false
+ok         b15-sealed-segment-rewritten  exit=1 chained=true linked=false anchored=true
+ok         b16-live-tail-rewritten-after-checkpoint  exit=1 chained=true linked=true anchored=false
+ok         b17-sealed-segment-missing  exit=1 chained=true linked=false anchored=true
+ok         l1-confirmed-with-pending-proof  exit=0 chained=true linked=true anchored=true
+ok         l2-legacy-canon-unmarked  exit=1 chained=false linked=true anchored=false
+
+26 cases, typescript and go: 22 agreed, 4 declared divergence(s), 0 failure(s)
+```
+
+Each case is copied to a temp directory before it runs, so a verifier cannot alter what it checks.
+Regeneration is deterministic, which is what makes an unexpected diff mean something:
+
+```bash
+npm run gen:corpus && git status --porcelain verifier/testdata
+```
+
+That prints nothing, because the regenerated tree is byte identical to the committed one.
+
+### Where the two verifiers disagree today
+
+Four corpus cases get different verdicts from the two verifiers. In three of them the bundled
+TypeScript verifier accepts evidence the format rejects, which makes the Go verifier the stricter of
+the two today. In the fourth both reject the file, and the bundled verifier blames the chain instead
+of naming the torn tail:
+
+| Case | The edit | Bundled TypeScript verifier | Go verifier |
+| --- | --- | --- | --- |
+| `b9-anchor-digest-altered` | the anchor record's `digest` field altered | `anchored` PASS, exit 0. It reports the digest the record claims was submitted and never recomputes one from the checkpoint the record embeds | `digest-mismatch`, `anchored` FAIL, exit 1 |
+| `b10-proof-truncated` | the OTS proof truncated inside a length prefix | `anchored` PASS, exit 0. It never opens a proof file, so a proof that cannot be parsed still counts as an anchor | `proof-parse-error`, `anchored` FAIL, exit 1 |
+| `b11-torn-tail` | a partial final line, as a hard kill leaves behind | `chained` FAIL, exit 1. It condemns the whole chain over one partial write | `torn-tail` reported distinctly, `chained` PASS, exit 1 because nothing is anchored |
+| `b13-confirmed-without-proof` | an anchor claiming `confirmed` with its proof file deleted | `anchored` PASS, exit 0. It counts the status field, so a claim of confirmation passes with no proof bytes behind it | `proof-missing`, `anchored` FAIL, exit 1 |
+
+The three acceptance gaps are limits of the bundled verifier as it ships today. The harness prints
+every entry in this list on each run and fails if one of them starts agreeing
+([`scripts/conformance.js:40-66`](scripts/conformance.js)), so the list cannot rot into a set of
+excuses, and it is why the summary line above reports four declared divergences instead of agreement
+on every case.
+
+### What verification does not prove
+
+- **Completeness.** An anchor shows that what was written was not altered afterwards. It cannot
+  show that everything which should have been written was. A decision that was never recorded
+  leaves nothing to detect, and no verifier finds it.
+- **A correct specification.** Two readers of the same wrong document agree with each other and are
+  both wrong, so independence catches implementation bugs and shared runtime assumptions, not a
+  format mistake. The document is [docs/audit-format.md](docs/audit-format.md), which is why it is
+  written at the byte level and kept short enough to read in one sitting.
+- **Inclusion in a Bitcoin block, while an anchor is pending.** Pending means a calendar accepted a
+  submission. Both verifiers report pending as pending, and the Go verifier reports a Bitcoin
+  attestation as a block height plus the derived value for you to compare against that block's
+  merkle root, which it does not fetch.
 
 To run the tests behind the claims in this file:
 
@@ -200,6 +419,7 @@ npx jest tests/audit-chain.test.ts tests/audit-signing.test.ts tests/audit-ancho
          tests/operator-auth.test.ts tests/route-auth.test.ts tests/ssrf.test.ts tests/policy.test.ts
 npm run lint     # tsc --noEmit
 npm test         # full suite
+cd verifier && go test ./...
 ```
 
 ## What it does
@@ -319,6 +539,7 @@ Stated plainly, because a security tool that oversells itself is worse than no t
 | Anchoring is pending, not instant | An OpenTimestamps anchor stays `pending` until a Bitcoin block confirms, roughly one to six hours. `verify` reports pending as pending. Pending is not proof. |
 | Anchoring proves no alteration, not completeness | An anchor shows that what was written was not altered afterwards. It cannot show that everything which should have been written was. Silent omission at write time is a different, unsolved problem. |
 | A signature is necessary, not sufficient | It proves a key holder vouched. On a host where the audited principal can read the key, an agent with root can sign anything the operator can. Off-box anchoring is what closes that gap. |
+| The bundled verifier is the less strict of the two | Four conformance cases (`b9`, `b10`, `b11`, `b13`) get different verdicts from the two verifiers. In `b9`, `b10`, and `b13` the bundled TypeScript verifier accepts evidence the format rejects; in `b11` both reject the file and the bundled one blames the chain rather than naming the torn tail. They are listed in [Where the two verifiers disagree today](#where-the-two-verifiers-disagree-today), and the conformance harness fails if any of them starts agreeing. |
 | No TLS interception | CONNECT traffic is visible at hostname and port level only. Request paths, headers, and bodies stay opaque. This is deliberate: MITM would need a CA in every runtime trust store, which breaks the framework-agnostic property the proxy exists for. |
 | Attribution is Linux-only | It reads `/proc/net/tcp` and `/proc/<pid>/fd`. There is no macOS or Windows equivalent here. The rest of the server is portable; process attribution is not. |
 | Channel containment is Telegram only | Slack and Discord appear in the platform schema ([`src/integrations/communication-channel/control.ts:5`](src/integrations/communication-channel/control.ts)) with no route implementation behind them. |
