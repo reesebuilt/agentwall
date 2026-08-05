@@ -1,3 +1,3 @@
-module github.com/reesebuilt/agentwall/verifier
+module github.com/repsecure/agentwall/verifier
 
 go 1.22

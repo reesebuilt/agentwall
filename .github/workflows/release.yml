@@ -40,7 +40,7 @@ env:
   # which the 22.12.0 floor above does not satisfy, so installing it here would fail on a real
   # tag and only on a real tag. 11.19.0 accepts ^20.17.0 || >=22.9.0 and clears the OIDC floor.
   NPM_VERSION: "11.19.0"
-  IMAGE_NAME: ghcr.io/reesebuilt/agentwall
+  IMAGE_NAME: ghcr.io/repsecure/agentwall
 
 jobs:
   build:
@@ -98,7 +98,7 @@ jobs:
             echo "version=${version}"
             echo "tag=${tag}"
             echo "is-release=${is_release}"
-            echo "tarball=reesebuilt-agentwall-${version}.tgz"
+            echo "tarball=repsecure-agentwall-${version}.tgz"
           } >> "$GITHUB_OUTPUT"
           echo "building ${tag} (release=${is_release})"
 
@@ -328,7 +328,7 @@ jobs:
           # The binaries were built by this workflow from this tag, not by a person.
           slsa-verifier verify-artifact agentwall-verify-linux-amd64 \\
             --provenance-path ${PROVENANCE} \\
-            --source-uri github.com/reesebuilt/agentwall \\
+            --source-uri github.com/repsecure/agentwall \\
             --source-tag ${TAG}
 
           # The verifier shares no code with the tool that wrote the evidence.

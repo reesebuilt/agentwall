@@ -1,14 +1,14 @@
 {
-  "name": "@reesebuilt/agentwall",
+  "name": "@repsecure/agentwall",
   "version": "0.2.0",
   "description": "Agentwall: provenance-aware policy enforcement for agent egress, tools, content, and approvals",
-  "homepage": "https://github.com/reesebuilt/agentwall#readme",
+  "homepage": "https://github.com/repsecure/agentwall#readme",
   "bugs": {
-    "url": "https://github.com/reesebuilt/agentwall/issues"
+    "url": "https://github.com/repsecure/agentwall/issues"
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/reesebuilt/agentwall.git"
+    "url": "git+https://github.com/repsecure/agentwall.git"
   },
   "main": "dist/index.js",
   "scripts": {

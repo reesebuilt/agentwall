@@ -12,7 +12,7 @@
 ## Local source install
 
 ```bash
-git clone https://github.com/reesebuilt/agentwall
+git clone https://github.com/repsecure/agentwall
 cd agentwall
 npm install
 npm run build
