@@ -323,11 +323,14 @@ export function runVerify(paths: AnchorPaths): VerifyReport {
 	segPaths.add(resolve(r.auditPath));
 	const chainProblems: string[] = [];
 	let totalRecords = 0;
+	let walked = 0;
 	for (const p of segPaths) {
-		if (!existsSync(p)) {
-			chainProblems.push(`${p}: sealed in the manifest but missing from disk`);
-			continue;
-		}
+		// A file that is not there is accounted for by the manifest layer, which is what
+		// names it. Reporting its absence here as well would put segment accountability on
+		// two layers at once and let `linked` pass while a segment it vouches for is gone,
+		// which is the same "manifest binds only itself" hole the content check closes.
+		if (!existsSync(p)) continue;
+		walked++;
 		const v = verifyChainFile(p, rehash);
 		totalRecords += v.records;
 		// A broken segment produces one problem PER RECORD. A file damaged by concurrent
@@ -355,7 +358,7 @@ export function runVerify(paths: AnchorPaths): VerifyReport {
 	layers.push({
 		name: "chained",
 		ok: chainProblems.length === 0,
-		detail: `${totalRecords} records across ${segPaths.size} segment(s)`,
+		detail: `${totalRecords} records across ${walked} segment(s)`,
 		problems: chainProblems,
 	});
 

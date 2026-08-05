@@ -378,8 +378,15 @@ manifest is for. So the manifest is also checked against the bytes:
 - A present file holding no readable record MUST be reported the same way. Truncating a
   sealed segment to nothing leaves the file in place, so presence alone is not the test.
 - A segment the manifest names but that is absent from disk is a DIFFERENT finding, reported
-  as missing, not as a content difference. Absent evidence and contradicting evidence lead an
-  operator to different places, so a verifier MUST keep them distinguishable.
+  as missing rather than as a content difference. Absent evidence and contradicting evidence
+  lead an operator to different places, so a verifier MUST keep them distinguishable.
+- Both findings belong to the `linked` layer. Absence is the degenerate case of the check
+  above, since bytes that are not there cannot be compared, and putting it anywhere else
+  would let `linked` report a pass while a segment the manifest vouches for is gone. Which
+  layer owns a condition is part of the contract, because the verdicts are; two verifiers
+  that agree a segment is missing and disagree about which layer says so do not agree.
+
+An implementation MAY name the absence. The bundled one reports it as `segment-missing`.
 
 `finalHash` folds in every record before it, so requiring the file to still produce it is what
 turns the entry into a statement about the segment's contents rather than about the manifest
@@ -785,8 +792,8 @@ A verifier written from this document is conforming when all of the following ho
 - It distinguishes a torn final line from other parse failures.
 - It resolves a relative manifest `path` against the manifest's directory, never against its
   own working directory.
-- It checks every manifest entry against the segment it names, and keeps a missing segment
-  distinct from one whose contents contradict its entry.
+- It checks every manifest entry against the segment it names, reports both a missing segment
+  and a contradicting one on the `linked` layer, and keeps the two distinguishable.
 - It rebuilds each checkpoint's composite from the evidence and requires the checkpoint's
   `hash` to match, treating a live file that has only grown or rotated as healthy.
 - It treats an anchor record with `error` as failed, whatever its `status`.
