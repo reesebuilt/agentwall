@@ -58,11 +58,6 @@ const DIVERGENCES = {
 		layers: { chained: false },
 		why: "it reports a partial final line as a broken chain rather than as the torn tail a hard kill leaves behind",
 	},
-	"b12-duplicate-key-shadowed": {
-		exit: 0,
-		layers: { chained: true },
-		why: "it parses with last-key-wins, so a duplicate key smuggled in ahead of the original recomputes the original hash",
-	},
 	"b13-confirmed-without-proof": {
 		exit: 0,
 		layers: { anchored: true },

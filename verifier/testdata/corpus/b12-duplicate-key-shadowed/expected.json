@@ -3,7 +3,7 @@
   "layers": {
     "chained": false,
     "linked": true,
-    "anchored": true
+    "anchored": false
   },
   "go_codes_include": [
     "dup-key"
