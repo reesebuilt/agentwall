@@ -1,6 +1,6 @@
 import { createHash } from "crypto";
-import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
-import { dirname, join } from "path";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
+import { join } from "path";
 import type { Checkpoint } from "./signing";
 
 /**
@@ -123,6 +123,10 @@ const OTS_CALENDARS = [
  * may be down. Status stays "pending" by design: the digest is not anchored until a
  * Bitcoin block includes the aggregated root, and calling that confirmed would overstate
  * what has actually happened.
+ *
+ * A calendar being unreachable returns a record carrying `error`, never a thrown
+ * exception. A gap the operator can see beats an exception that aborts the caller and
+ * leaves no trace that anchoring was attempted at all.
  */
 export async function anchorToOpenTimestamps(
 	cp: Checkpoint,
@@ -154,7 +158,13 @@ export async function anchorToOpenTimestamps(
 				let proofPath: string | undefined;
 				if (proofDir) {
 					mkdirSync(proofDir, { recursive: true, mode: 0o700 });
-					proofPath = join(proofDir, `${cp.chainIndex}.ots`);
+					// Name the proof after the DIGEST, which is unique per checkpoint, so no
+					// pass can overwrite an earlier pass's proof. Naming it after a counter
+					// that only advances on rotation collides on every pass of a deployment
+					// that has not rotated, and a proof file that can be silently replaced
+					// is evidence that can be silently destroyed. The merkle path is the
+					// whole value of the anchor; losing it leaves an unverifiable claim.
+					proofPath = join(proofDir, `${digest}.ots`);
 					writeFileSync(proofPath, res.body, { mode: 0o600 });
 				}
 				return { ...base, reference: cal, status: "pending", proofPath };
@@ -165,26 +175,6 @@ export async function anchorToOpenTimestamps(
 		}
 	}
 	return { ...base, reference: "", status: "pending", error: `all calendars failed: ${failures.join("; ")}` };
-}
-
-/**
- * Anchor to every backend and record the outcome.
- *
- * Failures are recorded, never thrown. An anchor that cannot reach the network is a gap
- * in the evidence, and a gap you can see beats an exception that aborts the caller and
- * leaves no trace that anchoring was even attempted.
- */
-export async function anchorCheckpoint(
-	cp: Checkpoint,
-	logPath: string,
-	poster: HttpPoster = fetchPoster,
-	now: () => Date = () => new Date(),
-	proofDir: string = join(dirname(logPath), "ots"),
-): Promise<AnchorRecord[]> {
-	const records = [await anchorToOpenTimestamps(cp, poster, now, proofDir)];
-	mkdirSync(dirname(logPath), { recursive: true, mode: 0o700 });
-	for (const r of records) appendFileSync(logPath, JSON.stringify(r) + "\n", { mode: 0o600 });
-	return records;
 }
 
 export interface AnchorCoverage {
