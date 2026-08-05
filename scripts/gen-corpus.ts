@@ -84,6 +84,9 @@
  *   b16 the live file's last record rewritten and rehashed after the checkpoint was signed.
  *       Checks the signature and stops, so it never asks whether the composite still
  *       describes anything on disk.
+ *   b17 a sealed segment deleted, manifest untouched.
+ *       Reports it against the chain, which marks a chain broken over records that are not
+ *       missing and says nothing about the entry that is actually wrong.
  *
  * LIMIT CASES. These pass. They are in the corpus because the format binds less than a
  * reader assumes, and a limit pinned by a case is a limit that cannot be quietly forgotten.
@@ -800,6 +803,21 @@ async function main(): Promise<void> {
 			exit: 1,
 			layers: { chained: true, linked: true, anchored: false },
 			go_codes_include: ["live-tail-mismatch"],
+		};
+	});
+
+	await buildCase("b17-sealed-segment-missing", async (at) => {
+		await baseline(at);
+		// Deleting the file the manifest names is the crudest way to remove history, and it is
+		// the degenerate case of the same question a content check asks. The manifest still
+		// links to itself perfectly; only the evidence is gone. Anchored survives because the
+		// composite reads the manifest and the live file, neither of which moved, so the finding
+		// is reported once by the layer that claimed the segment exists.
+		rmSync(SEGMENTS[1]);
+		return {
+			exit: 1,
+			layers: { chained: true, linked: false, anchored: true },
+			go_codes_include: ["segment-missing"],
 		};
 	});
 
