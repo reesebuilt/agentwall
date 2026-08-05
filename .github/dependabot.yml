@@ -25,3 +25,12 @@ updates:
     directory: "/"
     schedule:
       interval: weekly
+
+  - package-ecosystem: docker
+    directory: "/"
+    schedule:
+      interval: weekly
+    # The Dockerfile pins its base by digest. A digest pin never expires on its own, so
+    # without this ecosystem the image would keep shipping whatever node:22-slim contained
+    # on the day the pin was written, including its unpatched CVEs, and nothing would say
+    # so. Dependabot rewrites the digest and the trailing tag comment together.
