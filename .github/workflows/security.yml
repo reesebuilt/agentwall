@@ -14,19 +14,38 @@ jobs:
   secret-scan:
     name: Secret scan (gitleaks)
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # gitleaks walks git history. The default shallow clone leaves it without the
           # commits to scan, and it fails with "stderr is not empty" rather than saying
           # so. A secret scan that errors out is indistinguishable from one that passes
           # if nobody reads the log, so fetch the full history it actually needs.
           fetch-depth: 0
+          # checkout writes the job's GITHUB_TOKEN into .git/config as an auth header and
+          # leaves it there for every later step. Nothing in this job pushes, and the steps
+          # that follow run third-party code (a downloaded scanner binary), so the token has
+          # no reason to sit on disk where that code can read it.
+          persist-credentials: false
       - name: Install gitleaks
+        env:
+          GITLEAKS_VERSION: "8.24.3"
+          # Digest of gitleaks_8.24.3_linux_x64.tar.gz taken from the release's published
+          # checksums file. A release asset is mutable: a tag can be deleted and repushed and
+          # an upload can be replaced, so the URL alone pins a name, not the bytes. Piping the
+          # download straight into tar executed whatever arrived inside a job that can read
+          # this repository. Checking the digest first turns a swapped asset into a failed
+          # job instead of an unreviewed binary run against our source.
+          GITLEAKS_SHA256: "9991e0b2903da4c8f6122b5c3186448b927a5da4deef1fe45271c3793f4ee29c"
         run: |
-          curl -sSfL https://github.com/gitleaks/gitleaks/releases/download/v8.24.3/gitleaks_8.24.3_linux_x64.tar.gz \
-            | tar xz -C "$RUNNER_TEMP"
+          archive="$RUNNER_TEMP/gitleaks.tar.gz"
+          curl -sSfL --retry 3 -o "$archive" \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          echo "${GITLEAKS_SHA256}  ${archive}" | sha256sum --check --strict -
+          tar -xzf "$archive" -C "$RUNNER_TEMP" gitleaks
       - name: Run gitleaks
         # The gitleaks ACTION computes a git range from the push event as
         # <oldest-commit>^..<newest>. On a fresh repository's first push the oldest commit
@@ -42,11 +61,17 @@ jobs:
   dependency-audit:
     name: Dependency audit (moderate+)
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # npm ci runs install scripts from the dependency tree. Those scripts should not
+          # find a repository token in .git/config.
+          persist-credentials: false
       - name: Setup Node
-        uses: actions/setup-node@v7
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22
           cache: npm
@@ -64,4 +89,4 @@ jobs:
       pull-requests: read
     steps:
       - name: Dependency review
-        uses: actions/dependency-review-action@v5
+        uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
