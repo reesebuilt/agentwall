@@ -98,7 +98,7 @@ Each request appends a chained record naming the process that made it:
  "metadata":{"host":"example.com","port":"443","pid":"1101858","comm":"curl",
              "durationMs":"378","bytesUp":"797","bytesDown":"5344"},
  "integrity":{"chainIndex":1,"hash":"0e86f943...","previousHash":"4678da51...",
-              "algorithm":"sha256","status":"chained-local"}}
+              "algorithm":"sha256","status":"chained-local","canon":"cu1"}}
 ```
 
 Ask for a policy decision. The token is mandatory; without it this returns `401`:
@@ -183,7 +183,7 @@ Anchored
   checkpoint hash   3b7cd8dfdd69dd40f3d2a5171b1fb5eed84d2fed1c0cbd24b6c7dd6be09a3a18
   covers            7 records (0 sealed segment(s) + 7 live)
   calendar          https://alice.btc.calendar.opentimestamps.org/digest
-  proof             audit-dir/proofs/0.ots
+  proof             audit-dir/proofs/b829ef597c9769f3ac41b1f74348dc25935a553cf199d2bc03a4b1b33010bcd4.ots
   status            pending
 ```
 

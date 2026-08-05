@@ -554,8 +554,12 @@ describe("Agentwall CLI helpers", () => {
     expect(() => resolveApprovalMode({}, [])).toThrow("approval mode required");
   });
 
+  // The fetch stubs below declare the URL and init parameters the CLI passes, even though the
+  // stub bodies ignore them. toHaveBeenCalledWith is arity checked against the stub's own
+  // signature, so a parameterless stub makes the two argument call assertions a type error and
+  // the suite stops compiling. Deleting the unused parameters removes the assertions with them.
   it("posts approval mode changes to the live control API", async () => {
-    const fetchMock = jest.fn(async () => ({
+    const fetchMock = jest.fn(async (_url: string, _init?: RequestInit) => ({
       ok: true,
       status: 200,
       statusText: "OK",
@@ -577,7 +581,7 @@ describe("Agentwall CLI helpers", () => {
   });
 
   it("posts session pause controls with operator notes", async () => {
-    const fetchMock = jest.fn(async () => ({
+    const fetchMock = jest.fn(async (_url: string, _init?: RequestInit) => ({
       ok: true,
       status: 200,
       statusText: "OK",
@@ -604,7 +608,7 @@ describe("Agentwall CLI helpers", () => {
   });
 
   it("posts terminate controls once explicit confirmation is present", async () => {
-    const fetchMock = jest.fn(async () => ({
+    const fetchMock = jest.fn(async (_url: string, _init?: RequestInit) => ({
       ok: true,
       status: 200,
       statusText: "OK",
@@ -626,7 +630,7 @@ describe("Agentwall CLI helpers", () => {
   });
 
   it("explains how to recover when a live session control targets a missing session", async () => {
-    const fetchMock = jest.fn(async () => ({
+    const fetchMock = jest.fn(async (_url: string, _init?: RequestInit) => ({
       ok: false,
       status: 404,
       statusText: "Not Found",
@@ -639,7 +643,7 @@ describe("Agentwall CLI helpers", () => {
   });
 
   it("keeps terminated sessions closed when a resume hits hard containment", async () => {
-    const fetchMock = jest.fn(async () => ({
+    const fetchMock = jest.fn(async (_url: string, _init?: RequestInit) => ({
       ok: false,
       status: 409,
       statusText: "Conflict",
@@ -654,7 +658,7 @@ describe("Agentwall CLI helpers", () => {
   });
 
   it("explains how to recover when the CLI targets the wrong Agentwall instance", async () => {
-    const fetchMock = jest.fn(async () => {
+    const fetchMock = jest.fn(async (_url: string, _init?: RequestInit) => {
       throw new TypeError("fetch failed");
     });
     (global as { fetch?: unknown }).fetch = fetchMock;
@@ -668,7 +672,7 @@ describe("Agentwall CLI helpers", () => {
   });
 
   it("flags auth-like dashboard errors as likely wrong-target mistakes", async () => {
-    const fetchMock = jest.fn(async () => ({
+    const fetchMock = jest.fn(async (_url: string, _init?: RequestInit) => ({
       ok: false,
       status: 401,
       statusText: "Unauthorized",
@@ -685,7 +689,7 @@ describe("Agentwall CLI helpers", () => {
   });
 
   it("prints raw status json when requested", async () => {
-    const fetchMock = jest.fn(async () => ({
+    const fetchMock = jest.fn(async (_url: string, _init?: RequestInit) => ({
       ok: true,
       status: 200,
       statusText: "OK",
@@ -725,7 +729,7 @@ describe("Agentwall CLI helpers", () => {
 
   it("posts shield mode controls with explicit duration", async () => {
     const shieldUntil = new Date(Date.now() + 5 * 60_000).toISOString();
-    const fetchMock = jest.fn(async () => ({
+    const fetchMock = jest.fn(async (_url: string, _init?: RequestInit) => ({
       ok: true,
       status: 200,
       statusText: "OK",
@@ -747,7 +751,7 @@ describe("Agentwall CLI helpers", () => {
   });
 
   it("returns FloodGuard to normal mode", async () => {
-    const fetchMock = jest.fn(async () => ({
+    const fetchMock = jest.fn(async (_url: string, _init?: RequestInit) => ({
       ok: true,
       status: 200,
       statusText: "OK",
@@ -770,7 +774,7 @@ describe("Agentwall CLI helpers", () => {
 
   it("posts session boost overrides to the live control API", async () => {
     const expiresAt = new Date(Date.now() + 15 * 60_000).toISOString();
-    const fetchMock = jest.fn(async () => ({
+    const fetchMock = jest.fn(async (_url: string, _init?: RequestInit) => ({
       ok: true,
       status: 200,
       statusText: "OK",
@@ -792,7 +796,7 @@ describe("Agentwall CLI helpers", () => {
   });
 
   it("clears session overrides from the live control API", async () => {
-    const fetchMock = jest.fn(async () => ({
+    const fetchMock = jest.fn(async (_url: string, _init?: RequestInit) => ({
       ok: true,
       status: 200,
       statusText: "OK",
