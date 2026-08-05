@@ -44,8 +44,9 @@ worse than no tool.
 
 ## Dependencies
 
-Runtime dependencies are deliberately four: `fastify`, `js-yaml`, `pino`, `zod`. Adding a fifth
-needs a reason in the pull request.
+Runtime dependencies are deliberately three: `fastify`, `js-yaml`, `zod`. Adding a fourth needs
+a reason in the pull request. A dependency nothing imports is not a dependency; declare what the
+code actually uses.
 
 The audit, signing, and anchoring paths use Node's own `crypto` and plain HTTP with no
 third-party clients. Do not add a dependency there. A supply-chain compromise inside the

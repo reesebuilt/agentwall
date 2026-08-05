@@ -1,9 +1,18 @@
 {
-  "name": "agentwall",
-  "version": "0.1.0",
+  "name": "@reesebuilt/agentwall",
+  "version": "0.2.0",
   "description": "Agentwall: provenance-aware policy enforcement for agent egress, tools, content, and approvals",
+  "homepage": "https://github.com/reesebuilt/agentwall#readme",
+  "bugs": {
+    "url": "https://github.com/reesebuilt/agentwall/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/reesebuilt/agentwall.git"
+  },
   "main": "dist/index.js",
   "scripts": {
+    "prepack": "npm run build",
     "build": "tsc",
     "start": "node dist/index.js",
     "dev": "ts-node src/index.ts",
@@ -27,15 +36,21 @@
     "ai-safety"
   ],
   "license": "Apache-2.0",
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
   "dependencies": {
     "fastify": "5.11.0",
     "js-yaml": "5.2.3",
-    "pino": "^8.19.0",
     "zod": "4.4.3"
   },
   "devDependencies": {
     "@jest/globals": "^30.4.1",
-    "@types/node": "^20.11.5",
+    "@types/node": "^22.20.1",
     "jest": "^30.4.2",
     "ts-jest": "^29.4.12",
     "ts-node": "^10.9.2",
@@ -57,6 +72,7 @@
   "files": [
     "dist/",
     "public/",
+    "!public/assets/*.png",
     "examples/",
     "README.md",
     "LICENSE",
