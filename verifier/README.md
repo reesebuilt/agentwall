@@ -35,7 +35,7 @@ the FORMAT.
 Zero third party dependencies is a property you check rather than a claim you accept:
 
     cd verifier && go list -m all
-    github.com/reesebuilt/agentwall/verifier
+    github.com/repsecure/agentwall/verifier
 
 One line, and it is this module. SHA-256, Ed25519, SPKI parsing, and JSON all come from the Go
 standard library, maintained by the Go security team, so a reader auditing this verifier reads this

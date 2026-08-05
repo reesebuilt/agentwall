@@ -10,7 +10,7 @@ and keeps a record that cannot be quietly rewritten.
 </p>
 
 <p align="center">
-  <a href="https://github.com/reesebuilt/agentwall/actions/workflows/ci.yml"><img src="https://github.com/reesebuilt/agentwall/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI"></a>
+  <a href="https://github.com/repsecure/agentwall/actions/workflows/ci.yml"><img src="https://github.com/repsecure/agentwall/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-22d3ee?style=flat-square&labelColor=0b0f14" alt="License: Apache-2.0"></a>
   <img src="https://img.shields.io/badge/TypeScript-5.x-22d3ee?style=flat-square&labelColor=0b0f14&logo=typescript&logoColor=22d3ee" alt="TypeScript">
   <img src="https://img.shields.io/badge/Node-22.12%2B-22d3ee?style=flat-square&labelColor=0b0f14&logo=node.js&logoColor=22d3ee" alt="Node 22.12+">
@@ -56,19 +56,19 @@ The rest of the limits are in [Limits](#limits). They are not footnotes.
 Linux, Node.js 22.12 or newer. Verified on Node 24.14.1.
 
 ```bash
-npm install -g @reesebuilt/agentwall
+npm install -g @repsecure/agentwall
 
 agentwall init --mode monitor
 agentwall doctor
 ```
 
 The npm package named `agentwall`, without a scope, is a different and unrelated project. This
-one is `@reesebuilt/agentwall`; the command it installs is `agentwall`.
+one is `@repsecure/agentwall`; the command it installs is `agentwall`.
 
 From a checkout instead:
 
 ```bash
-git clone https://github.com/reesebuilt/agentwall.git
+git clone https://github.com/repsecure/agentwall.git
 cd agentwall
 npm install
 npm run build
@@ -250,7 +250,7 @@ go list -m all
 ```
 
 ```
-github.com/reesebuilt/agentwall/verifier
+github.com/repsecure/agentwall/verifier
 ```
 
 One line, and it is this module. SHA-256, Ed25519, SPKI parsing, and JSON all come from the Go

@@ -83,7 +83,7 @@ decision, policy file, or enforcement behavior moved in this release.
 - Approval webhook notifications for queued and resolved manual reviews via `approval.webhookUrl`.
 
 ### Changed
-- The npm package is published as `@reesebuilt/agentwall`. The unscoped name `agentwall` on npm
+- The npm package is published as `@repsecure/agentwall`. The unscoped name `agentwall` on npm
   belongs to an unrelated project and always has. The installed command is still `agentwall`.
 - The supported Node floor is 22.12.0, declared in `engines`. Node 20 reached end of life in
   April 2026 and a security tool should not advertise a runtime that stops receiving fixes.
