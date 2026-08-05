@@ -27,13 +27,12 @@
   "license": "Apache-2.0",
   "dependencies": {
     "fastify": "5.11.0",
-    "js-yaml": "^4.1.0",
+    "js-yaml": "5.2.3",
     "pino": "^8.19.0",
     "zod": "4.4.3"
   },
   "devDependencies": {
     "@jest/globals": "^30.4.1",
-    "@types/js-yaml": "^4.0.9",
     "@types/node": "^20.11.5",
     "jest": "^30.4.2",
     "ts-jest": "^29.4.12",
