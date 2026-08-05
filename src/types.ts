@@ -95,8 +95,10 @@ export const AgentContextSchema = z.object({
   sessionId: z.string().optional(),
   plane: PlaneSchema,
   action: z.string(),
-  payload: z.record(z.unknown()),
-  metadata: z.record(z.string()).optional(),
+  // Key schemas are explicit: both records are keyed by arbitrary caller-supplied
+  // strings, so nothing here constrains which keys may appear.
+  payload: z.record(z.string(), z.unknown()),
+  metadata: z.record(z.string(), z.string()).optional(),
   actor: ActorScopeSchema.optional(),
   control: ControlPlaneStateSchema.optional(),
   provenance: z.array(ProvenanceTagSchema).optional(),
@@ -289,7 +291,7 @@ export type ContentClassification = z.infer<typeof ContentClassificationSchema>;
 export const NetworkRequestSchema = z.object({
   url: z.string(),
   method: z.string().optional(),
-  headers: z.record(z.string()).optional(),
+  headers: z.record(z.string(), z.string()).optional(),
   body: z.string().optional(),
 });
 export type NetworkRequest = z.infer<typeof NetworkRequestSchema>;
