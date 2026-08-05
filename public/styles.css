@@ -1,10 +1,10 @@
 /* ======================================================================
- * Agentwall Control Room — Cockpit revamp 2026-05-12
+ * Agentwall Control Room: Cockpit revamp 2026-05-12
  * Premium dark operator UI. Restrained color, deliberate hierarchy.
  * ====================================================================== */
 
 :root {
-  /* Surface palette — graphite + cool blue, never pure black */
+  /* Surface palette: graphite + cool blue, never pure black */
   --bg-0: #07090d;
   --bg-1: #0a0d13;
   --bg-2: #0f131b;
@@ -28,8 +28,8 @@
   --text-strong: #ffffff;
   --muted: var(--text-2);
 
-  /* State colors — used for state, not decoration */
-  --accent: #5fe6c8;            /* teal — primary operator */
+  /* State colors: used for state, not decoration */
+  --accent: #5fe6c8;            /* teal: primary operator */
   --accent-soft: rgba(95, 230, 200, 0.12);
   --accent-line: rgba(95, 230, 200, 0.30);
   --info: #7cb4ff;
@@ -46,7 +46,7 @@
   --pending: #9cb9ff;
   --pending-soft: rgba(156, 185, 255, 0.13);
 
-  /* Surface accents — distinct hue per protection surface */
+  /* Surface accents: distinct hue per protection surface */
   --surface-runtime: #5fe6c8;
   --surface-runtime-soft: rgba(95, 230, 200, 0.10);
   --surface-channel: #7cb4ff;
@@ -532,7 +532,7 @@ body[data-console-mode="core"] .advanced-panel { display: none !important; }
 body[data-console-mode="core"] .advanced-user-control { border-color: var(--accent-line); }
 
 /* ======================================================================
- * COMMAND HERO — one dominant region
+ * COMMAND HERO: one dominant region
  * ====================================================================== */
 
 .ops-hero {
@@ -608,7 +608,7 @@ body[data-console-mode="core"] .advanced-user-control { border-color: var(--acce
   line-height: 1.55;
 }
 
-/* hero metrics — proof strip */
+/* hero metrics: proof strip */
 .hero-metrics {
   display: grid;
   grid-template-columns: repeat(6, minmax(0, 1fr));
@@ -676,7 +676,7 @@ body[data-console-mode="core"] .advanced-user-control { border-color: var(--acce
 .panel-board { min-height: 280px; }
 
 /* ======================================================================
- * PROTECTION SURFACES — three distinct accent colors
+ * PROTECTION SURFACES: three distinct accent colors
  * ====================================================================== */
 
 .ops-surfaces {
@@ -737,7 +737,7 @@ body[data-console-mode="core"] .advanced-user-control { border-color: var(--acce
 }
 
 /* ======================================================================
- * PANELS — generic
+ * PANELS: generic
  * ====================================================================== */
 
 .panel {

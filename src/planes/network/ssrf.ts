@@ -73,7 +73,7 @@ export function normalizeHostname(hostname: string): string {
  * Dotted-quad embedded in an IPv4-mapped (::ffff:127.0.0.1) or IPv4-compatible
  * (::127.0.0.1) IPv6 address, else null.
  *
- * The URL parser re-serialises those to hex — "::ffff:7f00:1" — which matches neither
+ * The URL parser re-serialises those to hex ("::ffff:7f00:1"), which matches neither
  * the IPv6 nor the IPv4 patterns, so `http://[::ffff:127.0.0.1]/` reached loopback even
  * with bracket stripping in place. Decoding the low 32 bits closes that.
  */

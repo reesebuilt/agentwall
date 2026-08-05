@@ -3,7 +3,7 @@ import { connect as netConnect, Socket, Server } from "net";
 import { readdirSync, readFileSync, readlinkSync } from "fs";
 
 /**
- * CONNECT-aware forward proxy — the insertion mechanism.
+ * CONNECT-aware forward proxy: the insertion mechanism.
  *
  * Why a proxy rather than harness hooks: egress is the one action plane with a
  * pre-existing universal insertion standard. Four environment variables and zero lines of
@@ -12,7 +12,7 @@ import { readdirSync, readFileSync, readlinkSync } from "fs";
  * client is covered, with no per-framework adapter to maintain.
  *
  * Tier 1 only: this sees CONNECT host:port and absolute-URI hosts. It does NOT terminate
- * TLS, so https bodies stay opaque. Deliberate — MITM needs a CA in every runtime trust
+ * TLS, so https bodies stay opaque. Deliberate: MITM needs a CA in every runtime trust
  * store, which breaks the harness-agnostic property this exists for.
  *
  * Monitor mode records and always allows. Nothing in this file blocks.
@@ -60,7 +60,7 @@ export interface ForwardProxyOptions {
  *
  * Resolving a connection to a process is two steps: read /proc/net/tcp to map the
  * client port to a socket inode (cheap), then find which process holds that inode
- * (expensive — walking every /proc/<pid>/fd measured ~44ms, scaling with total FDs).
+ * (expensive: walking every /proc/<pid>/fd measured ~44ms, scaling with total FDs).
  *
  * Caching the inode is useless: every connection has a fresh one, so it never hits.
  * What repeats is the PROCESS. An agent fleet is a handful of long-lived clients
@@ -184,7 +184,7 @@ export function createForwardProxy(opts: ForwardProxyOptions): Server {
     const { host, port } = parseHostPort(req.url ?? "", 443);
     // Attribution is deliberately NOT done here. Walking /proc costs ~44ms and scales
     // with total fds on the box; paying that before the tunnel opens taxes every single
-    // model API call. It is resolved after the connection is established instead — the
+    // model API call. It is resolved after the connection is established instead: the
     // socket is still in /proc/net/tcp for the life of the connection, so the data is
     // identical and the latency is off the critical path.
     const event: ProxyEvent = {

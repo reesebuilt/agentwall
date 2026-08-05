@@ -226,7 +226,7 @@ export function verifyManifest(manifestPath: string): ManifestVerification {
 		if (e.previousSegmentHash !== expectedPrev) {
 
 			problems.push(
-				`segment ${i} (${e.path}): expected previousSegmentHash ${expectedPrev ?? "null"}, found ${e.previousSegmentHash ?? "null"} — a segment may have been removed or reordered`,
+				`segment ${i} (${e.path}): expected previousSegmentHash ${expectedPrev ?? "null"}, found ${e.previousSegmentHash ?? "null"}; a segment may have been removed or reordered`,
 			);
 		}
 
@@ -253,7 +253,7 @@ export function verifyManifest(manifestPath: string): ManifestVerification {
 			}
 			if (differences.length > 0) {
 				problems.push(
-					`segment ${i} (${e.path}): segment-content-mismatch, the file no longer matches its seal — ` +
+					`segment ${i} (${e.path}): segment-content-mismatch, the file no longer matches its seal: ` +
 						differences.join("; "),
 				);
 			}
