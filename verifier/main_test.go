@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -25,6 +27,33 @@ func TestRunVersion(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), verifierVersion) {
 		t.Fatalf("version output missing version: %q", out.String())
+	}
+}
+
+// The release stamps the tag into the binary via -ldflags, but `go run ./verifier` from a plain
+// checkout reports the compiled-in default instead. That default is a second copy of the
+// project's version number, and a second copy drifts: bump package.json, forget report.go, and
+// the verifier tells a stranger it is a version that was never released. This test is the only
+// thing that notices.
+func TestVersionMatchesPackageJSON(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "package.json"))
+	if errors.Is(err, os.ErrNotExist) {
+		t.Skip("no package.json beside the verifier; running outside the repo")
+	}
+	if err != nil {
+		t.Fatalf("reading package.json: %v", err)
+	}
+	var pkg struct {
+		Version string `json:"version"`
+	}
+	if err := json.Unmarshal(raw, &pkg); err != nil {
+		t.Fatalf("parsing package.json: %v", err)
+	}
+	if pkg.Version == "" {
+		t.Fatal("package.json has no version field")
+	}
+	if pkg.Version != verifierVersion {
+		t.Fatalf("verifierVersion %q does not match package.json version %q; update verifier/report.go", verifierVersion, pkg.Version)
 	}
 }
 

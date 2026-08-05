@@ -17,10 +17,18 @@ import (
 
 const (
 	verifierName     = "agentwall-verify"
-	verifierVersion  = "0.2.0"
 	verifierLanguage = "go"
 	verifierCanon    = "cu1"
 )
+
+// verifierVersion is a var rather than a const so a release build can stamp the tag into the
+// binary with -ldflags "-X main.verifierVersion=<version>". The linker refuses to write to a
+// const, and it silently ignores a -X naming a symbol that is not a string var, so declaring
+// this as a const produces a binary that reports a stale version with no build error to catch
+// it: the release would ship a v0.3.0 binary that answers "0.2.0". The default matches the
+// version field in package.json, which keeps `go run ./verifier` honest from a plain checkout
+// where no linker flags are set. TestVersionMatchesPackageJSON holds the two in step.
+var verifierVersion = "0.2.0"
 
 // problem is one finding. code is stable and machine-readable and appears in JSON output; text
 // is human guidance and is explicitly not part of any cross-implementation contract. fatal

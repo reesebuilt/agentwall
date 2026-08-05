@@ -13,7 +13,7 @@ and keeps a record that cannot be quietly rewritten.
   <a href="https://github.com/reesebuilt/agentwall/actions/workflows/ci.yml"><img src="https://github.com/reesebuilt/agentwall/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-22d3ee?style=flat-square&labelColor=0b0f14" alt="License: Apache-2.0"></a>
   <img src="https://img.shields.io/badge/TypeScript-5.x-22d3ee?style=flat-square&labelColor=0b0f14&logo=typescript&logoColor=22d3ee" alt="TypeScript">
-  <img src="https://img.shields.io/badge/Node-%E2%89%A520-22d3ee?style=flat-square&labelColor=0b0f14&logo=node.js&logoColor=22d3ee" alt="Node >= 20">
+  <img src="https://img.shields.io/badge/Node-22.12%2B-22d3ee?style=flat-square&labelColor=0b0f14&logo=node.js&logoColor=22d3ee" alt="Node 22.12+">
   <img src="https://img.shields.io/badge/platform-Linux-22d3ee?style=flat-square&labelColor=0b0f14&logo=linux&logoColor=22d3ee" alt="Platform: Linux">
 </p>
 
@@ -53,7 +53,19 @@ The rest of the limits are in [Limits](#limits). They are not footnotes.
 
 ## Quick start
 
-Linux, Node.js 20 or newer. Verified on Node 24.14.1.
+Linux, Node.js 22.12 or newer. Verified on Node 24.14.1.
+
+```bash
+npm install -g @reesebuilt/agentwall
+
+agentwall init --mode monitor
+agentwall doctor
+```
+
+The npm package named `agentwall`, without a scope, is a different and unrelated project. This
+one is `@reesebuilt/agentwall`; the command it installs is `agentwall`.
+
+From a checkout instead:
 
 ```bash
 git clone https://github.com/reesebuilt/agentwall.git
@@ -634,11 +646,12 @@ Egress observed by the proxy enters the same hash chain, attributed to the origi
 
 ## Built with
 
-TypeScript 5 (strict) on Node.js 20+, Fastify 5, Zod, pino, YAML policy via `js-yaml`, Jest.
-Runtime dependencies are deliberately four: `fastify`, `js-yaml`, `pino`, `zod`. The audit and
-anchoring paths use Node's own `crypto` and plain HTTP with no third-party clients, because a
-dependency inside the component whose entire job is being trustworthy is a supply-chain risk
-this project declines.
+TypeScript 5 (strict) on Node.js 22.12+, Fastify 5, Zod, YAML policy via `js-yaml`, Jest.
+Runtime dependencies are deliberately three: `fastify`, `js-yaml`, `zod`. Logging is Fastify's
+own pino instance, which arrives as its dependency rather than ours. The audit and anchoring
+paths use Node's own `crypto` and plain HTTP with no third-party clients, because a dependency
+inside the component whose entire job is being trustworthy is a supply-chain risk this project
+declines.
 
 ## Docs
 

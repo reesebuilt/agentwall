@@ -7,7 +7,50 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-08-05
+
+The first tagged release. It freezes the on-disk evidence format and makes that format
+checkable by a program that shares no code with Agentwall.
+
+Upgrade if you care whether the audit log can be quietly rewritten. Before this release the
+hash chain was verifiable only by the same TypeScript that wrote it, which means a bug in the
+writer was invisible to the reader. Now the format is specified in `docs/audit-format.md`, a
+second implementation in Go verifies it, and the two are held against a shared corpus on every
+commit. Existing audit files stay verifiable: records written before this release carry no
+canonical-form marker and are still accepted through the legacy path.
+
+Nothing about the shipped posture changed. Monitor-first is still the default, and no default
+decision, policy file, or enforcement behavior moved in this release.
+
 ### Added
+- Canonical form `cu1`, recorded in each record's `integrity.canon`. Object keys are ordered by
+  UTF-16 code unit rather than locale collation, so a verifier in another language reproduces
+  the hash without shipping ICU tables. Records without the marker are hashed under the old
+  locale-dependent order and remain verifiable through a fallback path.
+- A rotation manifest, `segments.jsonl`, that binds every sealed segment to its own bytes. Each
+  entry carries a hash of itself and the final hash of the segment before it, so deleting a
+  rotated segment, reordering two of them, or rewriting one after it was sealed is now
+  detectable rather than silently invisible.
+- Live-tail re-derivation. A checkpoint commits to a prefix of the live file, so the log growing
+  after a checkpoint is normal and does not invalidate it, while rewriting any record inside the
+  committed prefix fails verification.
+- Rejection of records containing duplicate JSON keys. Implementations disagree about which
+  value of a repeated member wins, so a duplicate key is a way to hand two readers the same
+  bytes and have them reach different conclusions about what was recorded.
+- Off-box anchoring wired to the CLI: `agentwall anchor` seals the current segment, signs an
+  Ed25519 checkpoint over the composite state, and submits it to OpenTimestamps calendars.
+  `agentwall verify` reports the chained, linked, and anchored layers separately and exits
+  non-zero unless all three hold.
+- An independent verifier, `agentwall-verify`, written in Go against `docs/audit-format.md`
+  rather than against our source. It uses the Go standard library and nothing else, so
+  `go list -m all` prints one line, and it performs no network access and writes no files.
+  Released as static binaries for linux, macOS, and Windows.
+- A 26 case conformance corpus covering valid evidence, forgeries, and boundary conditions, run
+  through both verifiers on every commit. The two agree on 22 cases; the 4 remaining are places
+  the bundled TypeScript verifier accepts evidence the format rejects, declared explicitly in
+  the harness rather than papered over.
+- `docs/audit-format.md`, the normative specification. The implementations conform to it, not
+  the other way around.
 - FloodGuard shield mode control surface in the dashboard.
 - FloodGuard per-session temporary override API and operator controls.
 - Forward-facing Agentwall logo assets wired into README and public HTML surfaces.
@@ -15,6 +58,10 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - Approval webhook notifications for queued and resolved manual reviews via `approval.webhookUrl`.
 
 ### Changed
+- The npm package is published as `@reesebuilt/agentwall`. The unscoped name `agentwall` on npm
+  belongs to an unrelated project and always has. The installed command is still `agentwall`.
+- The supported Node floor is 22.12.0, declared in `engines`. Node 20 reached end of life in
+  April 2026 and a security tool should not advertise a runtime that stops receiving fixes.
 - CLI terminate now requires `--confirm` so hard containment is deliberate instead of one typo away.
 - Live-control docs now point to the monitor-first example on port `3015` to avoid false 401/404 debugging on the wrong local service.
 - Session control CLI errors now explain how to recover from `Session not found` by seeding a live runtime session first.
@@ -43,6 +90,21 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - Brand asset docs now point at the actual public asset path.
 - Policy and config YAML now parses under the YAML 1.2 core schema on js-yaml 5. Merge keys (`<<`) are no longer expanded, so a policy file that relies on one is rejected whole and the last good ruleset stays in force instead of a partially assembled rule taking effect. Unquoted dates load as strings rather than `Date` objects, and a mapping with a complex key is rejected instead of having that key flattened into a lossy string.
 - The dashboard runtime-context panel now degrades to "none" when the agent harness config file cannot be parsed, rather than failing the whole dashboard state build on a file Agentwall does not own.
+
+### Fixed
+- OpenTimestamps proof files are named after the checkpoint digest instead of a counter that
+  only advances on rotation. Two anchor passes without a rotation between them previously wrote
+  the same filename, so each pass destroyed the proof the previous one had obtained. Anchoring
+  on a schedule would have erased evidence at every interval.
+- `agentwall verify` no longer reports "nothing anchored off-box yet" when the anchor log has
+  entries. It reached that message whenever the anchor log and the checkpoint key were not both
+  present, and said it in a state where it was false.
+
+### Removed
+- The direct `pino` dependency, which nothing imported. Fastify owns the logger instance the
+  server actually uses and depends on pino itself, so the declared dependency only pinned a
+  second, unused copy of pino 8 in the tree. Runtime dependencies are now three, `fastify`,
+  `js-yaml`, and `zod`, and a clean install carries 11 fewer transitive packages.
 
 ## [0.1.0] - 2026-03-23
 

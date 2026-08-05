@@ -1,0 +1,466 @@
+name: Release
+
+# Cutting a release is a tag push and nothing else. Every artifact below is produced from the
+# tagged tree by this workflow, so nothing a maintainer built on a laptop can reach the release.
+#
+# workflow_dispatch runs the same build and the same provenance over the same subjects, and stops
+# before anything is published. That makes the pipeline provable while no tag exists: a tag that
+# fails halfway has to be deleted and re-pushed, and a deleted tag is a bad look on a project
+# whose pitch is durable evidence.
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+# Workflow-wide floor. A job added later that forgets its own block inherits read-only instead of
+# the repository default, which on many repositories is read-write: a compromised step would
+# otherwise hold a token that can push commits, move tags, or open releases.
+permissions:
+  contents: read
+
+env:
+  # Exact, not a range. A stranger who rebuilds the verifier and compares checksums is comparing
+  # against these bytes, and Go's output changes between patch releases. `go-version-file` is
+  # right for ci.yml, where the question is "does this still build under the Go we claim", and
+  # wrong here, where the question is "does this produce the same bytes as the release".
+  GO_VERSION: "1.22.12"
+  # The engines floor, not the latest Node. Building and testing the release on the oldest
+  # runtime we advertise is the only thing that keeps that claim from being decorative.
+  NODE_VERSION: "22.12.0"
+  # Release tooling, pinned and invoked through npx. It is not a devDependency because it is not
+  # a build input: nothing in src/ or tests/ needs it, and adding it would put a large tree into
+  # every contributor's install to serve one step that runs a few times a year.
+  CYCLONEDX_VERSION: "6.0.0"
+  # npm Trusted Publishing over OIDC needs npm 11.5.1 or newer. Node 22.12 ships npm 10, which
+  # fails with an authentication error that reads like a misconfigured token rather than an old
+  # client, so the version is pinned here instead of being inherited and hoped about.
+  #
+  # Held on the 11.x line on purpose. npm 12 declares engines ^22.22.2 || ^24.15.0 || >=26.0.0,
+  # which the 22.12.0 floor above does not satisfy, so installing it here would fail on a real
+  # tag and only on a real tag. 11.19.0 accepts ^20.17.0 || >=22.9.0 and clears the OIDC floor.
+  NPM_VERSION: "11.19.0"
+  IMAGE_NAME: ghcr.io/reesebuilt/agentwall
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      tag: ${{ steps.meta.outputs.tag }}
+      tarball: ${{ steps.meta.outputs.tarball }}
+      is-release: ${{ steps.meta.outputs.is-release }}
+      hashes: ${{ steps.checksums.outputs.hashes }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Setup Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          # Zero requirements means no dependency graph to cache and no go.sum for the cache key
+          # to hash. setup-go's cache path wants that file and warns when it is absent.
+          cache: false
+
+      # A tag names a version and package.json names a version. When they disagree, every
+      # downstream artifact disagrees with something: the tarball says one number, the release
+      # page says another, and the verifier binary says a third. Fail here, where the only cost
+      # is deleting an unpushed tag.
+      - name: Resolve version
+        id: meta
+        run: |
+          set -euo pipefail
+          pkg_version="$(node -p 'require("./package.json").version')"
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            tag="${GITHUB_REF_NAME}"
+            version="${tag#v}"
+            if [ "$version" != "$pkg_version" ]; then
+              echo "tag ${tag} implies version ${version}, but package.json says ${pkg_version}." >&2
+              echo "bump package.json (and verifier/report.go) or move the tag; do not ship both numbers." >&2
+              exit 1
+            fi
+            is_release=true
+          else
+            version="$pkg_version"
+            tag="v${version}"
+            is_release=false
+          fi
+          {
+            echo "version=${version}"
+            echo "tag=${tag}"
+            echo "is-release=${is_release}"
+            echo "tarball=reesebuilt-agentwall-${version}.tgz"
+          } >> "$GITHUB_OUTPUT"
+          echo "building ${tag} (release=${is_release})"
+
+      - name: Install
+        run: npm ci
+
+      - name: Lint (type-check)
+        run: npm run lint
+
+      - name: Build
+        run: npm run build
+
+      - name: Test
+        run: npm test
+
+      - name: Build verifier for conformance
+        run: go build -o agentwall-verify .
+        working-directory: verifier
+
+      # The release's headline claim is that a second implementation agrees about the evidence
+      # format. Re-running the corpus here means the binaries attached to the release are the
+      # same ones that agreed, rather than binaries built from a tree that merely passed CI once.
+      - name: Conformance (typescript and go)
+        run: node scripts/conformance.js
+
+      - name: Stage release directory
+        run: mkdir -p dist-release
+
+      # Publishing the exact bytes that were checksummed and attested, rather than re-packing at
+      # publish time, is the whole point: otherwise the provenance describes an artifact nobody
+      # can prove is the one on the registry.
+      - name: Pack npm tarball
+        run: |
+          set -euo pipefail
+          npm pack --pack-destination dist-release
+          test -f "dist-release/${TARBALL}"
+        env:
+          TARBALL: ${{ steps.meta.outputs.tarball }}
+
+      - name: Generate CycloneDX SBOM
+        run: |
+          set -euo pipefail
+          npx --yes "@cyclonedx/cyclonedx-npm@${CYCLONEDX_VERSION}" \
+            --omit dev \
+            --output-file dist-release/sbom.cdx.json
+
+      # An SBOM nobody checks is decoration. cyclonedx-npm builds its component list from the
+      # installed tree, and a package that is not hoisted to the top level can be dropped from
+      # that list while its own dependencies are kept, which produces a plausible-looking SBOM
+      # with a hole in it. This compares the SBOM against npm's own view of the production tree
+      # and fails when a package name is absent entirely.
+      #
+      # Known limit, deliberately not fatal: when one package is installed at two versions, the
+      # generator lists one of them. The name is still present, so a reader knows the dependency
+      # exists; a missing name is the failure that hides a whole component, and that is what this
+      # gate catches.
+      - name: SBOM covers the production tree
+        run: |
+          set -euo pipefail
+          npm ls --omit=dev --all --json > npm-tree.json
+          node - <<'NODE'
+          const fs = require("node:fs");
+          const tree = JSON.parse(fs.readFileSync("npm-tree.json", "utf8"));
+          const sbom = JSON.parse(fs.readFileSync("dist-release/sbom.cdx.json", "utf8"));
+          const installed = new Map();
+          (function walk(node) {
+            for (const [name, child] of Object.entries(node.dependencies ?? {})) {
+              if (!installed.has(name)) installed.set(name, new Set());
+              installed.get(name).add(child.version);
+              walk(child);
+            }
+          })(tree);
+          const listed = new Set(
+            (sbom.components ?? []).map((c) => (c.group ? `${c.group}/${c.name}` : c.name))
+          );
+          const missing = [...installed.keys()].filter((name) => !listed.has(name));
+          const partial = [...installed.entries()]
+            .filter(([name, versions]) => listed.has(name) && versions.size > 1)
+            .map(([name, versions]) => `${name} (${[...versions].join(", ")})`);
+          console.log(`npm reports ${installed.size} production packages; SBOM lists ${listed.size} components.`);
+          if (partial.length > 0) {
+            console.log(`installed at multiple versions, one recorded: ${partial.join("; ")}`);
+          }
+          if (missing.length > 0) {
+            console.error(`SBOM omits these production packages entirely: ${missing.join(", ")}`);
+            process.exit(1);
+          }
+          NODE
+
+      # CGO_ENABLED=0 makes the binaries static, so they run on a machine with no toolchain and
+      # no libc of a particular vintage. -trimpath removes the builder's absolute paths, which is
+      # what makes two people's builds of the same source produce the same bytes.
+      - name: Cross-compile verifier binaries
+        run: |
+          set -euo pipefail
+          for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64; do
+            goos="${target%/*}"
+            goarch="${target#*/}"
+            ext=""
+            [ "$goos" = "windows" ] && ext=".exe"
+            CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" GOTOOLCHAIN=local \
+              go build -trimpath \
+              -ldflags "-s -w -X main.verifierVersion=${VERSION}" \
+              -o "../dist-release/agentwall-verify-${goos}-${goarch}${ext}" .
+          done
+        working-directory: verifier
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+
+      # The -X flag is silently ignored when it names a symbol that is not a string var, so a
+      # refactor that turns verifierVersion back into a const would produce binaries reporting a
+      # stale version with a green build. Asking the binary is the only way to know it took.
+      - name: Verifier binary reports the release version
+        run: |
+          set -euo pipefail
+          chmod +x dist-release/agentwall-verify-linux-amd64
+          reported="$(dist-release/agentwall-verify-linux-amd64 --version)"
+          echo "$reported"
+          if [ "$reported" != "agentwall-verify ${VERSION}" ]; then
+            echo "binary reports '${reported}', expected 'agentwall-verify ${VERSION}'." >&2
+            echo "the -ldflags stamp did not take; check that verifierVersion is a var." >&2
+            exit 1
+          fi
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+
+      # Sorted with a fixed collation so the file is byte-identical across runs of the same
+      # inputs, and so the SLSA subject list below is stable.
+      #
+      # The file list is captured into an array before checksums.txt is opened, because a shell
+      # redirection creates its target before the command on the left runs: staging the list in
+      # a file inside this directory put that staging file into its own checksum list, and
+      # `sha256sum -c` then failed on a correct download by looking for a file the release does
+      # not contain.
+      - name: Checksums
+        id: checksums
+        run: |
+          set -euo pipefail
+          cd dist-release
+          mapfile -t files < <(
+            find . -maxdepth 1 -type f ! -name checksums.txt -printf '%P\n' | LC_ALL=C sort
+          )
+          sha256sum "${files[@]}" > checksums.txt
+          cat checksums.txt
+          echo "hashes=$(base64 -w0 < checksums.txt)" >> "$GITHUB_OUTPUT"
+
+      - name: Upload release artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-artifacts
+          path: dist-release/
+          # An upload that silently matches nothing leaves a green job and no artifact, which is
+          # the failure mode this step exists to make visible.
+          if-no-files-found: error
+
+  # Exception to the SHA-pinning rule, and the only one in this repository: the SLSA generator
+  # resolves its own ref against the release tag it was published under and refuses to run when
+  # it is called by digest, so a SHA pin here fails closed rather than merely going unverified.
+  # The tag is what its own verification expects, and slsa-verifier checks the builder identity
+  # afterwards, which is the property the pin would have been protecting.
+  provenance:
+    needs: [build]
+    permissions:
+      # Read the workflow path that goes into the attestation.
+      actions: read
+      # Sign the provenance against the workflow's own OIDC identity.
+      id-token: write
+      # Read only. Inside the generator, contents: write belongs to its upload-assets job, which
+      # is guarded by `if: inputs.upload-assets` and therefore never runs here: the release job
+      # below attaches the provenance, so one job stays in charge of what the release contains.
+      contents: read
+    uses: slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@v2.1.0
+    with:
+      base64-subjects: ${{ needs.build.outputs.hashes }}
+      upload-assets: false
+
+  release:
+    needs: [build, provenance]
+    if: needs.build.outputs.is-release == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      # Create the release and attach assets to it.
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-artifacts
+          path: dist-release
+
+      - name: Download provenance
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ needs.provenance.outputs.provenance-name }}
+          path: dist-release
+
+      # The changelog section is the release notes. Keeping one source means the release page
+      # cannot drift into marketing that the repository does not say.
+      - name: Compose release notes
+        run: |
+          set -euo pipefail
+          awk -v ver="$VERSION" '
+            $0 ~ "^## \\[" ver "\\]" { inside = 1; next }
+            inside && /^## \[/ { exit }
+            inside { print }
+          ' CHANGELOG.md > notes.md
+          if [ ! -s notes.md ]; then
+            echo "CHANGELOG.md has no [${VERSION}] section; the release would have empty notes." >&2
+            exit 1
+          fi
+          cat >> notes.md <<EOF
+
+          ## Verify this release
+
+          Nothing here asks you to trust the build. Check the artifacts:
+
+          \`\`\`sh
+          # Every artifact matches the checksums published with it.
+          sha256sum -c checksums.txt
+
+          # The binaries were built by this workflow from this tag, not by a person.
+          slsa-verifier verify-artifact agentwall-verify-linux-amd64 \\
+            --provenance-path ${PROVENANCE} \\
+            --source-uri github.com/reesebuilt/agentwall \\
+            --source-tag ${TAG}
+
+          # The verifier shares no code with the tool that wrote the evidence.
+          ./agentwall-verify-linux-amd64 --audit /path/to/audit.jsonl --json
+          \`\`\`
+          EOF
+        env:
+          VERSION: ${{ needs.build.outputs.version }}
+          TAG: ${{ needs.build.outputs.tag }}
+          PROVENANCE: ${{ needs.provenance.outputs.provenance-name }}
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
+        with:
+          tag_name: ${{ needs.build.outputs.tag }}
+          name: ${{ needs.build.outputs.tag }}
+          body_path: notes.md
+          draft: false
+          prerelease: false
+          fail_on_unmatched_files: true
+          files: |
+            dist-release/*
+
+  npm-publish:
+    needs: [build, release]
+    if: needs.build.outputs.is-release == 'true'
+    runs-on: ubuntu-latest
+    # The environment is the human gate. A tag alone starts the build; publishing to a registry
+    # nobody can unpublish from waits for whatever approval rule the environment carries.
+    environment: release
+    permissions:
+      # Mint the OIDC token npm exchanges for a short-lived publish credential, and the same
+      # token signs the provenance attestation npm shows on the package page. No other job in
+      # this workflow needs it, so no other job has it.
+      id-token: write
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          registry-url: https://registry.npmjs.org
+
+      # No NODE_AUTH_TOKEN anywhere in this workflow, and no npm token in repository secrets.
+      # Trusted Publishing exchanges the workflow's OIDC identity for a credential that lives
+      # for one publish, so there is no long-lived secret to leak, rotate, or forget.
+      - name: Upgrade npm for Trusted Publishing
+        run: npm install -g "npm@${NPM_VERSION}"
+
+      # Without this, a pin that silently failed to install shows up as an authentication error
+      # from the publish step, which reads like the operator misconfigured Trusted Publishing on
+      # npmjs.com. Checking the client version here names the real problem instead.
+      - name: npm is new enough for OIDC
+        run: |
+          set -euo pipefail
+          actual="$(npm --version)"
+          echo "npm ${actual} on node $(node --version)"
+          node -e '
+            const [have, floor] = [process.argv[1], "11.5.1"];
+            const parse = (v) => v.split(".").map(Number);
+            const [a, b] = [parse(have), parse(floor)];
+            const older = a[0] - b[0] || a[1] - b[1] || a[2] - b[2];
+            if (older < 0) {
+              console.error(`npm ${have} cannot use Trusted Publishing; ${floor} is the floor.`);
+              console.error("NPM_VERSION did not install, most likely because this node fails its engines range.");
+              process.exit(1);
+            }
+          ' "$actual"
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-artifacts
+          path: dist-release
+
+      # Publishing the packed tarball, not the working tree, is what makes the checksum and the
+      # SLSA attestation above describe the artifact that actually lands on the registry.
+      - name: Publish to npm
+        run: npm publish "dist-release/${TARBALL}" --provenance --access public
+        env:
+          TARBALL: ${{ needs.build.outputs.tarball }}
+
+  docker:
+    needs: [build, release]
+    if: needs.build.outputs.is-release == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      # Push the image to GitHub Container Registry.
+      packages: write
+      # Keyless cosign signing against the workflow's OIDC identity, same reasoning as npm above.
+      id-token: write
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Image metadata
+        id: metadata
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=${{ needs.build.outputs.tag }}
+            type=raw,value=latest
+
+      - name: Build and push
+        id: push
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          file: ./Dockerfile
+          # One architecture, because one architecture is what gets built and exercised. An
+          # arm64 manifest nobody has run is a support claim, not a build artifact.
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.metadata.outputs.tags }}
+          labels: ${{ steps.metadata.outputs.labels }}
+          provenance: true
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+
+      # Sign the digest, not the tag. A tag is a mutable pointer, so a signature over a tag says
+      # nothing about which bytes were signed once the tag moves.
+      - name: Sign the image
+        run: cosign sign --yes "${IMAGE_NAME}@${DIGEST}"
+        env:
+          DIGEST: ${{ steps.push.outputs.digest }}
