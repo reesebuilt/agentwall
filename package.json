@@ -9,7 +9,7 @@
     "dev": "ts-node src/index.ts",
     "onboard": "ts-node src/onboarding.ts",
     "uninstall:system": "bash ./scripts/agentwall-uninstall.sh",
-    "test": "node --experimental-vm-modules node_modules/.bin/jest",
+    "test": "node --experimental-vm-modules node_modules/.bin/jest --maxWorkers=50%",
     "test:security-regression": "node scripts/security-regression.js",
     "lint": "tsc --noEmit",
     "cli": "node dist/cli.js",
