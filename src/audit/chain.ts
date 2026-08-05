@@ -151,3 +151,135 @@ export function rehashAuditEvent(event: AuditEvent): string {
   const legacy = hashChainMaterial(canonicalizeAuditPayloadLocaleLegacy(payload), state);
   return legacy === integrity.hash ? legacy : current;
 }
+
+/**
+ * Find a member name that appears twice inside one object, scanning the RAW line.
+ *
+ * WHY THIS CANNOT USE JSON.parse
+ *
+ * Parsers disagree about duplicate members and none of them say so. V8 keeps the last
+ * occurrence, other stacks keep the first, and a strict decoder refuses the document. By
+ * the time JSON.parse returns, the second member is gone and no later check can see that
+ * it was ever there. Detection therefore happens on the bytes, before parsing.
+ *
+ * WHY A DUPLICATE MAKES A RECORD MALFORMED
+ *
+ * A duplicate key is a smuggling vector precisely because implementations disagree: two
+ * conforming verifiers reading the same bytes reach different conclusions about what the
+ * record SAYS, whichever hash it carries. Evidence whose meaning depends on which language
+ * read it is not evidence, so such a record counts toward nothing: not a verified chain,
+ * not a segment's record count, not a checkpoint's live tail. The writer cannot emit one,
+ * so a line containing one has been edited.
+ *
+ * Returns the offending decoded key, or null when there is none. A line that is not
+ * well-formed JSON returns null: that is reported as a parse failure by the caller, and
+ * guessing at the structure of a broken line would invent findings.
+ */
+export function findDuplicateKey(line: string): string | null {
+  let at = 0;
+  let duplicate: string | null = null;
+
+  function skipSpace(): void {
+    while (at < line.length && (line[at] === " " || line[at] === "\t" || line[at] === "\n" || line[at] === "\r")) at++;
+  }
+
+  /** Advance past a string and return its source lexeme, quotes included. */
+  function readString(): string | null {
+    if (line[at] !== '"') return null;
+    const start = at;
+    at++;
+    while (at < line.length) {
+      if (line[at] === "\\") {
+        at += 2;
+        continue;
+      }
+      if (line[at] === '"') {
+        at++;
+        return line.slice(start, at);
+      }
+      at++;
+    }
+    return null;
+  }
+
+  function scanValue(): void {
+    if (duplicate !== null) return;
+    skipSpace();
+    if (line[at] === "{") return scanObject();
+    if (line[at] === "[") return scanArray();
+    if (line[at] === '"') {
+      readString();
+      return;
+    }
+    // A number or a literal: run to the next structural byte. Nothing inside one can hold
+    // a member name, so the exact lexeme does not matter here.
+    while (at < line.length && !',}] \t\n\r'.includes(line[at])) at++;
+  }
+
+  function scanObject(): void {
+    at++;
+    const seen = new Set<string>();
+    skipSpace();
+    if (line[at] === "}") {
+      at++;
+      return;
+    }
+    for (;;) {
+      skipSpace();
+      const lexeme = readString();
+      if (lexeme === null) return;
+      // The lexeme is a complete JSON string, so parsing it decodes escapes and surrogate
+      // pairs without reimplementing either. Comparison is on decoded keys, which is what
+      // makes "\u0061" and "a" the same member. An invalid escape or a raw control byte
+      // makes the whole line unparseable, and this scanner also runs on the WRITE path
+      // through summarizeSegment, so it gives up quietly instead of throwing a corrupt
+      // line out of a scheduled anchor pass.
+      let key: string;
+      try {
+        key = String(JSON.parse(lexeme));
+      } catch {
+        return;
+      }
+      if (seen.has(key)) {
+        duplicate = key;
+        return;
+      }
+      seen.add(key);
+      skipSpace();
+      if (line[at] !== ":") return;
+      at++;
+      scanValue();
+      if (duplicate !== null) return;
+      skipSpace();
+      if (line[at] === ",") {
+        at++;
+        continue;
+      }
+      at++;
+      return;
+    }
+  }
+
+  function scanArray(): void {
+    at++;
+    skipSpace();
+    if (line[at] === "]") {
+      at++;
+      return;
+    }
+    for (;;) {
+      scanValue();
+      if (duplicate !== null) return;
+      skipSpace();
+      if (line[at] === ",") {
+        at++;
+        continue;
+      }
+      at++;
+      return;
+    }
+  }
+
+  scanValue();
+  return duplicate;
+}
