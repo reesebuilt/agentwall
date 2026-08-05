@@ -1,6 +1,7 @@
 import { createHash } from "crypto";
 import { existsSync, readFileSync, readdirSync, statSync, writeFileSync } from "fs";
-import { basename, dirname, join } from "path";
+import { basename, dirname, isAbsolute, join, resolve } from "path";
+import { findDuplicateKey } from "./chain";
 import type { AuditEvent } from "../types";
 
 /**
@@ -24,6 +25,15 @@ import type { AuditEvent } from "../types";
  * the previous segment's final record. That makes the SEQUENCE OF SEGMENTS itself a hash
  * chain, one level up from the per-record chain. Anchoring the manifest head then covers
  * all history rather than only the current file.
+ *
+ * WHAT BINDS AN ENTRY TO ITS SEGMENT
+ *
+ * An entry checked only against itself and its neighbours says nothing about the file it
+ * names. Without reading that file, a sealed segment can be rewritten wholesale and
+ * relinked so its own per-record chain is valid again, and every manifest check still
+ * passes. The anchor then binds a manifest that binds only itself, which destroys the one
+ * property the manifest exists to provide. Verification therefore opens each segment and
+ * requires its actual shape to equal what the entry recorded.
  *
  * WHAT IT STILL DOES NOT DO
  *
@@ -67,6 +77,10 @@ export function summarizeSegment(path: string): SegmentSummary | null {
 	let last: AuditEvent | undefined;
 	let count = 0;
 	for (const line of lines) {
+		// A duplicate member makes the record malformed, so it is not part of the segment's
+		// shape. Counting it would let an attacker pad a count, and it has to be caught on
+		// the raw line because parsing collapses the duplicate out of existence.
+		if (findDuplicateKey(line) !== null) continue;
 		let ev: AuditEvent;
 		try {
 			ev = JSON.parse(line) as AuditEvent;
@@ -120,6 +134,20 @@ export function readManifest(manifestPath: string): SegmentRecord[] {
 }
 
 /**
+ * Resolve an entry's segment path against the manifest's own directory.
+ *
+ * A relative entry path resolved against the process working directory makes verification
+ * depend on where the operator happens to stand, so the same evidence passes from one
+ * shell and fails from another. The manifest directory is the only stable reference the
+ * evidence carries, and it keeps a whole evidence directory portable when it is copied.
+ * Every caller resolves through here so the layers cannot disagree about which file an
+ * entry names.
+ */
+export function resolveSegmentPath(manifestPath: string, entryPath: string): string {
+	return isAbsolute(entryPath) ? entryPath : resolve(dirname(manifestPath), entryPath);
+}
+
+/**
  * Seal a segment into the manifest.
  *
  * Idempotent on finalHash: re-sealing the same segment is a no-op rather than a
@@ -165,7 +193,20 @@ export interface ManifestVerification {
 }
 
 /**
- * Verify the segment chain: every entry's own hash, and every link between segments.
+ * Verify the segment chain: every entry's own hash, every link between segments, and
+ * every entry against the bytes of the segment it names.
+ *
+ * The content check is what makes the manifest evidence about the segments rather than
+ * about itself. An entry records a segment's final record hash, and that hash folds in
+ * every record before it, so requiring the file to still produce it detects any rewrite
+ * of the sealed segment even when the attacker relinks the file's own chain. Count and
+ * span are checked alongside it so a truncation or an extension is named directly rather
+ * than surfacing only as a hash difference.
+ *
+ * A segment the manifest names but that is absent from disk is NOT reported here. It is
+ * already reported as missing by the per-record layer, and the two diagnoses are
+ * different: absent evidence is not the same finding as evidence that contradicts its
+ * seal, and an operator needs to be able to tell them apart.
  *
  * Reports ALL problems rather than stopping at the first, because an operator
  * investigating tampering needs the shape of the damage, not just its earliest point.
@@ -185,9 +226,39 @@ export function verifyManifest(manifestPath: string): ManifestVerification {
 		if (e.previousSegmentHash !== expectedPrev) {
 
 			problems.push(
-				`segment ${i} (${e.path}): expected previousSegmentHash ${expectedPrev ?? "null"}, found ${e.previousSegmentHash ?? "null"} — a segment may have been removed or reordered`,
+				`segment ${i} (${e.path}): expected previousSegmentHash ${expectedPrev ?? "null"}, found ${e.previousSegmentHash ?? "null"}; a segment may have been removed or reordered`,
 			);
 		}
+
+		const resolved = resolveSegmentPath(manifestPath, e.path);
+		if (existsSync(resolved)) {
+			const actual = summarizeSegment(resolved);
+			const differences: string[] = [];
+			if (!actual) {
+				// The file is there and holds nothing a verifier can read. Truncating a sealed
+				// segment to zero bytes erases its records while leaving every other check
+				// green, so presence is judged on content, not on the directory entry.
+				differences.push(`count ${e.count} sealed, no readable records on disk`);
+			} else {
+				if (actual.finalHash !== e.finalHash) {
+					differences.push(`finalHash ${e.finalHash} sealed, ${actual.finalHash} on disk`);
+				}
+				if (actual.count !== e.count) differences.push(`count ${e.count} sealed, ${actual.count} on disk`);
+				if (actual.firstIndex !== e.firstIndex) {
+					differences.push(`firstIndex ${e.firstIndex} sealed, ${actual.firstIndex} on disk`);
+				}
+				if (actual.lastIndex !== e.lastIndex) {
+					differences.push(`lastIndex ${e.lastIndex} sealed, ${actual.lastIndex} on disk`);
+				}
+			}
+			if (differences.length > 0) {
+				problems.push(
+					`segment ${i} (${e.path}): segment-content-mismatch, the file no longer matches its seal: ` +
+						differences.join("; "),
+				);
+			}
+		}
+
 		expectedPrev = e.finalHash;
 	});
 

@@ -12,6 +12,14 @@ updates:
       # separate because they need real attention.
       minor-and-patch:
         update-types: ["minor", "patch"]
+    ignore:
+      # ts-node 10 and ts-jest 29 consume the TypeScript 5 compiler API;
+      # typescript 7 removes it, so the toolchain rejects the upgrade.
+      # Scoped to majors so patch and minor releases still open pull requests:
+      # a security update targets the minimum patched version, which is not a
+      # major bump, so this rule does not suppress one.
+      - dependency-name: "typescript"
+        update-types: ["version-update:semver-major"]
 
   - package-ecosystem: github-actions
     directory: "/"

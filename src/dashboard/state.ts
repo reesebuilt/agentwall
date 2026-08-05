@@ -329,11 +329,21 @@ function yamlTopLevelKeys(source: unknown): string[] {
 }
 
 function summarizeYamlSource(absolutePath: string): { keys: string[]; modelDefault: string | null; modelProvider: string | null; skin: string | null } {
+  const unknownSummary = { keys: [] as string[], modelDefault: null, modelProvider: null, skin: null };
   const text = readTextSafely(absolutePath);
   if (!text) {
-    return { keys: [], modelDefault: null, modelProvider: null, skin: null };
+    return unknownSummary;
   }
-  const parsed = yaml.load(text);
+  // This file belongs to the agent harness, not to us, so it is foreign input: it can hold
+  // nothing but comments, be half-written while an editor saves it, or be deliberately
+  // malformed by whoever can write into the agent home. A parse failure degrades one
+  // dashboard panel to "unknown" instead of taking the whole state build down with it.
+  let parsed: unknown;
+  try {
+    parsed = yaml.load(text);
+  } catch {
+    return unknownSummary;
+  }
   return {
     keys: yamlTopLevelKeys(parsed),
     modelDefault: nestedStringValue(parsed, ["model", "default"]),

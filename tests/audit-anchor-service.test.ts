@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "@jest/globals";
-import { appendFileSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
+import { appendFileSync, existsSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { runAnchorPass, runVerify, resolvePaths } from "../src/audit/anchor-service";
@@ -223,7 +223,7 @@ describe("verify", () => {
 		expect(text).toMatch(/only 4 distinct chain indexes/);
 		expect(text).toMatch(/\.\.\. and \d+ more/);
 		// The whole point: output for a damaged segment is BOUNDED. One header, a few
-		// examples, one tally — not one line per broken record.
+		// examples, one tally; not one line per broken record.
 		const fromDamaged = chained!.problems.filter((x) => x.includes("audit.jsonl.damaged"));
 		expect(fromDamaged).toHaveLength(5);
 	});
@@ -300,5 +300,155 @@ describe("verify", () => {
 		const anchored = runVerify({ auditPath: audit }).layers.find((l) => l.name === "anchored");
 		expect(anchored?.ok).toBe(false);
 		expect(anchored?.problems.join(" ")).toMatch(/pinned key/);
+	});
+
+	it("a live file that has merely grown since the last anchor still passes", async () => {
+		// The case a naive re-derivation gets wrong. A checkpoint commits a prefix, and a
+		// running deployment appends to that prefix constantly. Comparing against the file's
+		// current end would report tampering on every healthy box between anchor passes.
+		const d = tmp();
+		const audit = join(d, "audit.jsonl");
+		write(audit, 20);
+		await runAnchorPass({ auditPath: audit }, () => new Date(), okPoster);
+		for (let i = 20; i < 45; i++) appendFileSync(audit, rec(i));
+
+		const anchored = runVerify({ auditPath: audit }).layers.find((l) => l.name === "anchored");
+		expect(anchored?.problems).toEqual([]);
+		expect(anchored?.ok).toBe(true);
+	});
+
+	it("a live tail that rotated into a sealed segment since the anchor still passes", async () => {
+		// The other healthy case. After rotation the committed prefix is no longer in the
+		// live file at all; it is the segment that was sealed in its place.
+		const d = tmp();
+		const audit = join(d, "audit.jsonl");
+		write(audit, 12, "a");
+		await runAnchorPass({ auditPath: audit }, () => new Date(), okPoster);
+		renameSync(audit, join(d, "audit.jsonl.1"));
+		write(audit, 4, "b");
+		// Verified before the next pass seals the rotated file, and again after.
+		const between = runVerify({ auditPath: audit }).layers.find((l) => l.name === "anchored");
+		expect(between?.problems).toEqual([]);
+		await runAnchorPass({ auditPath: audit }, () => new Date(), okPoster);
+		const after = runVerify({ auditPath: audit }).layers.find((l) => l.name === "anchored");
+		expect(after?.problems).toEqual([]);
+		expect(after?.ok).toBe(true);
+	});
+
+	it("detects a live tail rewritten so the committed prefix no longer reproduces", async () => {
+		// The attack. The checkpoint's signature still verifies, because the attacker did
+		// not touch the anchor log; what changed is the evidence the signed value described.
+		const d = tmp();
+		const audit = join(d, "audit.jsonl");
+		write(audit, 10, "a");
+		await runAnchorPass({ auditPath: audit }, () => new Date(), okPoster);
+		write(audit, 10, "z"); // same shape, different records, internally consistent
+
+		const anchored = runVerify({ auditPath: audit }).layers.find((l) => l.name === "anchored");
+		expect(anchored?.ok).toBe(false);
+		expect(anchored?.problems.join(" ")).toMatch(/live-tail-mismatch/);
+	});
+
+	it("detects a live tail truncated back behind what the checkpoint committed", async () => {
+		// Dropping records off the end leaves a valid chain and a shorter file. The
+		// committed count no longer exists, so the prefix cannot reproduce.
+		const d = tmp();
+		const audit = join(d, "audit.jsonl");
+		write(audit, 30, "a");
+		await runAnchorPass({ auditPath: audit }, () => new Date(), okPoster);
+		write(audit, 12, "a");
+
+		const anchored = runVerify({ auditPath: audit }).layers.find((l) => l.name === "anchored");
+		expect(anchored?.ok).toBe(false);
+		expect(anchored?.problems.join(" ")).toMatch(/live-tail-mismatch/);
+	});
+
+	it("a segment sealed before the checkpoint cannot excuse a rewritten live tail", async () => {
+		// Scoping matters: if any file on disk could satisfy a committed tail, an attacker
+		// only has to make the live file look like some older segment. A segment that was
+		// already closed when the checkpoint was signed was not the live file at that moment.
+		const d = tmp();
+		const audit = join(d, "audit.jsonl");
+		write(join(d, "audit.jsonl.1"), 5, "a");
+		write(audit, 5, "a"); // identical shape and hashes to the sealed segment
+		await runAnchorPass({ auditPath: audit }, () => new Date(), okPoster);
+		write(audit, 5, "z");
+
+		const anchored = runVerify({ auditPath: audit }).layers.find((l) => l.name === "anchored");
+		expect(anchored?.ok).toBe(false);
+		expect(anchored?.problems.join(" ")).toMatch(/live-tail-mismatch/);
+	});
+
+	it("detects a manifest truncated behind a checkpoint's sealed segment count", async () => {
+		// Dropping the newest manifest entries breaks no linkage, because what remains still
+		// chains. The checkpoint that committed those segments is the thing that notices.
+		const d = tmp();
+		const audit = join(d, "audit.jsonl");
+		write(join(d, "audit.jsonl.1"), 4, "p");
+		write(audit, 4, "c");
+		await runAnchorPass({ auditPath: audit }, () => new Date(), okPoster);
+		writeFileSync(resolvePaths({ auditPath: audit }).manifestPath, "");
+
+		const anchored = runVerify({ auditPath: audit }).layers.find((l) => l.name === "anchored");
+		expect(anchored?.ok).toBe(false);
+		expect(anchored?.problems.join(" ")).toMatch(/live-tail-mismatch/);
+		expect(anchored?.problems.join(" ")).toMatch(/manifest now holds 0/);
+	});
+
+	it("verifies a relative manifest path from an unrelated working directory", async () => {
+		// An operator runs verify from wherever they happen to be. Resolving entry paths
+		// against the process directory makes the same evidence pass in one shell and fail
+		// in another, and the decoy here is what that failure would look like.
+		const evidence = tmp();
+		const decoy = tmp();
+		write(join(decoy, "audit.jsonl.1"), 9, "wrong");
+		const cwd = process.cwd();
+		try {
+			process.chdir(evidence);
+			write("audit.jsonl.1", 6, "p");
+			write("audit.jsonl", 3, "c");
+			await runAnchorPass({ auditPath: "audit.jsonl" }, () => new Date(), okPoster);
+		} finally {
+			process.chdir(cwd);
+		}
+		expect(readManifest(join(evidence, "segments.jsonl"))[0].path).toBe("audit.jsonl.1");
+
+		try {
+			process.chdir(decoy);
+			const report = runVerify({ auditPath: join(evidence, "audit.jsonl") });
+			const linked = report.layers.find((l) => l.name === "linked");
+			const chained = report.layers.find((l) => l.name === "chained");
+			expect(linked?.problems).toEqual([]);
+			expect(linked?.ok).toBe(true);
+			// 9 records, not the decoy's, and no phantom missing file.
+			expect(chained?.detail).toMatch(/9 records across 2 segment\(s\)/);
+			expect(chained?.problems.join(" ")).not.toMatch(/missing from disk/);
+		} finally {
+			process.chdir(cwd);
+		}
+	});
+
+	it("a duplicate member drops a record from the chain and from the committed live tail", async () => {
+		// Smuggling a second member into a record the checkpoint already covered leaves its
+		// stored hash untouched, so a verifier that reads the parsed object sees nothing. The
+		// record is malformed, counts toward nothing, and the committed prefix is one record
+		// shorter than it claims.
+		const d = tmp();
+		const audit = join(d, "audit.jsonl");
+		write(audit, 6);
+		await runAnchorPass({ auditPath: audit }, () => new Date(), okPoster);
+
+		const lines = readFileSync(audit, "utf8").trim().split("\n");
+		lines[1] = lines[1].replace('"action":"test"', '"action":"test","action":"exfiltrate"');
+		writeFileSync(audit, lines.join("\n") + "\n");
+		// The parser hands every later check a single action member, the tampered one.
+		expect(JSON.parse(lines[1]).action).toBe("exfiltrate");
+
+		const report = runVerify({ auditPath: audit });
+		const chained = report.layers.find((l) => l.name === "chained");
+		const anchored = report.layers.find((l) => l.name === "anchored");
+		expect(chained?.problems.join(" ")).toMatch(/dup-key/);
+		expect(anchored?.ok).toBe(false);
+		expect(anchored?.problems.join(" ")).toMatch(/live-tail-mismatch/);
 	});
 });

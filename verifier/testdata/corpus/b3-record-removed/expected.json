@@ -1,0 +1,12 @@
+{
+  "exit": 1,
+  "layers": {
+    "chained": false,
+    "linked": true,
+    "anchored": false
+  },
+  "go_codes_include": [
+    "index-gap",
+    "link-break"
+  ]
+}

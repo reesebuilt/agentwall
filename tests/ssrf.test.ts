@@ -81,7 +81,7 @@ describe("SSRF Inspector", () => {
   });
 });
 
-describe("SSRF Inspector — IPv6", () => {
+describe("SSRF Inspector: IPv6", () => {
   // Regression guard for a dead check: `new URL("http://[::1]/").hostname` is "[::1]",
   // while every IPV6_PRIVATE_PATTERN is anchored on the bare address. Bracketed input
   // must behave identically to bare input, or the entire IPv6 private-range table goes
@@ -109,7 +109,7 @@ describe("SSRF Inspector — IPv6", () => {
   const PUBLIC_IPV6 = [
     "2606:4700:4700::1111",
     "2001:4860:4860::8888",
-    "::ffff:808:808", // ::ffff:8.8.8.8 — mapped, but the embedded IPv4 is public
+    "::ffff:808:808", // ::ffff:8.8.8.8: mapped, but the embedded IPv4 is public
   ];
 
   for (const address of PUBLIC_IPV6) {

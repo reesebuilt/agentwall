@@ -1,0 +1,3 @@
+# Built binaries. The verifier ships from source or as a release artifact, never committed.
+/agentwall-verify
+/verifier

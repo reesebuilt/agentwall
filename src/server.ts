@@ -44,7 +44,7 @@ export async function buildServer(config: AgentwallConfig): Promise<AgentwallSer
   });
 
   // Audit: stdout stays the ops stream; the chain gets its own file that nothing else
-  // writes to. The path is EXPLICIT with no default — a server must not invent a location
+  // writes to. The path is EXPLICIT with no default: a server must not invent a location
   // in $HOME for security-critical data, and a default here caused the test suite to write
   // 589 records into the operator's real chain and then resume from it. Unset means
   // stdout-only, the prior behaviour.

@@ -169,8 +169,8 @@ FAIL  chained   7 records across 1 segment(s)
 ```
 
 `verify` reports more than a single edited line. Records sharing a chain index are reported as
-index reuse — the signature of concurrent writers each keeping their own chain state rather
-than of one altered record ([`src/audit/anchor-service.ts:157-175`](src/audit/anchor-service.ts)).
+index reuse, which is the signature of concurrent writers each keeping their own chain state
+rather than of one altered record ([`src/audit/anchor-service.ts:157-175`](src/audit/anchor-service.ts)).
 That failure mode is what the single-writer lock below exists to prevent.
 
 ```bash
@@ -188,6 +188,10 @@ Anchored
 ```
 
 Both commands need `AGENTWALL_AUDIT_FILE` set, or `--audit <path>`.
+
+The evidence format is specified in [docs/audit-format.md](docs/audit-format.md), at the byte
+level, with worked examples: enough to write a verifier in another language without reading
+this one's source, and it states plainly what the format does not prove.
 
 To run the tests behind the claims in this file:
 

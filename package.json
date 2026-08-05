@@ -11,6 +11,8 @@
     "uninstall:system": "bash ./scripts/agentwall-uninstall.sh",
     "test": "node --experimental-vm-modules node_modules/.bin/jest --maxWorkers=50%",
     "test:security-regression": "node scripts/security-regression.js",
+    "gen:corpus": "ts-node scripts/gen-corpus.ts",
+    "conformance": "node scripts/conformance.js",
     "lint": "tsc --noEmit",
     "cli": "node dist/cli.js",
     "init": "node dist/cli.js init",
@@ -27,13 +29,12 @@
   "license": "Apache-2.0",
   "dependencies": {
     "fastify": "5.11.0",
-    "js-yaml": "^4.1.0",
+    "js-yaml": "5.2.3",
     "pino": "^8.19.0",
     "zod": "4.4.3"
   },
   "devDependencies": {
     "@jest/globals": "^30.4.1",
-    "@types/js-yaml": "^4.0.9",
     "@types/node": "^20.11.5",
     "jest": "^30.4.2",
     "ts-jest": "^29.4.12",
