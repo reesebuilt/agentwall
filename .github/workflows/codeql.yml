@@ -1,0 +1,71 @@
+name: CodeQL
+
+# Static analysis over both implementations. The TypeScript service parses attacker-supplied
+# input (proxy requests, policy files, webhook payloads) and the Go verifier parses attacker-
+# supplied evidence files, so both sides read bytes chosen by someone else. Type checking and
+# unit tests say the code does what it was written to do; this says what else it can be made
+# to do. Findings land in the Security tab rather than blocking a merge, because a SAST result
+# is a lead to read, not a verdict.
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+  schedule:
+    # Queries change without the code changing, so a scheduled run finds things a push-only
+    # trigger never would.
+    - cron: "23 4 * * 3"
+
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    name: Analyze (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # Writing the analysis result to code scanning is the only elevation this job takes.
+      security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - language: javascript-typescript
+            # Nothing is compiled to analyze TypeScript; CodeQL reads the sources directly.
+            build-mode: none
+          - language: go
+            # The Go module lives under verifier/, so autobuild at the repository root finds
+            # no go.mod and gives up. The build below is the one CodeQL traces.
+            build-mode: manual
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Go
+        if: matrix.language == 'go'
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          # Same reason as CI: the toolchain comes from the module's own go directive, so
+          # analysis and CI cannot disagree about which Go this code is built with.
+          go-version-file: verifier/go.mod
+          cache: false
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@5595ccaf912efad79be6eef63a5619ff05969be3 # v4.37.6
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.build-mode }}
+
+      - name: Build verifier
+        if: matrix.language == 'go'
+        run: go build ./...
+        working-directory: verifier
+
+      - name: Analyze
+        uses: github/codeql-action/analyze@5595ccaf912efad79be6eef63a5619ff05969be3 # v4.37.6
+        with:
+          category: "/language:${{ matrix.language }}"
