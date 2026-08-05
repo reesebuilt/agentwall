@@ -77,10 +77,12 @@ A default container therefore records host egress like this:
 
 and the matching audit event carries `agentId: "unattributed"`, `pid: "unknown"`,
 `comm: "unknown"`. The destination, the byte counts, the decision, and the hash chain are
-all still there. The identity of the caller is not. That is the same degradation the
-README documents for non-Linux hosts, and it is recorded rather than hidden, but a monitor
-that cannot say which process called out is doing less than the one this project
-describes. If naming the process is why you are here, run Agentwall on the host.
+all still there. The identity of the caller is not. The README already lists attribution as
+Linux-only for the same underlying reason, that it is a `/proc` read; a container is a
+second way to lose it, on a Linux host that would otherwise have it. It is recorded rather
+than hidden, but a monitor that cannot say which process called out is doing less than the
+one this project describes. If naming the process is why you are here, run Agentwall on the
+host.
 
 ### Run it
 
@@ -133,13 +135,13 @@ Two combinations work, and both are expensive:
 
 - `--network=host --pid=host --user <uid>:<gid> --security-opt apparmor=unconfined`
   attributes only processes running as that uid and gid. Lower privilege, narrower reach.
-- Adding `--user 0 --cap-add=SYS_PTRACE` attributes every process on the host. This is a
-  root process with the capability to read any process's memory and descriptors, sharing
-  the host's network and PID namespaces, with its mandatory access control profile
-  removed. Four of the five isolation mechanisms a container provides are gone. Whether
-  that trade is worth making is a judgement about your threat model, but it is not a
-  smaller decision than installing Agentwall on the host directly, and it should not be
-  presented as one.
+- Adding `--user 0 --cap-add=SYS_PTRACE` attributes every process on the host. Count what
+  that run gives up: the network namespace, the PID namespace, the non-root user, and the
+  AppArmor profile, and then add the capability to read any process's descriptors and
+  memory. What remains of the container is the filesystem and the cgroup. Whether that
+  trade is worth making is a judgement about your threat model, but it is not a smaller
+  decision than installing Agentwall on the host directly, and it should not be presented
+  as one.
 
 `--security-opt apparmor=unconfined` is needed on hosts running Docker's default AppArmor
 profile, which Debian and Ubuntu enable out of the box. The profile permits `ptrace` and
@@ -165,7 +167,7 @@ docker run -d --name agentwall \
 
 docker run --rm \
   --network=container:agentwall --pid=container:agentwall --user 1000:1000 \
-  -e https_proxy=http://127.0.0.1:3128 \
+  -e http_proxy=http://127.0.0.1:3128 -e https_proxy=http://127.0.0.1:3128 \
   your-agent-image
 ```
 
