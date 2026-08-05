@@ -2,7 +2,7 @@
 
 ## Requirements
 
-- Node.js 20+
+- Node.js 22.12+
 - npm 10+
 - Linux, for process-level egress attribution. The proxy reads `/proc` to resolve a
   connection back to the process that opened it, so that feature is Linux-only.
