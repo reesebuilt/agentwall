@@ -1,0 +1,11 @@
+{
+  "exit": 1,
+  "layers": {
+    "chained": true,
+    "linked": true,
+    "anchored": false
+  },
+  "go_codes_include": [
+    "proof-missing"
+  ]
+}
