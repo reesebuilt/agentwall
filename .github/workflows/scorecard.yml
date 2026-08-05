@@ -1,0 +1,76 @@
+name: Scorecard
+
+# OpenSSF Scorecard reads this repository the way a stranger evaluating it would: are actions
+# pinned, is the token scoped down, is there a security policy, does anything ship binaries
+# nobody can rebuild. The value is not the number. The value is that it re-reads those
+# properties every week, so a pin that decays or a permission that widens surfaces here even
+# when no pull request draws attention to it.
+#
+# Three prerequisites belong to repository settings, not to this file, and the workflow cannot
+# create them:
+#
+#   1. Publishing to the public Scorecard API requires the repository to be public. The API
+#      indexes public repositories only, so on a private repository `publish_results: true`
+#      has nothing to publish to and the run reports that.
+#   2. Sending the SARIF to the Security tab requires code scanning to accept uploads for this
+#      repository. When it does not, the analysis still runs and the raw result is attached to
+#      the run as an artifact, but the dashboard shows nothing.
+#   3. The Branch-Protection check reads branch rules through an endpoint GITHUB_TOKEN cannot
+#      reach. Without a repository-scoped personal access token supplied as a `repo_token`
+#      secret, that single check reports inconclusive and is excluded from the score rather
+#      than scored as a failure.
+#
+# Scorecard also declines to publish from a pull_request event, which is why the triggers
+# below are the default branch and a schedule.
+
+on:
+  push:
+    branches: ["main"]
+  schedule:
+    - cron: "41 5 * * 2"
+  # Scorecard's Branch-Protection reading is only as current as the last run, so a rule change
+  # re-runs the analysis instead of waiting a week to notice.
+  branch_protection_rule:
+
+permissions:
+  contents: read
+
+jobs:
+  analysis:
+    name: Scorecard analysis
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # Uploading the analysis to code scanning.
+      security-events: write
+      # publish_results exchanges this for a short-lived OIDC token. That token is what proves
+      # to the public API that the result came from this repository's own workflow run, rather
+      # than from anyone who can post a JSON document claiming a score.
+      id-token: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Run analysis
+        uses: ossf/scorecard-action@2d1146689b8cda280b9bc96326124645441f03bc # v2.4.4
+        with:
+          results_file: results.sarif
+          results_format: sarif
+          publish_results: true
+
+      # Keeps the findings readable when the Security tab is not available, so a failed SARIF
+      # upload does not also mean a lost result.
+      - name: Upload artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: scorecard-results
+          path: results.sarif
+          retention-days: 5
+          if-no-files-found: error
+
+      - name: Upload SARIF
+        uses: github/codeql-action/upload-sarif@5595ccaf912efad79be6eef63a5619ff05969be3 # v4.37.6
+        with:
+          sarif_file: results.sarif
