@@ -1,10 +1,25 @@
+# Both spellings on purpose. A trailing slash matches directories ONLY, and git records a
+# symlink as a file, so a `dist` symlink into another worktree is NOT covered by `dist/` and
+# `git add -A` stages it with an absolute path baked in. That is a broken checkout for
+# everyone else plus a leak of one machine's layout, from a habit as ordinary as pointing a
+# branch at an already built tree.
 node_modules/
+node_modules
 dist/
+dist
 .env
 .env.local
 *.log
 coverage/
 .DS_Store
+
+# Python bytecode and caches, from verifier-py. Compiled per interpreter version, so
+# committing them would put one machine's CPython minor into everyone's checkout.
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.egg-info/
+
 # An operator's live config and policy. Anchored to the repository root with a leading
 # slash: a bare `policy.yaml` matches at ANY depth, which silently swallowed the shipped
 # examples/policy.yaml. It survived only because it was tracked before the rule existed,
