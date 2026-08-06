@@ -159,7 +159,10 @@ async function main() {
         },
       });
       app.log.info(
-        { proxyPort, ledger, mode, allowlistSize: config.egress.allowedHosts.length },
+        // Both allowlists, because strict now gates on host AND port. A boot line that names
+        // only the hosts leaves an operator whose calls all started failing on a port grep
+        // through config for the half that is actually denying them.
+        { proxyPort, ledger, mode, allowedHosts: config.egress.allowedHosts.length, allowedPorts: config.egress.allowedPorts },
         `forward proxy listening in ${mode} mode: ${MODE_SUMMARY[mode]}`
       );
     }
@@ -225,7 +228,8 @@ async function main() {
           transparentHost,
           transparentTlsPort,
           mode,
-          allowlistSize: config.egress.allowedHosts.length,
+          allowedHosts: config.egress.allowedHosts.length,
+          allowedPorts: config.egress.allowedPorts,
         },
         `transparent proxy listening on ${transparentHost}:${transparent.port} in ${mode} mode: ` +
           `${MODE_SUMMARY[mode]}. It expects kernel redirection — nothing reaches it unless nftables ` +
