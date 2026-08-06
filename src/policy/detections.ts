@@ -84,6 +84,78 @@ export const detectionCatalog: DetectionMapping[] = [
     },
     severity: "high",
   },
+  {
+    id: "det.mcp.tool.poisoned",
+    ruleId: "mcp:deny-tool-poisoning",
+    name: "Poisoned MCP tool description",
+    description: "An MCP server advertised a tool whose name or description carries instructions aimed at the model.",
+    mitreAttack: {
+      tactic: "Initial Access",
+      technique: "Supply Chain Compromise",
+      techniqueId: "T1195",
+    },
+    severity: "critical",
+  },
+  {
+    id: "det.mcp.tool.drift",
+    ruleId: "mcp:approve-tool-drift",
+    name: "MCP tool inventory drift",
+    description: "An MCP server advertised a tool set that differs from the inventory approved for this session.",
+    mitreAttack: {
+      tactic: "Initial Access",
+      technique: "Supply Chain Compromise",
+      techniqueId: "T1195",
+    },
+    severity: "high",
+  },
+  {
+    id: "det.mcp.input.secret",
+    ruleId: "mcp:redact-input-secret",
+    name: "Credential material in MCP tool arguments",
+    description: "Outbound MCP tool arguments carried credential material and were redacted before reaching the server.",
+    mitreAttack: {
+      tactic: "Credential Access",
+      technique: "Unsecured Credentials",
+      techniqueId: "T1552",
+    },
+    severity: "high",
+  },
+  {
+    id: "det.mcp.input.injection",
+    ruleId: "mcp:deny-input-injection",
+    name: "Injected instructions in MCP tool arguments",
+    description: "Outbound MCP tool arguments carried instruction-injection text aimed at the receiving server.",
+    mitreAttack: {
+      tactic: "Execution",
+      technique: "Command and Scripting Interpreter",
+      techniqueId: "T1059",
+    },
+    severity: "high",
+  },
+  {
+    id: "det.mcp.response.injection",
+    ruleId: "mcp:deny-response-injection",
+    name: "Injected instructions in MCP tool output",
+    description: "An MCP server returned tool output carrying instruction-injection text aimed at the agent.",
+    mitreAttack: {
+      tactic: "Execution",
+      technique: "Command and Scripting Interpreter",
+      techniqueId: "T1059",
+    },
+    severity: "critical",
+  },
+  {
+    id: "det.mcp.response.secret",
+    ruleId: "mcp:redact-response-secret",
+    name: "Credential material in MCP tool output",
+    description: "An MCP server returned credential material, which was redacted before it reached the agent.",
+    mitreAttack: {
+      tactic: "Credential Access",
+      technique: "Unsecured Credentials",
+      techniqueId: "T1552",
+    },
+    severity: "high",
+  },
 ];
 
 const detectionByRule = new Map<string, DetectionMapping[]>(

@@ -149,6 +149,22 @@ function executionModeIs(ctx: AgentContext, mode: "normal" | "read_only" | "answ
   return (ctx.control?.executionMode ?? "normal") === mode;
 }
 
+/**
+ * MCP frames reach the engine with their action namespaced by `mcp:` and with the
+ * gate pipeline's findings flattened into metadata markers. The markers are the
+ * only coupling between the MCP gates and these rules: no gate names a rule id
+ * and no rule imports a gate, the two meet on these string keys. They are strings
+ * because AgentContext.metadata is a string map, and the key names are mirrored
+ * in src/mcp/gates.ts.
+ */
+function isMcpAction(ctx: AgentContext): boolean {
+  return ctx.action.startsWith("mcp:");
+}
+
+function mcpMarker(ctx: AgentContext, marker: string): boolean {
+  return ctx.metadata?.[marker] === "true";
+}
+
 export const builtinRules: PolicyRule[] = [
   {
     id: "channel:deny-filesystem-mutation",
@@ -405,5 +421,81 @@ export const builtinRules: PolicyRule[] = [
     decision: "allow",
     riskLevel: "low",
     reason: "Governance action logged",
+  },
+
+  {
+    id: "mcp:deny-tool-poisoning",
+    description: "Deny MCP frames whose advertised tool metadata carries injected instructions",
+    plane: "tool",
+    match: (ctx: AgentContext) => {
+      if (ctx.plane !== "tool") return false;
+      return isMcpAction(ctx) && mcpMarker(ctx, "mcpToolPoisoned");
+    },
+    decision: "deny",
+    riskLevel: "critical",
+    reason: "MCP tool metadata carries instructions to the model rather than a description",
+  },
+  {
+    id: "mcp:approve-tool-drift",
+    description: "Require re-approval when an MCP server's advertised tool inventory changes",
+    plane: "tool",
+    match: (ctx: AgentContext) => {
+      if (ctx.plane !== "tool") return false;
+      return isMcpAction(ctx) && (mcpMarker(ctx, "mcpToolDrift") || hasFlowLabel(ctx, "manifest_drift"));
+    },
+    decision: "approve",
+    riskLevel: "high",
+    reason: "MCP server advertised a tool inventory that differs from the approved set",
+  },
+  {
+    id: "mcp:redact-input-secret",
+    description: "Redact credential material found in outbound MCP tool arguments",
+    plane: "tool",
+    match: (ctx: AgentContext) => {
+      if (ctx.plane !== "tool") return false;
+      // The DLP scan is a second, marker-independent path on purpose: if the
+      // input gate ever stops setting its marker, the credential still does not
+      // reach the server.
+      return isMcpAction(ctx) && (mcpMarker(ctx, "mcpInputSecret") || contentDlpScan(ctx).containsSecrets);
+    },
+    decision: "redact",
+    riskLevel: "high",
+    reason: "MCP tool arguments contain credential material that must not reach the server",
+  },
+  {
+    id: "mcp:deny-input-injection",
+    description: "Deny MCP tool calls whose arguments carry injected instructions",
+    plane: "tool",
+    match: (ctx: AgentContext) => {
+      if (ctx.plane !== "tool") return false;
+      return isMcpAction(ctx) && mcpMarker(ctx, "mcpInputInjection");
+    },
+    decision: "deny",
+    riskLevel: "high",
+    reason: "MCP tool arguments carry injected instructions aimed at the server",
+  },
+  {
+    id: "mcp:deny-response-injection",
+    description: "Deny MCP tool output that carries injected instructions back to the agent",
+    plane: "content",
+    match: (ctx: AgentContext) => {
+      if (ctx.plane !== "content") return false;
+      return isMcpAction(ctx) && mcpMarker(ctx, "mcpResponseInjection") && provenanceHasSource(ctx, "tool_output");
+    },
+    decision: "deny",
+    riskLevel: "critical",
+    reason: "MCP tool output carries instructions aimed at the agent",
+  },
+  {
+    id: "mcp:redact-response-secret",
+    description: "Redact credential material returned by an MCP server",
+    plane: "content",
+    match: (ctx: AgentContext) => {
+      if (ctx.plane !== "content") return false;
+      return isMcpAction(ctx) && (mcpMarker(ctx, "mcpResponseSecret") || contentDlpScan(ctx).containsSecrets);
+    },
+    decision: "redact",
+    riskLevel: "high",
+    reason: "MCP tool output contains credential material and must be redacted before the agent reads it",
   },
 ];

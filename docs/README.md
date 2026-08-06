@@ -22,6 +22,8 @@ than a narrative document.
   examples and a statement of what the format does not prove.
 - [FloodGuard](runtime-floodguard.md): runtime rate and burst control, including how
   shield mode changes behaviour.
+- [Wrapping an MCP server](mcp.md): running a local MCP server behind the gates, what each gate
+  checks, what the client sees when a call is blocked, and where those decisions land.
 
 ## Elsewhere in the repository
 

@@ -6,6 +6,7 @@ import { spawnSync } from "child_process";
 import { loadConfig } from "./config";
 import { defaultConfig, OnboardingMode, writeStarterFiles } from "./onboarding";
 import { runAnchorPass, runVerify, resolvePaths } from "./audit/anchor-service";
+import { runMcpWrap } from "./mcp/wrap";
 
 type CliFlags = Record<string, string | boolean>;
 const BOOLEAN_FLAGS = new Set(["lan", "force", "json", "confirm"]);
@@ -93,6 +94,7 @@ Commands:
   status              Read live dashboard state from the running Agentwall server
   anchor              Seal audit segments, sign a checkpoint, submit it off-box
   verify              Check the three audit integrity layers independently
+  mcp wrap            Wrap a local MCP server and gate its stdio traffic
   approval-mode       Set approval mode (auto|always|never)
   shield              Enable FloodGuard shield mode
   normal              Return FloodGuard to normal mode
@@ -136,6 +138,11 @@ Session control options:
   --session <id>                      Session ID to pause/resume/terminate
   --note <text>                       Operator note stored with the control action
   --confirm                           Required for terminate to avoid accidental containment
+
+MCP wrap options:
+  --server-name <name>                Name recorded for the wrapped server (default: command basename)
+  --agent-id <id>                     Agent the wrapped traffic is attributed to in the audit chain
+  -- <command> [args...]              The MCP server to launch; everything after -- is passed through
 `);
 }
 
@@ -814,6 +821,81 @@ async function commandVerify(flags: CliFlags): Promise<void> {
   process.exit(report.ok ? 0 : 1);
 }
 
+const MCP_USAGE = "Usage: agentwall mcp wrap [--server-name <name>] [--agent-id <id>] -- <command> [args...]";
+
+export interface McpWrapArgs {
+  serverName?: string;
+  agentId?: string;
+  command: string[];
+}
+
+/**
+ * Parse `mcp <subcommand> ...` arguments.
+ *
+ * Hand-rolled rather than routed through parseFlags(), because the wrapped server's command line
+ * is not ours to interpret. `--` ends our options and everything after it belongs to the server,
+ * flags included: parseFlags() would consume the `--` itself and then read the server's own
+ * `--port` as an Agentwall option, launching the server without it. A wrapper that silently
+ * changes the command it wraps is worse than one that refuses to run.
+ */
+export function parseMcpArgs(args: string[]): McpWrapArgs {
+  const [subcommand, ...rest] = args;
+  if (!subcommand) {
+    throw new Error(`mcp subcommand required. Supported: wrap.\n${MCP_USAGE}`);
+  }
+  if (subcommand !== "wrap") {
+    throw new Error(`Unknown mcp subcommand: ${subcommand}. Supported: wrap.\n${MCP_USAGE}`);
+  }
+
+  const separator = rest.indexOf("--");
+  if (separator === -1) {
+    throw new Error(`mcp wrap needs the server command after --.\n${MCP_USAGE}`);
+  }
+
+  const command = rest.slice(separator + 1);
+  if (command.length === 0) {
+    throw new Error(`no server command after --: there is nothing to wrap.\n${MCP_USAGE}`);
+  }
+
+  const parsed: McpWrapArgs = { command };
+  const ours = rest.slice(0, separator);
+  for (let i = 0; i < ours.length; i += 1) {
+    const token = ours[i];
+    const value = ours[i + 1];
+    if (token !== "--server-name" && token !== "--agent-id") {
+      throw new Error(`Unknown mcp wrap option: ${token}.\n${MCP_USAGE}`);
+    }
+    if (!value || value.startsWith("--")) {
+      throw new Error(`${token} needs a value.\n${MCP_USAGE}`);
+    }
+    if (token === "--server-name") {
+      parsed.serverName = value;
+    } else {
+      parsed.agentId = value;
+    }
+    i += 1;
+  }
+
+  return parsed;
+}
+
+/**
+ * `agentwall mcp wrap` - run a local MCP server with every JSON-RPC frame gated.
+ *
+ * Exits with the server's own status, so a wrapped server behaves like the server it wraps and a
+ * client that watches exit codes cannot tell the difference. That is the property that makes this
+ * safe to paste into a client's configuration in place of the original command.
+ */
+async function commandMcp(args: string[]): Promise<void> {
+  const parsed = parseMcpArgs(args);
+  const exitCode = await runMcpWrap({
+    command: parsed.command,
+    serverName: parsed.serverName,
+    agentId: parsed.agentId,
+  });
+  process.exit(exitCode);
+}
+
 
 async function main() {
   const [, , command = "help", ...args] = process.argv;
@@ -874,6 +956,11 @@ async function main() {
       return;
     case "verify":
       await commandVerify(flags);
+      return;
+    case "mcp":
+      // Raw args, not the parsed flags: the wrapped server's own options are on this line and
+      // parseFlags() has already read them as if they were ours.
+      await commandMcp(args);
       return;
     default:
       console.error(`Unknown command: ${command}`);
