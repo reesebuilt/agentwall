@@ -16,6 +16,7 @@ import {
   runRationale,
 } from "./rationale";
 import { PolicyEngine } from "./policy/engine";
+import { meetsNodeFloor, nodeFloor, packageVersion } from "./version";
 
 type CliFlags = Record<string, string | boolean>;
 const BOOLEAN_FLAGS = new Set(["lan", "force", "json", "confirm"]);
@@ -211,17 +212,6 @@ export function parseFlags(args: string[]): ParsedArgs {
   return { flags, positionals };
 }
 
-function getPackageVersion(): string {
-  const packageJsonPath = path.resolve(__dirname, "..", "package.json");
-  try {
-    const raw = fs.readFileSync(packageJsonPath, "utf8");
-    const parsed = JSON.parse(raw) as { version?: string };
-    return parsed.version || "0.0.0";
-  } catch {
-    return "0.0.0";
-  }
-}
-
 function runNodeScript(args: string[]) {
   const result = spawnSync(process.execPath, args, { stdio: "inherit" });
   process.exit(result.status ?? 1);
@@ -265,8 +255,8 @@ function commandInit(flags: CliFlags) {
 function commandDoctor() {
   const checks = [
     {
-      name: "Node version >= 20",
-      ok: Number(process.versions.node.split(".")[0]) >= 20,
+      name: `Node version >= ${nodeFloor}`,
+      ok: meetsNodeFloor(),
       detail: process.versions.node,
     },
     {
@@ -1069,7 +1059,7 @@ async function main() {
     case "version":
     case "--version":
     case "-v":
-      console.log(getPackageVersion());
+      console.log(packageVersion);
       return;
     case "init":
       commandInit(flags);

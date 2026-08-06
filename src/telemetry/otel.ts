@@ -1,6 +1,7 @@
 import * as http from "http";
 import * as https from "https";
 import { randomBytes } from "crypto";
+import { packageVersion } from "../version";
 
 export interface DecisionTelemetryConfig {
   enabled: boolean;
@@ -110,7 +111,7 @@ class OtlpHttpJsonDecisionTraceExporter implements DecisionTraceExporter {
             {
               scope: {
                 name: "agentwall.decision-trace",
-                version: "0.1.0",
+                version: packageVersion,
               },
               spans: [
                 {

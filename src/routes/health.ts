@@ -1,5 +1,6 @@
 import { FastifyInstance } from "fastify";
 import { auditDropStats } from "../audit/logger";
+import { packageVersion } from "../version";
 
 export async function healthRoutes(app: FastifyInstance): Promise<void> {
   app.get("/health", async (_req, reply) => {
@@ -12,7 +13,7 @@ export async function healthRoutes(app: FastifyInstance): Promise<void> {
     return reply.send({
       status: "ok",
       service: "agentwall",
-      version: "0.1.0",
+      version: packageVersion,
       timestamp: new Date().toISOString(),
       auditDropped: audit.dropped,
       auditUndeclaredDrops: audit.undeclared,
