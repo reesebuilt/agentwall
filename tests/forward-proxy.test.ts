@@ -913,6 +913,39 @@ describe("forward proxy", () => {
       expect(upstreamConnections).toBe(0);
     });
 
+    it("fails closed on a hostile CONNECT authority and keeps the block reason bounded", async () => {
+      // The authority parser validates nothing: no charset allowlist and no length cap, unlike
+      // extractHttpHost on the transparent side. That is safe only because of what happens
+      // downstream, so this pins the two places it has to hold. Strict mode refuses an authority
+      // it cannot match, and the reason that reaches the client's headers is bounded and
+      // flattened, even though it is built from a string the agent chose and is 2000 characters
+      // long here. A raw CR or LF cannot arrive by this route at all, because the request line
+      // is itself CRLF-terminated, which leaves length and charset as the vector.
+      const hostile = `${"a".repeat(2000)}!$&'()*+,;=`;
+      setEgressPolicy({ hosts: ["127.0.0.1"], ports: [upstreamPort] });
+      const proxyPort = await startProxy(policyDecide("strict", new PolicyEngine([])));
+
+      const conn = await connectTunnel(proxyPort, hostile);
+      await conn.closed;
+      await until(() => records.length > 0);
+
+      const response = responseHead(conn.received);
+      const reason = /X-Agentwall-Block-Reason: (.*)\r\n/.exec(response)?.[1] ?? "";
+      const record = records[0] as ProxyRecord;
+      expect(response.startsWith("HTTP/1.1 403 Forbidden\r\n")).toBe(true);
+      // One header terminator, at the very end: the client received one response and nothing
+      // after it.
+      expect(response.indexOf("\r\n\r\n")).toBe(response.length - 4);
+      expect(reason.length).toBeLessThanOrEqual(200);
+      expect(reason.endsWith("...")).toBe(true);
+      // The ledger keeps the authority whole, where it is JSON-encoded rather than interpolated.
+      expect(record.host).toBe(hostile);
+      expect(record.port).toBe(443);
+      expect(record.decision).toBe("deny");
+      expect(upstreamConnections).toBe(0);
+      expect(rejections).toEqual([]);
+    });
+
     it("gates the port on the CONNECT path, not just the host", async () => {
       // The regression. `egress.allowedPorts` read as a control and enforced nothing on the
       // proxy path: with the host allowlisted and the port allowlist set to 443, a CONNECT to
