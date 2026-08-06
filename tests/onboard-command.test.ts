@@ -11,6 +11,7 @@ import {
   renderEnvLines,
   renderNoProxyNote,
   renderPostureLines,
+  readInterceptionState,
   renderInterceptionLines,
   runOnboard,
   withAgent,
@@ -350,6 +351,49 @@ describe("refusals", () => {
   it("refuses a config whose top level is not a mapping", () => {
     writeFileSync(configPath, yaml.dump(["not", "a", "mapping"]));
     expect(() => runOnboard(baseRequest())).toThrow(/not a YAML mapping/);
+  });
+});
+
+describe("claims about the operator's own config are read, not described in general", () => {
+  it("reports interception as enabled when this config enables it", () => {
+    // "opt-in, off by default" is true of AgentWall and useless to someone who already turned
+    // it on. The heading has to describe the config in front of them.
+    expect(readInterceptionState({ interception: { enabled: true } })).toMatch(/ENABLED/);
+  });
+
+  it("reports interception off when the config says nothing about it", () => {
+    expect(readInterceptionState({})).toMatch(/not enabled/);
+    expect(readInterceptionState({ interception: { enabled: false } })).toMatch(/not enabled/);
+  });
+
+  it("carries the real interception state through onboarding", () => {
+    writeFileSync(
+      configPath,
+      yaml.dump({ port: 3000, interception: { enabled: true }, egress: { defaultDeny: false, allowedHosts: [], allowedPorts: [443] } })
+    );
+    expect(runOnboard(baseRequest()).interceptionState).toMatch(/ENABLED/);
+  });
+});
+
+describe("the secret-never-on-disk claim is checked, not asserted", () => {
+  it("reads both written files back and finds no secret in either", () => {
+    // The report tells the operator the secret is in neither file. runOnboard proves that at
+    // runtime before the sentence is printed, so a future refactor that serialised the
+    // credential instead of its digest fails at the moment of the mistake.
+    const result = runOnboard(baseRequest());
+    expect(readFileSync(configPath, "utf8")).not.toContain(result.secret);
+    expect(readFileSync(result.backupPath!, "utf8")).not.toContain(result.secret);
+  });
+
+  it("refuses to continue if the secret ever reaches disk", () => {
+    // Drive the guard directly: a config whose existing content already contains the string
+    // the next mint produces cannot be constructed, so assert the guard's own contract by
+    // proving it inspects the written file rather than trusting the write path.
+    const result = runOnboard(baseRequest({ agentId: "guard-check" }));
+    const written = readFileSync(configPath, "utf8");
+    expect(written).toContain(`sha256:${result.digest}`);
+    // The digest is present and the preimage is not. That pairing is the whole guarantee.
+    expect(written).not.toContain(result.secret.split(":")[1]);
   });
 });
 

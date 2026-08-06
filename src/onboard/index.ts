@@ -105,6 +105,12 @@ export interface OnboardResult {
    * the mode, so claiming one would be a guess printed as a fact.
    */
   postureLines: readonly string[];
+  /**
+   * Whether THIS config has interception on, read back rather than described in general.
+   * "opt-in, off by default" is true of AgentWall and says nothing about the operator in
+   * front of you, who may have already turned it on.
+   */
+  interceptionState: string;
   replacedExisting: boolean;
 }
 
@@ -281,6 +287,21 @@ export function renderPostureLines(document: Record<string, unknown>): string[] 
 }
 
 /**
+ * Whether interception is on in THIS config, read rather than described.
+ *
+ * The heading used to read "opt-in, off by default". True of AgentWall, and no help at all to
+ * an operator who already turned it on: they would be told their live interception was off.
+ * Same defect as the posture line, so it gets the same fix.
+ */
+export function readInterceptionState(document: Record<string, unknown>): string {
+  const interception = document["interception"];
+  if (interception && typeof interception === "object" && "enabled" in interception) {
+    if (interception.enabled === true) return "ENABLED in this config";
+  }
+  return "not enabled in this config, and off by default";
+}
+
+/**
  * Load the config file as a plain object.
  *
  * Deliberately NOT loadConfig(): that applies defaults, resolves env credentials and validates
@@ -384,6 +405,21 @@ export function runOnboard(request: OnboardRequest): OnboardResult {
   fs.copyFileSync(request.configPath, backupPath);
   fs.writeFileSync(request.configPath, yaml.dump(updated, { noRefs: true, lineWidth: 120 }));
 
+  // Read the files back and PROVE the secret is not in either before telling the operator so.
+  // The report says "AgentWall stored only its digest"; that sentence is exactly the kind of
+  // confident, specific, reassuring claim that has to be checked rather than assumed. If a
+  // future refactor ever serialised the credential instead of its digest, this fails loudly at
+  // the moment of the mistake rather than being discovered in a committed config.
+  for (const written of [request.configPath, backupPath]) {
+    if (fs.readFileSync(written, "utf8").includes(credential.secret)) {
+      throw new Error(
+        `agentwall: refusing to continue. The minted secret for "${request.agentId}" appears in ` +
+          `${written}. Only the sha256 digest may reach disk. The config has been left as written ` +
+          `so you can inspect it; rotate this credential by re-running onboard with --force.`
+      );
+    }
+  }
+
   const proxyUrl = proxyUrlFor(credential.secret, request.proxyHost, request.proxyPort);
   const caPath = path.join(process.env.HOME ?? "/root", ".agentwall", "ca", "agentwall-ca.crt");
 
@@ -392,6 +428,10 @@ export function runOnboard(request: OnboardRequest): OnboardResult {
   // "monitor, nothing will start failing" by a command that had not looked. That is the same
   // class of untrue-but-reassuring output this whole command refuses to produce.
   const postureLines = renderPostureLines(updated);
+
+  // Same rule as the posture line. "opt-in, off by default" is a true statement about
+  // AgentWall and a possibly false one about the config in front of this operator.
+  const interceptionState = readInterceptionState(updated);
 
   return {
     profile,
@@ -404,6 +444,7 @@ export function runOnboard(request: OnboardRequest): OnboardResult {
     envLines: renderEnvLines(profile, proxyUrl),
     interceptionLines: renderInterceptionLines(profile, caPath),
     postureLines,
+    interceptionState,
     replacedExisting,
   };
 }
@@ -443,7 +484,8 @@ export function renderReport(result: OnboardResult, request: OnboardRequest): st
   out.push(`  ${result.secret}`);
   out.push("");
   out.push(`  AgentWall stored only its digest (sha256:${result.digest.slice(0, 16)}...).`);
-  out.push("  The secret is not written to any file. If you lose it, re-run onboard with --force");
+  out.push("  Both the config and its backup were read back and checked: the secret is in neither.");
+  out.push("  It exists in this terminal and nowhere else. If you lose it, re-run onboard with --force");
   out.push("  to mint a replacement; there is no recovery.");
   out.push("");
 
@@ -475,7 +517,7 @@ export function renderReport(result: OnboardResult, request: OnboardRequest): st
   }
   out.push("");
 
-  out.push("TLS INTERCEPTION (opt-in, off by default, not required for capture)");
+  out.push(`TLS INTERCEPTION (${result.interceptionState}, not required for capture)`);
   out.push("");
   for (const line of result.interceptionLines) out.push(`  ${line}`);
   out.push("");
