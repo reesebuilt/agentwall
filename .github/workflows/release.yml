@@ -20,11 +20,6 @@ permissions:
   contents: read
 
 env:
-  # Exact, not a range. A stranger who rebuilds the verifier and compares checksums is comparing
-  # against these bytes, and Go's output changes between patch releases. `go-version-file` is
-  # right for ci.yml, where the question is "does this still build under the Go we claim", and
-  # wrong here, where the question is "does this produce the same bytes as the release".
-  GO_VERSION: "1.22.12"
   # The engines floor, not the latest Node. Building and testing the release on the oldest
   # runtime we advertise is the only thing that keeps that claim from being decorative.
   NODE_VERSION: "22.12.0"
@@ -63,10 +58,19 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
 
+      # The Go version comes from scripts/build-verifier.sh, which is the script that actually
+      # performs the release build and the script a stranger runs to reproduce it. Holding the
+      # number here as well would let CI install one toolchain while the build script demanded
+      # another, and the failure would surface as an unreproducible release rather than as a
+      # config error. One number, in the file that uses it.
+      - name: Resolve pinned Go toolchain
+        id: gotc
+        run: echo "version=$(scripts/build-verifier.sh --print-go-version)" >> "$GITHUB_OUTPUT"
+
       - name: Setup Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: ${{ env.GO_VERSION }}
+          go-version: ${{ steps.gotc.outputs.version }}
           # Zero requirements means no dependency graph to cache and no go.sum for the cache key
           # to hash. setup-go's cache path wants that file and warns when it is absent.
           cache: false
@@ -188,29 +192,60 @@ jobs:
           }
           NODE
 
-      # CGO_ENABLED=0 makes the binaries static, so they run on a machine with no toolchain and
-      # no libc of a particular vintage. -trimpath removes the builder's absolute paths, which is
-      # what makes two people's builds of the same source produce the same bytes.
+      # The build lives in scripts/build-verifier.sh, not here. It used to be this inline loop,
+      # and the documented way to reproduce a release was to read this YAML and retype it, which
+      # is a recipe for a reproducibility claim that quietly stops being true. A stranger now runs
+      # the same script this job runs. Every flag in it is justified against a measurement in its
+      # header comment, including the two that were wrong in this loop:
+      #
+      #   - No -buildvcs=false. Go stamps vcs.revision into any main package built inside a git
+      #     repository, so this loop produced binaries that a rebuild from the GitHub source
+      #     tarball could never match. The old comment below claimed -trimpath alone was "what
+      #     makes two people's builds of the same source produce the same bytes". Measured: it is
+      #     necessary and it was not sufficient.
+      #   - No GOAMD64 or GOEXPERIMENT pin. Both are read from the environment and both change
+      #     code generation, so a contributor who exports GOAMD64=v3 could not reproduce a
+      #     correct release.
       - name: Cross-compile verifier binaries
+        run: scripts/build-verifier.sh "${VERSION}" dist-release
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+
+      # The reproducibility claim, actually checked, on the tree being released.
+      #
+      # `git archive HEAD` is the point: it produces the tree with no .git directory, which is
+      # exactly what a stranger gets from the GitHub source tarball, and it lands at a different
+      # absolute path than the checkout. So this compares a release build against the hardest
+      # realistic reproduction attempt, and it fails if anyone reintroduces path embedding or VCS
+      # stamping. A claim in a comment is not evidence; a diff is.
+      - name: Verifier binaries reproduce from a pristine tree
         run: |
           set -euo pipefail
-          for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64; do
-            goos="${target%/*}"
-            goarch="${target#*/}"
-            ext=""
-            [ "$goos" = "windows" ] && ext=".exe"
-            CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" GOTOOLCHAIN=local \
-              go build -trimpath \
-              -ldflags "-s -w -X main.verifierVersion=${VERSION}" \
-              -o "../dist-release/agentwall-verify-${goos}-${goarch}${ext}" .
-          done
-        working-directory: verifier
+          rebuild_src="$(mktemp -d)/src"
+          rebuild_out="$(mktemp -d)/out"
+          mkdir -p "$rebuild_src"
+          git archive --format=tar HEAD | tar -x -C "$rebuild_src"
+          test ! -e "${rebuild_src}/.git"
+          "${rebuild_src}/scripts/build-verifier.sh" "${VERSION}" "$rebuild_out"
+          if ! diff -u dist-release/SHA256SUMS-verifier.txt "${rebuild_out}/SHA256SUMS-verifier.txt"; then
+            echo "" >&2
+            echo "the verifier binaries are not reproducible from a pristine source tree." >&2
+            echo "a stranger rebuilding this release would get different bytes, so the checksums" >&2
+            echo "published with it would look like corruption. Most likely cause: a build flag" >&2
+            echo "in scripts/build-verifier.sh that embeds the build path or the git revision." >&2
+            exit 1
+          fi
+          echo "byte-identical from a .git-less tree at a different path"
         env:
           VERSION: ${{ steps.meta.outputs.version }}
 
       # The -X flag is silently ignored when it names a symbol that is not a string var, so a
       # refactor that turns verifierVersion back into a const would produce binaries reporting a
       # stale version with a green build. Asking the binary is the only way to know it took.
+      #
+      # This step covers linux/amd64 only, because that is the only one of the five published
+      # targets a linux runner can execute. The next step covers the other four without executing
+      # them, and is explicit about the weaker guarantee that gives.
       - name: Verifier binary reports the release version
         run: |
           set -euo pipefail
@@ -257,6 +292,109 @@ jobs:
         env:
           VERSION: ${{ steps.meta.outputs.version }}
 
+      # The four targets a linux runner cannot execute (darwin/amd64, darwin/arm64, linux/arm64,
+      # windows/amd64) get a STATIC check only, and this comment is deliberately explicit about how
+      # little that buys, because the tempting overclaims here were both tested and both failed.
+      #
+      # What is checked: the release version string is present in each asset. `-s -w` strips
+      # symbols and DWARF but not string data, so it survives.
+      #
+      # What that does NOT prove, measured rather than reasoned about:
+      #
+      #   - Not that -X set the symbol. verifier/report.go declares
+      #     `var verifierVersion = "0.2.0"` as a default and a release stamps the same number, so
+      #     the string is present either way. A build with -X 9.9.9 still contains "0.2.0".
+      #   - Not that -X even named a real symbol. An earlier version of this step compared each
+      #     asset against a sentinel-stamped rebuild and claimed that a byte difference proved the
+      #     flag reached the linker. It does not: building with `-X main.doesNotExist=AAA` versus
+      #     `=BBB` also produces differing bytes, because the linker puts the -X value into string
+      #     data whether or not the symbol resolves. That check was removed rather than kept with a
+      #     softer comment, since it would have passed in precisely the const-regression case its
+      #     own error message blamed.
+      #
+      # So: linux/amd64 is version-verified by execution in the "Verifier binary reports the
+      # release version" step. Named rather than called "the step above", because steps get
+      # inserted between these two and a positional reference goes stale silently. These four are correct
+      # by construction, and the construction is a single scripts/build-verifier.sh invocation that
+      # passes one -ldflags value to all five targets. A const regression that made -X a no-op
+      # would therefore break all five identically and is caught by the executed linux/amd64 check,
+      # and separately by verifier/main_test.go, which fails when report.go's literal disagrees
+      # with package.json. The residual gap is a stamp failure affecting only some targets of one
+      # invocation, which no static check here would catch either.
+      - name: Published binaries embed the release version (static, four not executed)
+        run: |
+          set -euo pipefail
+          checked=0
+          for asset in dist-release/agentwall-verify-*; do
+            name="$(basename "$asset")"
+            # -F because a version is not a regex: the dots in 0.2.0 match any character, so
+            # "0x2y0" would satisfy a check that looks like it demands the version.
+            if ! grep -aqF -- "$VERSION" "$asset"; then
+              echo "${name} does not contain the string '${VERSION}'." >&2
+              echo "the tree it was built from is not the tree this release names." >&2
+              exit 1
+            fi
+            echo "  ${name}: embeds ${VERSION}"
+            checked=$((checked + 1))
+          done
+          # A glob that matched nothing would leave the loop body unrun and the step green.
+          if [ "$checked" -ne 5 ]; then
+            echo "expected 5 published binaries, checked ${checked}." >&2
+            exit 1
+          fi
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+
+      # The formula is generated from the checksum manifest the previous steps just wrote, so its
+      # digests cannot disagree with the binaries it installs. It is not committed to this
+      # repository: a committed formula carries last release's digests, and `brew install` then
+      # reports a correct download as corrupt.
+      #
+      # Homebrew consumes formulae from a tap, which is a separate repository. This job produces
+      # the file and attaches it to the release; publishing it to a tap is a deliberate manual
+      # step, because this workflow's token has no business pushing to another repository.
+      # docs/install.md has the three commands.
+      - name: Generate Homebrew formula
+        run: |
+          set -euo pipefail
+          node scripts/brew-formula.js \
+            --version "${VERSION}" \
+            --checksums dist-release/SHA256SUMS-verifier.txt \
+            --out dist-release/agentwall-verify.rb
+          cat dist-release/agentwall-verify.rb
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+
+      # Guards the property that makes the formula auditable by hand: every sha256 it declares
+      # comes from the manifest. If the generator ever invented, truncated, or crossed a digest,
+      # the formula would still be valid Ruby and would still install, and the first person to
+      # notice would be a user whose download "failed" against a digest we made up.
+      #
+      # Extracts `sha256 "..."` declarations rather than any 64-character hex run. The first
+      # version matched bare hex, which also caught the all-zero prevHash inside the formula's own
+      # test block and would have failed every release with "invented digest". Caught by
+      # tests/brew-formula.test.ts before it ever ran here, which is the argument for the test.
+      - name: Formula declares only manifest digests
+        run: |
+          set -euo pipefail
+          work="$(mktemp -d)"
+          sed -n 's/.*sha256 "\([0-9a-f]\{64\}\)".*/\1/p' dist-release/agentwall-verify.rb \
+            | LC_ALL=C sort -u > "${work}/formula"
+          cut -d' ' -f1 dist-release/SHA256SUMS-verifier.txt | LC_ALL=C sort -u > "${work}/manifest"
+          # Non-empty output means the formula declares something the manifest does not contain.
+          invented="$(comm -23 "${work}/formula" "${work}/manifest")"
+          if [ -n "$invented" ]; then
+            echo "the formula declares digests that appear in no manifest line:" >&2
+            echo "$invented" >&2
+            exit 1
+          fi
+          # A formula that declared nothing would pass the check above trivially.
+          declared="$(wc -l < "${work}/formula")"
+          if [ "$declared" -ne 4 ]; then
+            echo "expected 4 platform digests in the formula, found ${declared}." >&2
+            exit 1
+          fi
+          echo "all ${declared} formula digests appear in SHA256SUMS-verifier.txt"
       # Sorted with a fixed collation so the file is byte-identical across runs of the same
       # inputs, and so the SLSA subject list below is stable.
       #
@@ -347,25 +485,41 @@ jobs:
             echo "CHANGELOG.md has no [${VERSION}] section; the release would have empty notes." >&2
             exit 1
           fi
+          # Read from the build script rather than restated, so the rebuild instruction in the
+          # notes names the toolchain that actually produced these bytes.
+          GO_PIN="$(scripts/build-verifier.sh --print-go-version)"
           cat >> notes.md <<EOF
 
           ## Verify this release
 
-          Nothing here asks you to trust the build. Check the artifacts:
+          Nothing here asks you to trust the build. Each step below is something you can run
+          against what you downloaded, in increasing order of how little it trusts us.
 
           \`\`\`sh
-          # Every artifact matches the checksums published with it.
+          # 1. Every artifact matches the checksums published with it.
           sha256sum -c checksums.txt
 
-          # The binaries were built by this workflow from this tag, not by a person.
+          # 2. The binaries were built by this workflow from this tag, not by a person.
           slsa-verifier verify-artifact agentwall-verify-linux-amd64 \\
             --provenance-path ${PROVENANCE} \\
             --source-uri github.com/repsecure/agentwall \\
             --source-tag ${TAG}
 
-          # The verifier shares no code with the tool that wrote the evidence.
+          # 3. Trust neither of the above: rebuild the binaries yourself and compare. This needs
+          #    Go ${GO_PIN} exactly, because a different Go emits different bytes. The output
+          #    should be identical to the agentwall-verify-* lines in checksums.txt.
+          git clone --branch ${TAG} --depth 1 https://github.com/repsecure/agentwall
+          cd agentwall && scripts/build-verifier.sh ${VERSION} /tmp/rebuilt
+          cat /tmp/rebuilt/SHA256SUMS-verifier.txt
+
+          # 4. The verifier shares no code with the tool that wrote the evidence.
+          chmod +x agentwall-verify-linux-amd64
           ./agentwall-verify-linux-amd64 --audit /path/to/audit.jsonl --json
           \`\`\`
+
+          Binaries are published for linux/amd64, linux/arm64, darwin/amd64, darwin/arm64, and
+          windows/amd64. \`agentwall-verify.rb\` is the Homebrew formula for the macOS and Linux
+          binaries; Homebrew has no Windows support, so Windows users take the \`.exe\` directly.
           EOF
         env:
           VERSION: ${{ needs.build.outputs.version }}
