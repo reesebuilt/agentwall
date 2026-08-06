@@ -23,7 +23,13 @@ const MODE_SUMMARY: Record<EnforcementMode, string> = {
 
 async function main() {
   const config = loadConfig();
-  const { app, engine, runtime } = await buildServer(config);
+  const { app, engine, runtime, reloadCoordinator } = await buildServer(config);
+
+  // SIGHUP reloads policy.yaml and agentwall.config.yaml. Installed HERE and not in
+  // buildServer, because signals belong to the process: buildServer is a library function that
+  // the test suite and embedding callers invoke many times in one process, and installing from
+  // there would stack one listener per instance and make a single signal reload N times.
+  reloadCoordinator.installSignalHandler();
 
   /**
    * File one egress connection on the audit chain and the dashboard.
@@ -109,9 +115,15 @@ async function main() {
       // runs inside a socket handler that has no view of configuration, and re-reading
       // config on the egress hot path would put file I/O in front of every model API call.
       // The consequence is that changing either needs a restart, which is the correct
-      // ceremony for a change that can take an agent fleet offline. Policy RULES are not
-      // in that bargain: the engine is held by reference and reloads mutate it in place, so
-      // a hot-reloaded rule takes effect on the next connection.
+      // ceremony for a change that can take an agent fleet offline. A reload reports both
+      // keys as restart-required rather than pretending to apply them.
+      //
+      // Policy RULES are not in that bargain: the engine is held by reference, a reload swaps
+      // the immutable snapshot it points at, and a hot-reloaded rule takes effect on the next
+      // connection. This comment used to say reloads "mutate it in place", which was wrong in a
+      // way worth correcting: replaceRules builds a NEW frozen snapshot rather than editing the
+      // live one, which is exactly why a connection already being decided cannot observe a
+      // half-applied ruleset.
       const mode = config.enforcement?.mode ?? "monitor";
       setEgressPolicy({ hosts: config.egress.allowedHosts, ports: config.egress.allowedPorts });
 

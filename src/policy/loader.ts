@@ -244,12 +244,22 @@ export function buildRuleScope(rule: DeclarativePolicyRule): PolicyRuleScope | u
   return scope.actor || scope.subject || scope.control ? scope : undefined;
 }
 
-export function loadDeclarativePolicyFile(policyPath: string): DeclarativePolicyFile {
-  const resolved = path.resolve(policyPath);
-  const raw = fs.readFileSync(resolved, "utf-8");
+/**
+ * Validate policy text that has already been read.
+ *
+ * Split out from `loadDeclarativePolicyFile` so a caller that also needs to HASH the file
+ * can hash and validate the same bytes. Reading the file twice would let a concurrent write
+ * land between the two reads and produce an audit record whose hash belongs to a file whose
+ * rules were never in force, which is worse than having no hash at all.
+ */
+export function parseDeclarativePolicyFile(raw: string): DeclarativePolicyFile {
   const parsed = PolicyFileSchema.parse(yaml.load(raw));
   parsed.rules.forEach(validateDeclarativeRuleShape);
   return parsed;
+}
+
+export function loadDeclarativePolicyFile(policyPath: string): DeclarativePolicyFile {
+  return parseDeclarativePolicyFile(fs.readFileSync(path.resolve(policyPath), "utf-8"));
 }
 
 export function writeDeclarativePolicyFile(policyPath: string, policyFile: DeclarativePolicyFile): void {

@@ -129,6 +129,16 @@ export interface AgentwallConfig {
       criticalRiskMultiplier: number;
     };
   };
+  /**
+   * Absolute path of the file this config was read from, absent when it came from built-in
+   * defaults or from a caller-assembled literal.
+   *
+   * Populated by `loadConfig` and set AFTER the merge, so a config file cannot name its own
+   * path and cannot be pointed at a different one. Reload needs it to re-read the same file
+   * the process booted from rather than re-running candidate discovery and possibly landing
+   * on a different one.
+   */
+  sourcePath?: string;
 }
 
 
@@ -209,13 +219,14 @@ const defaults: AgentwallConfig = {
   runtimeGuards: defaultRuntimeGuards,
 };
 
-export function loadConfig(configPath?: string): AgentwallConfig {
-  let fileConfig: Partial<AgentwallConfig> = {};
-  // Which file the values came from. Reported in the enforcement-mode error below: a
-  // process that refuses to boot over a config key has to say which of the five candidate
-  // paths it actually read, or the operator fixes the wrong file.
-  let sourcePath = "built-in defaults";
-
+/**
+ * The config file `loadConfig` would read, or null when none of the candidates exist.
+ *
+ * Exported because reload has to re-read THE SAME file the process booted from. Two copies of
+ * this candidate list would be free to drift, and a reload that quietly switched to a
+ * different candidate would apply a file the operator never edited.
+ */
+export function resolveConfigSource(configPath?: string): string | null {
   const candidatePaths = [
     configPath,
     process.env["AGENTWALL_CONFIG"],
@@ -227,11 +238,23 @@ export function loadConfig(configPath?: string): AgentwallConfig {
   for (const candidatePath of candidatePaths) {
     const resolved = path.resolve(candidatePath);
     if (fs.existsSync(resolved)) {
-      const raw = fs.readFileSync(resolved, "utf-8");
-      fileConfig = yaml.load(raw) as Partial<AgentwallConfig>;
-      sourcePath = resolved;
-      break;
+      return resolved;
     }
+  }
+
+  return null;
+}
+
+export function loadConfig(configPath?: string): AgentwallConfig {
+  let fileConfig: Partial<AgentwallConfig> = {};
+  // Which file the values came from. Reported in the enforcement-mode error below: a
+  // process that refuses to boot over a config key has to say which of the five candidate
+  // paths it actually read, or the operator fixes the wrong file.
+  const resolvedSource = resolveConfigSource(configPath);
+  const sourcePath = resolvedSource ?? "built-in defaults";
+
+  if (resolvedSource) {
+    fileConfig = yaml.load(fs.readFileSync(resolvedSource, "utf-8")) as Partial<AgentwallConfig>;
   }
 
   const merged = deepMerge(defaults as unknown as Record<string, unknown>, fileConfig as Record<string, unknown>);
@@ -260,6 +283,38 @@ export function loadConfig(configPath?: string): AgentwallConfig {
       `agentwall: invalid enforcement.mode ${JSON.stringify(mode ?? section)} in ${sourcePath}. ` +
         `Valid modes are "monitor", "guarded", and "strict". Omit the enforcement section entirely to use "monitor".`
     );
+  }
+
+  // Same reasoning as enforcement.mode above, and the stakes here are higher.
+  //
+  // `policy.defaultDecision` is typed "allow" | "deny", but the value arrives from yaml.load
+  // through deepMerge, so the type is a claim about the file rather than a check on it. An
+  // unrecognised value used to reach the engine intact and become the decision returned for
+  // every request that matched no rule. Nothing downstream treats an unknown decision as a
+  // block: src/runtime/enforcement.ts gates on `result.decision === "deny"` and
+  // src/routes/telegram.ts on the same comparison, so a typo here did not fail closed, it
+  // failed OPEN, for exactly the traffic the default exists to govern. Config reload made that
+  // reachable without a restart, which is what turned a latent typo into something worth
+  // refusing to start over.
+  const policySection = merged["policy"];
+  const defaultDecision =
+    policySection && typeof policySection === "object" && "defaultDecision" in policySection
+      ? policySection.defaultDecision
+      : undefined;
+  if (defaultDecision !== "allow" && defaultDecision !== "deny") {
+    throw new Error(
+      `agentwall: invalid policy.defaultDecision ${JSON.stringify(defaultDecision)} in ${sourcePath}. ` +
+        `Valid values are "allow" and "deny". Omit the key entirely to use "deny".`
+    );
+  }
+
+  // After the merge and unconditionally, so a config file that declares its own `sourcePath`
+  // cannot make reload re-read a file the operator never wrote. Deleted rather than left when
+  // there is no file, so `sourcePath` present always means "this came from a real file".
+  if (resolvedSource) {
+    merged["sourcePath"] = resolvedSource;
+  } else {
+    delete merged["sourcePath"];
   }
 
   return merged as unknown as AgentwallConfig;

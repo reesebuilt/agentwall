@@ -185,7 +185,7 @@ rules:
       },
     };
 
-    const { app, reloadPolicy } = await buildServer(config);
+    const { app, reloadCoordinator } = await buildServer(config);
 
     try {
       const initial = await app.inject({
@@ -216,8 +216,8 @@ rules:
     reason: "OpenAI host denied"
 `);
 
-      const reloadResult = reloadPolicy();
-      expect(reloadResult?.reloaded).toBe(true);
+      const report = reloadCoordinator.reload({ source: "api", operatorId: "test-operator" });
+      expect(report.ok).toBe(true);
 
       const afterReload = await app.inject({
         method: "POST",
