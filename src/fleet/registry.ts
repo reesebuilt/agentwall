@@ -128,6 +128,70 @@ export interface RegisteredAgent {
   budget?: { windowSeconds: number; maxRequests?: number; maxBytes?: number };
 }
 
+/**
+ * The uid/comm rule this declaration binds by, with the key material, or null when it names
+ * neither. Credentials are deliberately absent: they are not exclusive with these, so they
+ * are handled beside this rather than inside it.
+ *
+ * One definition, three readers: the ambiguity check, the index construction, and the
+ * binding-tier helpers below. The three used to spell the same if/else-if chain out
+ * separately, and a doctor that reports a tier the resolver does not actually use is
+ * exactly the kind of confidently wrong reporting this project keeps having to remove.
+ *
+ * Returns a discriminated object rather than a bare tier so callers get the uid narrowed
+ * without an assertion. It allocates once per declared agent at construction, and nothing
+ * on the egress hot path calls it: `resolve()` reads the prebuilt indexes.
+ */
+type UidCommBinding =
+  | { tier: "uid+comm"; uid: number; comm: readonly string[] }
+  | { tier: "uid"; uid: number }
+  | { tier: "comm"; comm: readonly string[] };
+
+function uidCommBinding(agent: RegisteredAgent): UidCommBinding | null {
+  if (agent.uid !== undefined && agent.comm.length > 0) {
+    return { tier: "uid+comm", uid: agent.uid, comm: agent.comm };
+  }
+  if (agent.uid !== undefined) return { tier: "uid", uid: agent.uid };
+  if (agent.comm.length > 0) return { tier: "comm", comm: agent.comm };
+  return null;
+}
+
+/** The strongest tier this declaration can bind at. */
+export function strongestBindingTier(agent: RegisteredAgent): AgentMatchSignal {
+  if (agent.credentialDigest) return "credential";
+  return uidCommBinding(agent)?.tier ?? "none";
+}
+
+/**
+ * The WEAKEST tier this declaration can bind at, which is the one that decides what the
+ * declaration is actually worth.
+ *
+ * A credential is not exclusive with the uid/comm rules: `resolve()` tries the credential
+ * first and falls through to uid and comm when none is presented, and the registry indexes
+ * the agent under both. So an agent declaring a credential AND a comm is a comm-bound agent
+ * that sometimes gets a stronger proof, not a credential-bound agent: any process on the
+ * host that names itself the same thing binds to it without presenting anything. An
+ * operator reading "credential" for that agent would be reading a security property it does
+ * not have, which is why this exists separately from `strongestBindingTier`.
+ */
+export function weakestBindingTier(agent: RegisteredAgent): AgentMatchSignal {
+  return uidCommBinding(agent)?.tier ?? (agent.credentialDigest ? "credential" : "none");
+}
+
+/** Weakest first. The order a report sorts by, and the inverse of the resolve order. */
+export const BINDING_TIER_ORDER: readonly AgentMatchSignal[] = [
+  "none",
+  "comm",
+  "uid",
+  "uid+comm",
+  "credential",
+];
+
+/** Negative when `left` is the weaker binding. */
+export function compareBindingTier(left: AgentMatchSignal, right: AgentMatchSignal): number {
+  return BINDING_TIER_ORDER.indexOf(left) - BINDING_TIER_ORDER.indexOf(right);
+}
+
 /** Everything an observed connection can offer the registry. */
 export interface AgentSignals {
   uid?: number | null;
@@ -215,12 +279,17 @@ function assertUnambiguous(agents: RegisteredAgent[]): void {
     if (agent.credentialDigest) {
       claim(agent.credentialDigest.toString("hex"), agent.id, "credential", credentials);
     }
-    if (agent.uid !== undefined && agent.comm.length > 0) {
-      for (const comm of agent.comm) claim(`${agent.uid}/${comm}`, agent.id, "uid+comm", uidComm);
-    } else if (agent.uid !== undefined) {
-      claim(String(agent.uid), agent.id, "uid", uidOnly);
-    } else if (agent.comm.length > 0) {
-      for (const comm of agent.comm) claim(comm, agent.id, "comm", commOnly);
+    const binding = uidCommBinding(agent);
+    switch (binding?.tier) {
+      case "uid+comm":
+        for (const comm of binding.comm) claim(`${binding.uid}/${comm}`, agent.id, "uid+comm", uidComm);
+        break;
+      case "uid":
+        claim(String(binding.uid), agent.id, "uid", uidOnly);
+        break;
+      case "comm":
+        for (const comm of binding.comm) claim(comm, agent.id, "comm", commOnly);
+        break;
     }
   }
 }
@@ -258,12 +327,17 @@ export class AgentRegistry {
 
     for (const agent of this.agents) {
       if (agent.credentialDigest) this.byCredential.set(agent.credentialDigest.toString("hex"), agent);
-      if (agent.uid !== undefined && agent.comm.length > 0) {
-        for (const comm of agent.comm) this.byUidComm.set(`${agent.uid}/${comm}`, agent);
-      } else if (agent.uid !== undefined) {
-        this.byUid.set(agent.uid, agent);
-      } else if (agent.comm.length > 0) {
-        for (const comm of agent.comm) this.byComm.set(comm, agent);
+      const binding = uidCommBinding(agent);
+      switch (binding?.tier) {
+        case "uid+comm":
+          for (const comm of binding.comm) this.byUidComm.set(`${binding.uid}/${comm}`, agent);
+          break;
+        case "uid":
+          this.byUid.set(binding.uid, agent);
+          break;
+        case "comm":
+          for (const comm of binding.comm) this.byComm.set(comm, agent);
+          break;
       }
     }
   }
