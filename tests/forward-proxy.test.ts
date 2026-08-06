@@ -716,6 +716,15 @@ describe("forward proxy", () => {
       // to the destination, and file the attempt. Otherwise every agent-side timeout leaves a
       // live connection out of the box that the ledger has no record of, and an agent can open
       // those as fast as it can time them out.
+      //
+      // Worth knowing what this defect looks like from the outside, because it does not look
+      // like a leak. Against a source without the fix, this suite runs to completion and then
+      // Jest cannot exit, because the connection the proxy is still holding keeps the stalling
+      // server's close() from returning. It cost 900 seconds here on the first run. A second
+      // agent working the same file hit the identical hang twice on their own branch before
+      // either of us connected the two, and read it as socket-heavy tests being slow, which is
+      // the reading that lets a leak like this live for months. A suite that hangs after the
+      // last assertion is a resource nobody released, not a slow test.
       const stalling = track(createHttpServer(() => { /* headers are never sent */ }));
       let stallingSockets = 0;
       let stallingClosed = 0;
