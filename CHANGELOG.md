@@ -165,8 +165,10 @@ decision, policy file, or enforcement behavior moved in this release.
   `SHA256SUMS-verifier.txt`. Five binaries is not five equally convenient installs: macOS and
   Linux have a generated Homebrew formula, `agentwall-verify.rb`, built from those same checksums
   and attached to the release, while Windows has the `.exe` and nothing else, because Homebrew has
-  no Windows support. The formula is not yet published to a tap, so installing it means pointing
-  Homebrew at the downloaded file.
+  no Windows support. The formula is not yet published to a tap, and Homebrew refuses to install a
+  formula that is not in one, so using it means copying it into a local tap first; the three
+  commands are in docs/install.md. The formula was installed and `brew test`ed against real
+  Homebrew, and passes `brew audit --strict`.
   The builds are reproducible, which is the claim that matters for this artifact specifically:
   `scripts/build-verifier.sh` is both the script the release runs and the script a stranger runs
   to rebuild, and the release fails if the binaries do not rebuild byte-identically from a source

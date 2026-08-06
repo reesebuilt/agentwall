@@ -152,19 +152,27 @@ Two things will make a correct rebuild produce different bytes, both of them exp
 
 ### Install via Homebrew
 
-The formula is generated per release from `SHA256SUMS-verifier.txt`, so its digests always match
-the binaries it installs. It is attached to the release as `agentwall-verify.rb`.
+Covers macOS and Linux. The formula is generated per release from `SHA256SUMS-verifier.txt`, so
+its digests always match the binaries it installs, and it is attached to the release as
+`agentwall-verify.rb`.
 
-There is no published tap yet, so install from the downloaded file:
+There is no published tap yet. Homebrew refuses to install a formula that is not in a tap, so
+`brew install ./agentwall-verify.rb` does not work and fails with "Homebrew requires formulae to
+be in a tap". Put it in a local tap instead:
 
 ```bash
-brew install --formula ./agentwall-verify.rb
-agentwall-verify --version
+brew tap-new repsecure/tap --no-git
+cp agentwall-verify.rb "$(brew --repository repsecure/tap)/Formula/"
+brew install repsecure/tap/agentwall-verify
+
+agentwall-verify --version     # agentwall-verify 0.2.0
 ```
 
-Homebrew will verify the digest in the formula against the binary it downloads. Note that this
-inherits the limit from check 1 above: if you took the formula from the same release page as the
-binary, matching digests prove consistency, not provenance. Run check 2 or 3 for that.
+Homebrew verifies the formula's digest against the binary it downloads, and aborts on a mismatch.
+That inherits the limit from check 1 above: if you took the formula and the binary from the same
+release page, matching digests prove consistency, not provenance. Run check 2 or 3 for that.
+
+To remove the tap afterwards: `brew uninstall agentwall-verify && brew untap repsecure/tap`.
 
 ### Use it
 
