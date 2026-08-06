@@ -99,8 +99,17 @@ function writeChain(lines: EgressLine[], extras: Omit<AuditEvent, "integrity">[]
   return auditPath;
 }
 
-function fleet(yamlish: ConstructorParameters<typeof AgentRegistry>[0]) {
-  return new AgentRegistry(yamlish).list();
+/**
+ * `minimumMatchTier` arrived with the fleet credential lifecycle and is required on the parsed
+ * shape, because the schema gives it a default rather than leaving it optional. These tests
+ * predate it and none of them are about it, so the helper supplies the same default the schema
+ * would and stays overridable for any test that does care.
+ */
+type FleetInput = ConstructorParameters<typeof AgentRegistry>[0];
+function fleet(
+  yamlish: Omit<FleetInput, "minimumMatchTier"> & Partial<Pick<FleetInput, "minimumMatchTier">>,
+) {
+  return new AgentRegistry({ minimumMatchTier: "any", ...yamlish } as FleetInput).list();
 }
 
 describe("capture health, read from the chain", () => {
