@@ -446,6 +446,12 @@ export function createForwardProxy(opts: ForwardProxyOptions): Server {
       return;
     }
 
+    // The peek below owns the client-to-upstream direction until it has named the first
+    // record, and while it does it is holding bytes the client already handed over. The
+    // client 'close' teardown further down has to know that: see the comment there.
+    let peekHolding = true;
+    let closedEarly = false;
+
     const upstream = netConnect(port, host, () => {
       clientSocket.write("HTTP/1.1 200 Connection Established\r\n\r\n");
       // The head is bytes the client pipelined with its CONNECT. They are relayed, so they
@@ -525,6 +531,9 @@ export function createForwardProxy(opts: ForwardProxyOptions): Server {
       function release(sni: string | null): void {
         if (settled) return;
         settled = true;
+        // The peek is done holding this direction from here on, on every exit below,
+        // including the refusal that never reaches the handover.
+        peekHolding = false;
         clearTimeout(timer);
         clientSocket.off("data", onPeekData);
 
@@ -556,6 +565,13 @@ export function createForwardProxy(opts: ForwardProxyOptions): Server {
         // arrive between the two and be reordered behind the hello it belongs in front of.
         if (peeked.length) upstream.write(peeked);
         clientSocket.pipe(upstream);
+        // The client left while this still held its bytes, so the teardown it was owed was
+        // deferred to here. end() rather than destroy(): the hello has only just entered the
+        // write queue, and a destroy() can discard it or turn the close into a reset, which
+        // would throw away the one thing the deferral exists to deliver. The descriptor is
+        // released when the destination answers the FIN, and by the deadline the 'close'
+        // handler armed when it does not.
+        if (closedEarly) upstream.end();
       }
 
       // Flushed rather than dropped when the client hangs up mid-hello: those bytes were
@@ -589,7 +605,29 @@ export function createForwardProxy(opts: ForwardProxyOptions): Server {
     // descriptors stayed open after the client was gone, the destination could still write into
     // the tunnel, and no record was ever filed. An agent can abandon connections as fast as it
     // can open them.
+    //
+    // Deferred, never skipped, when the peek is still holding bytes the client pipelined
+    // with its CONNECT. That client sends its hello and its FIN in one segment, so this
+    // fires while the upstream connect is still in flight: destroying here drops bytes the
+    // tunnel had already accepted and files a record that names nothing, which is the whole
+    // observation the peek exists to make. Nothing is owed when the client pipelined
+    // nothing, so the common abandonment case keeps the immediate teardown above.
     clientSocket.on("close", () => {
+      if (peekHolding && head?.length) {
+        closedEarly = true;
+        // The backstop, and unconditional: whatever the peek and the destination go on to
+        // do, this releases the descriptor and files the record within one peek window of
+        // the client leaving, so the deferral is bounded by this proxy rather than by the
+        // kernel's connect timeout or by a destination that never answers a FIN. A no-op
+        // when the tunnel already closed on its own. unref'd, because a deferred teardown
+        // is not a reason to keep the process alive.
+        const deadline = setTimeout(() => {
+          upstream.destroy();
+          finish();
+        }, PEEK_TIMEOUT_MS);
+        deadline.unref?.();
+        return;
+      }
       upstream.destroy();
       finish();
     });
