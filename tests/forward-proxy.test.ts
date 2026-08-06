@@ -449,6 +449,83 @@ describe("forward proxy", () => {
       expect(upstreamConnections).toBe(0);
     });
 
+    it("never decides on a host containing a CR or an LF", async () => {
+      // Downstream slices are relying on this, so it is measured here rather than reasoned
+      // about. The authority is unvalidated, and a host string that could carry a newline would
+      // be a live injection into anything that later writes it into a line-oriented format: a
+      // log, an argv, or the openssl config file that a leaf certificate's SAN has to go
+      // through, where a newline appends a directive.
+      //
+      // The guarantee holds, but by two different mechanisms and NOT the one that reads as
+      // obvious. A bare CR is refused by the parser outright, as are NUL, space, tab and
+      // backslash, and no decision is taken at all. A bare LF is ACCEPTED: it terminates the
+      // request line, so the authority is truncated at it and the remainder is parsed as a
+      // header, which happens to be syntactically valid. Either way no newline survives into
+      // the host, which is the property that matters, and it is worth knowing that the LF case
+      // reaches a decision on a SHORTER host rather than being rejected.
+      //
+      // Percent-encoding is not a way back in, because nothing decodes the authority.
+      const refused = [
+        "exam\rple.internal:443",
+        "exam\u0000ple.internal:443",
+        "exam ple.internal:443",
+        "exam\tple.internal:443",
+        "exam\\ple.internal:443",
+      ];
+      // Measured, not assumed: a slash and the sub-delims DO reach the decision verbatim, so a
+      // consumer that builds a path or a filename from a host has to refuse them itself.
+      const reaching: Array<[string, string]> = [
+        ["exam\nple.internal:443", "exam"],
+        ["exam\r\nple.internal:443", "exam"],
+        ["example.internal/path:443", "example.internal/path"],
+        ["a=b;c.internal:443", "a=b;c.internal"],
+        // Both parse branches, because they build the host separately: with a port, and without
+        // one where the whole authority is the host. Mutation testing found the second
+        // uncovered, and a decode added to either is the plausible way a newline gets in.
+        ["exam%0d%0aple.internal:443", "exam%0d%0aple.internal"],
+        ["exam%0d%0aple.internal", "exam%0d%0aple.internal"],
+      ];
+      const proxyPort = await startProxy(() => "deny");
+
+      // Counted by delta rather than by clearing `events`. The proxy holds a reference to the
+      // array it was started with, so reassigning the binding here would leave it pushing into
+      // the old one and every count below would read zero.
+      for (const authority of refused) {
+        const before = events.length;
+        const conn = client(proxyPort);
+        await new Promise<void>((resolve, reject) => {
+          conn.socket.once("connect", () => resolve());
+          conn.socket.once("error", reject);
+        });
+        conn.socket.write(Buffer.from(`CONNECT ${authority} HTTP/1.1\r\nHost: h\r\n\r\n`, "latin1"));
+        await conn.closed;
+        // A request line the parser refuses never becomes an egress decision. Node answers it
+        // with its own 400 and destroys the socket, which is its business rather than the proxy's.
+        expect(events).toHaveLength(before);
+        expect(responseHead(conn.received)).not.toContain("200 Connection Established");
+      }
+
+      for (const [authority, host] of reaching) {
+        const before = events.length;
+        const conn = client(proxyPort);
+        await new Promise<void>((resolve, reject) => {
+          conn.socket.once("connect", () => resolve());
+          conn.socket.once("error", reject);
+        });
+        conn.socket.write(Buffer.from(`CONNECT ${authority} HTTP/1.1\r\nHost: h\r\n\r\n`, "latin1"));
+        await conn.closed;
+        expect(events).toHaveLength(before + 1);
+        expect((events[before] as ProxyEvent).host).toBe(host);
+      }
+
+      // The property the whole test exists for, asserted once over everything that got through.
+      for (const event of events) {
+        expect(event.host).not.toMatch(/[\r\n]/);
+      }
+
+      expect(upstreamConnections).toBe(0);
+    });
+
     it("relays a multi-megabyte transfer byte for byte while the peer stalls", async () => {
       // The bug this defends against is a relay that ignores a full write buffer. Bytes get
       // dropped, doubled or reordered only once a peer stops reading, which never happens in a
@@ -919,8 +996,8 @@ describe("forward proxy", () => {
       // downstream, so this pins the two places it has to hold. Strict mode refuses an authority
       // it cannot match, and the reason that reaches the client's headers is bounded and
       // flattened, even though it is built from a string the agent chose and is 2000 characters
-      // long here. A raw CR or LF cannot arrive by this route at all, because the request line
-      // is itself CRLF-terminated, which leaves length and charset as the vector.
+      // long here. No CR and no LF can reach that string, which the test above measures rather
+      // than assumes, so length and charset are the vector and both are covered here.
       const hostile = `${"a".repeat(2000)}!$&'()*+,;=`;
       setEgressPolicy({ hosts: ["127.0.0.1"], ports: [upstreamPort] });
       const proxyPort = await startProxy(policyDecide("strict", new PolicyEngine([])));
