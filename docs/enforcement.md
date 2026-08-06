@@ -115,9 +115,15 @@ recorded.
 2. **Read your ledger.** Set `AGENTWALL_PROXY_LEDGER` for a flat JSON-lines view alongside
    the audit chain. Every line carries the host, port, the originating process where
    attribution succeeded, and the monitor projections. The `strict mode would deny` lines are
-   your allowlist to-do list.
+   your allowlist to-do list. Tunnelled lines also carry `sni`, and `sniMismatch` when it
+   differs from the CONNECT authority. Note the shape differs between the two sinks: the flat
+   ledger spreads the record, so these are top-level keys, while the audit chain nests them as
+   `metadata.sni` and `metadata.sniMismatch`. Grep accordingly.
 3. **Build the allowlist** from the destinations you recognise. Anything you do not recognise
-   is the finding you turned this on for.
+   is the finding you turned this on for. Where a line sets `sniMismatch`, allowlist the `sni`
+   rather than the CONNECT authority: they disagree, and `sni` is the better-sourced of the
+   two. An allowlist built from the typed authority alone can be satisfied by a client that
+   names an approved host and then negotiates a different one.
 4. **Switch to `guarded`.** Now a destination a rule denies — a private-range target, a cloud
    metadata endpoint — is actually refused. Unknown destinations still pass, so this cannot
    break a working agent on something you forgot to list.
