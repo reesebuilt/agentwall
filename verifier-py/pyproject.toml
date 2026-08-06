@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agentwall-verify"
+version = "0.2.0"
+description = "An independent verifier for the AgentWall audit evidence format"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+keywords = ["audit", "hash-chain", "opentimestamps", "ed25519", "agentwall"]
+classifiers = [
+  "Intended Audience :: Developers",
+  "Programming Language :: Python :: 3",
+  "Topic :: Security",
+]
+
+# Deliberately empty, and it is a property rather than an omission. Importing
+# `cryptography` for Ed25519 would route this verifier's signature check
+# through the same OpenSSL the bundled TypeScript verifier uses, and two
+# implementations that share a library share its bugs. See README.md.
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/repsecure/agentwall"
+Source = "https://github.com/repsecure/agentwall/tree/main/verifier-py"
+
+[project.scripts]
+# Named apart from the Go binary, which installs as agentwall-verify, so both
+# can sit on one PATH.
+agentwall-verify-py = "agentwall_verify.cli:main"
+
+[tool.setuptools]
+packages = ["agentwall_verify"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

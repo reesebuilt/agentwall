@@ -152,11 +152,21 @@ jobs:
         run: go build -o agentwall-verify .
         working-directory: verifier
 
-      # Runs the committed corpus, the bytes a stranger gets from a checkout, through both
-      # implementations. The harness exits non-zero on any failure and zero when the only
-      # differences are the divergences declared in its DIVERGENCES table; it also fails when
-      # a declared divergence stops happening, so the table cannot absorb a fixed gap.
-      - name: Conformance (typescript and go)
+      # Runs the committed corpus, the bytes a stranger gets from a checkout, through every
+      # implementation this checkout contains. The harness exits non-zero on any failure and
+      # zero when the only differences are the divergences declared in its DIVERGENCES table;
+      # it also fails when a declared divergence stops happening, so the table cannot absorb a
+      # fixed gap. The Python verifier needs no build step, so it joins the run from the
+      # checkout. An implementation whose source tree is absent prints a note and sits out; one
+      # whose source is present and whose binary is missing is a hard failure.
+      #
+      # Do not add a CONFORMANCE_SKIP_* variable to this step. They exist so a contributor
+      # without a Go or Rust toolchain can still run the harness locally, and setting one here
+      # would shrink the cross-comparison while every job stayed green, because each verifier
+      # also has its own job that tests it alone. Agreement between implementations is the
+      # thing this step buys that those jobs cannot; a skip spends it to make a red build go
+      # away. If a verifier cannot build in CI, fix the build or delete the verifier.
+      - name: Conformance
         run: node scripts/conformance.js
 
       # Regeneration must reproduce the committed tree byte for byte. Ordered after the
@@ -172,6 +182,70 @@ jobs:
             git --no-pager diff -- verifier/testdata/corpus >&2
             exit 1
           fi
+
+  verifier-py:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: verifier-py
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Python
+        uses: actions/setup-python@e797f83bcb11b83ae66e0230d6156d7c80228e7c # v6.0.0
+        with:
+          python-version: "3.11"
+
+      # The verifier itself has no dependencies and that is a property, not an omission:
+      # importing cryptography for Ed25519 would route its signature check through the same
+      # OpenSSL the bundled TypeScript verifier uses, and two implementations that share a
+      # library share its bugs. pytest is a test-time tool and is installed here alone.
+      - name: Install pytest
+        run: python -m pip install --disable-pip-version-check "pytest==9.1.1"
+
+      - name: Test
+        run: python -m pytest -q
+
+      # The README says the verifier carries no third-party code. A claim nobody checks is a
+      # claim that rots, and the obvious spelling of this check rots quietly: importing the
+      # package and seeing it succeed only proves nothing third-party is MISSING from the
+      # runner. It passes the moment an image, or a test dependency, happens to ship the
+      # module the package should not be importing. So the imports are read out of the source
+      # and checked against sys.stdlib_module_names, which is compiled into the interpreter
+      # and does not care what is installed. The runtime import stays, because it catches the
+      # syntax errors and import cycles a static read does not.
+      - name: No runtime dependencies
+        run: |
+          python - <<'EOF'
+          import ast, pathlib, sys, tomllib
+
+          config = tomllib.loads(pathlib.Path("pyproject.toml").read_text())
+          declared = config["project"]["dependencies"]
+          if declared:
+              sys.exit("verifier-py must declare no dependencies; pyproject lists %r" % (declared,))
+
+          allowed = set(sys.stdlib_module_names) | {"agentwall_verify"}
+          for path in sorted(pathlib.Path("agentwall_verify").rglob("*.py")):
+              for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+                  if isinstance(node, ast.ImportFrom):
+                      if node.level:
+                          continue
+                      roots = [(node.module or "").split(".")[0]]
+                  elif isinstance(node, ast.Import):
+                      roots = [alias.name.split(".")[0] for alias in node.names]
+                  else:
+                      continue
+                  for root in roots:
+                      if root not in allowed:
+                          sys.exit("%s imports %r, which is not in the standard library" % (path, root))
+          print("every import in agentwall_verify resolves to the standard library")
+          EOF
+          python -c "import agentwall_verify.cli, agentwall_verify.evidence, agentwall_verify.ed25519"
 
   workflows:
     runs-on: ubuntu-latest
