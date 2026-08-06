@@ -546,6 +546,54 @@ export const builtinRules: PolicyRule[] = [
     reason: "Destination port is not in the configured egress port allowlist",
   },
   /**
+   * The fleet's identity gate, for a deployment that declared its agents and said that
+   * anything else is a finding.
+   *
+   * Same marker contract as the two above: the registry answers "did any declared agent
+   * claim this connection" and hands the answer over, because identity resolution reads
+   * /proc and process configuration and a rule set that reached into either would close an
+   * import cycle for no gain. Forging the markers produces a denial and never an allow, and
+   * the enforcement runtime re-checks both itself rather than trusting this rule to exist.
+   *
+   * Gated on the operator having chosen `fleet.unmatched: "deny"`. Without that the default
+   * is that an unattributed connection is judged by the process-wide allowlist exactly as it
+   * was before agents existed, and a rule that ignored the setting would turn every upgrade
+   * into an outage for whatever on the host is not in the agent list yet.
+   */
+  {
+    id: "fleet:deny-undeclared-agent",
+    description: "Deny proxied egress that no declared fleet agent claims, when the fleet is closed",
+    plane: "network",
+    match: (ctx: AgentContext) =>
+      ctx.plane === "network" &&
+      ctx.metadata?.["fleetUnmatched"] === "deny" &&
+      ctx.metadata?.["agentDeclared"] === "false",
+    decision: "deny",
+    riskLevel: "high",
+    reason: "No declared fleet agent claims this connection and the fleet is configured to refuse those",
+  },
+  /**
+   * The per-agent egress budget, expressed as a rule for the same reason the lockdown is:
+   * a refusal that costs an agent its remaining allowance should land in the ledger with a
+   * rule id, a detection, and an ATT&CK mapping, not as a bare string.
+   *
+   * The counter itself lives in src/fleet/budget.ts and is the authority. This rule reads
+   * the marker the runtime sets after measuring the window, so evaluating policy stays a
+   * pure function of its context and a replayed context decides the way it did live.
+   */
+  {
+    id: "fleet:deny-agent-budget-exhausted",
+    description: "Deny proxied egress from an agent that has spent its configured request or byte budget",
+    plane: "network",
+    match: (ctx: AgentContext) =>
+      ctx.plane === "network" &&
+      ctx.metadata?.["enforcementMode"] !== "monitor" &&
+      ctx.metadata?.["agentBudgetExhausted"] === "true",
+    decision: "deny",
+    riskLevel: "medium",
+    reason: "Agent has spent its configured egress budget for the current window",
+  },
+  /**
    * The emergency stop, expressed as a rule so that a halted action is recorded with the
    * same shape as any other denial: a rule id, a detection, and an ATT&CK mapping an
    * analyst can pivot on. It matches on the marker rather than reading the lockdown state

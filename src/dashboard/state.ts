@@ -67,6 +67,25 @@ interface AgentRuntimeActivity {
   sessionId?: string;
   riskLevel?: RiskLevel;
   latestChannelId?: string;
+  /**
+   * Fleet identity, when the record carried it.
+   *
+   * Absent on every record that did not come off the egress path, which is most of them:
+   * the MCP wrap and the route handlers name an agent without resolving it against a
+   * declared fleet. Left undefined rather than defaulted, so the console can show "not
+   * resolved" instead of asserting an identity nothing established.
+   */
+  label?: string;
+  matchedOn?: string;
+  declared?: boolean;
+  allowlistSource?: string;
+  budget?: {
+    windowSeconds: number;
+    requests: number;
+    maxRequests: number | null;
+    bytes: number;
+    maxBytes: number | null;
+  };
 }
 
 interface SessionRuntime {
@@ -1061,7 +1080,16 @@ export class RuntimeState {
     this.auditEvents.unshift(event);
     this.totalRequests += 1;
     const sessionId = event.sessionId ?? defaultSessionId(event.agentId);
-    this.observeAgent(event.agentId, event.plane, event.action, event.timestamp, sessionId, event.riskLevel, event.actor?.channelId);
+    this.observeAgent({
+      agentId: event.agentId,
+      plane: event.plane,
+      action: event.action,
+      timestamp: event.timestamp,
+      sessionId,
+      riskLevel: event.riskLevel,
+      channelId: event.actor?.channelId,
+      metadata: event.metadata,
+    });
     this.observeSession({
       sessionId,
       agentId: event.agentId,
@@ -1181,15 +1209,16 @@ export class RuntimeState {
     }
 
     this.approvals.unshift(activity);
-    this.observeAgent(
-      request.context.agentId,
-      request.context.plane,
-      request.context.action,
-      createdAt,
+    this.observeAgent({
+      agentId: request.context.agentId,
+      plane: request.context.plane,
+      action: request.context.action,
+      timestamp: createdAt,
       sessionId,
-      request.policyResult.riskLevel,
-      request.context.actor?.channelId
-    );
+      riskLevel: request.policyResult.riskLevel,
+      channelId: request.context.actor?.channelId,
+      metadata: request.context.metadata,
+    });
     this.observeSession({
       sessionId,
       agentId: request.context.agentId,
@@ -1297,14 +1326,15 @@ export class RuntimeState {
         reasons: entry.request.policyResult.reasons,
         matchedRules: entry.request.policyResult.matchedRules,
       });
-      this.observeAgent(
-        entry.request.context.agentId,
-        entry.request.context.plane,
-        entry.request.context.action,
-        createdAt,
+      this.observeAgent({
+        agentId: entry.request.context.agentId,
+        plane: entry.request.context.plane,
+        action: entry.request.context.action,
+        timestamp: createdAt,
         sessionId,
-        entry.request.policyResult.riskLevel
-      );
+        riskLevel: entry.request.policyResult.riskLevel,
+        metadata: entry.request.context.metadata,
+      });
       this.observeSession({
         sessionId,
         agentId: entry.request.context.agentId,
@@ -1716,7 +1746,14 @@ export class RuntimeState {
 
     for (const step of timeline) {
       const timestamp = new Date(now - step.offsetMs).toISOString();
-      this.observeAgent("sim-operator", step.plane, step.action, timestamp, sessionId, step.risk);
+      this.observeAgent({
+        agentId: "sim-operator",
+        plane: step.plane,
+        action: step.action,
+        timestamp,
+        sessionId,
+        riskLevel: step.risk,
+      });
       this.observeSession({
         sessionId,
         agentId: "sim-operator",
@@ -2600,23 +2637,51 @@ export class RuntimeState {
     );
   }
 
-  private observeAgent(
-    agentId: string,
-    plane: string,
-    action: string,
-    timestamp: string,
-    sessionId?: string,
-    riskLevel?: RiskLevel,
-    channelId?: string
-  ): void {
-    this.agentActivity.set(agentId, {
-      agentId,
-      lastSeenAt: timestamp,
-      lastPlane: plane,
-      lastAction: action,
-      sessionId,
-      riskLevel,
-      latestChannelId: channelId,
+  /**
+   * Record the latest activity for one agent, including its fleet identity when the record
+   * carried one.
+   *
+   * Takes an object because the positional form had already reached seven parameters and the
+   * fleet facts would have made it ten. `observeChannel` next door is the convention.
+   *
+   * The identity comes out of the audit record's metadata rather than from the registry.
+   * That is deliberate: the console must show what the CHAIN says, not what the current
+   * configuration would say now. An operator who reloaded a narrower fleet an hour ago needs
+   * the old records to keep reading the way they were written.
+   */
+  private observeAgent(input: {
+    agentId: string;
+    plane: string;
+    action: string;
+    timestamp: string;
+    sessionId?: string;
+    riskLevel?: RiskLevel;
+    channelId?: string;
+    metadata?: Record<string, string>;
+  }): void {
+    const meta = input.metadata;
+    const windowSeconds = Number(meta?.["budgetWindowSeconds"]);
+    this.agentActivity.set(input.agentId, {
+      agentId: input.agentId,
+      lastSeenAt: input.timestamp,
+      lastPlane: input.plane,
+      lastAction: input.action,
+      sessionId: input.sessionId,
+      riskLevel: input.riskLevel,
+      latestChannelId: input.channelId,
+      label: meta?.["agentLabel"],
+      matchedOn: meta?.["agentMatchedOn"],
+      declared: meta?.["agentDeclared"] === undefined ? undefined : meta["agentDeclared"] === "true",
+      allowlistSource: meta?.["egressAllowlistSource"],
+      budget: Number.isFinite(windowSeconds)
+        ? {
+            windowSeconds,
+            requests: Number(meta?.["budgetRequests"] ?? 0),
+            maxRequests: meta?.["budgetMaxRequests"] === undefined ? null : Number(meta["budgetMaxRequests"]),
+            bytes: Number(meta?.["budgetBytes"] ?? 0),
+            maxBytes: meta?.["budgetMaxBytes"] === undefined ? null : Number(meta["budgetMaxBytes"]),
+          }
+        : undefined,
     });
   }
 

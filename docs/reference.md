@@ -39,6 +39,7 @@ GET  /detections          GET /rules                    # detection catalog, act
 GET  /api/dashboard/state GET /api/dashboard/events      # operator console state, SSE stream
 GET  /api/org/summary                                   # multi-instance summary
 POST /reload              GET /reload                   # config and policy reload, see docs/reload.md
+GET  /api/fleet                                         # declared agents, live budget counters
 GET  /health              GET /ready                    # liveness; /ready needs the token
 ```
 
@@ -63,3 +64,28 @@ directory, so run Agentwall from the directory you ran `init` in.
 | `AGENTWALL_TELEGRAM_TEST_AGENT_ID` | Agent id recorded for messages arriving on that webhook. |
 | `AGENTWALL_TELEGRAM_TEST_SEND_ENABLED` | `1` permits outbound sends. Default is receive-only. |
 | `AGENTWALL_CONFIG` | Explicit config path. |
+
+### `fleet`
+
+Optional. Declares the agents that share this host so that identity, egress allowlists, and
+budgets are per-agent instead of per-instance. Omit it and every earlier version's behaviour
+is unchanged: records carry the process `comm` as the `agentId` and one allowlist governs
+everything.
+
+| Key | Effect |
+| --- | --- |
+| `fleet.unmatched` | `global` (default) judges unattributed egress by the process-wide allowlist. `deny` refuses it in guarded and strict. Monitor still only records. |
+| `fleet.agents[].id` | The principal recorded as `agentId`, and what `match.subject.agentId` in a declarative rule binds to. |
+| `fleet.agents[].label` | Human name for the console. Defaults to the id. |
+| `fleet.agents[].match.uid` | Socket owner from `/proc/net/tcp`. The only signal an agent cannot assert about itself. |
+| `fleet.agents[].match.comm` | Process names to accept. Self-declared by the process; see [fleet.md](fleet.md). |
+| `fleet.agents[].match.credential` | `sha256:<64 hex>` or `env:<VAR>`. Matched against `Proxy-Authorization`, which is stripped before the request reaches the destination. A literal secret is rejected at start-up. |
+| `fleet.agents[].egress.allowedHosts` | Replaces the global host allowlist for this agent. Omit to inherit it. |
+| `fleet.agents[].egress.allowedPorts` | Replaces the global port allowlist for this agent. Omit to inherit it. |
+| `fleet.agents[].budget.windowSeconds` | Sliding window the counters are measured over. |
+| `fleet.agents[].budget.maxRequests` | Connections per window. Exact: the next one is refused before any socket opens. |
+| `fleet.agents[].budget.maxBytes` | Bytes both directions per window. Enforced at admission, so it refuses the next connection rather than truncating a live one. |
+
+A malformed `fleet` section refuses to start rather than falling back, because a match block
+with a typo binds nothing and silently drops the agent back to the global allowlist. The full
+list of refusals is in [Fleet governance](fleet.md).

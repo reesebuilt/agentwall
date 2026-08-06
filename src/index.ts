@@ -5,8 +5,10 @@ import type { ProxyRecord } from "./proxy/forward-proxy";
 import { createTransparentProxy } from "./proxy/transparent";
 import { emit } from "./audit/logger";
 import { detectionsForRules } from "./policy/detections";
-import { decideEgress, setEgressPolicy } from "./runtime/enforcement";
-import type { EnforcementMode } from "./runtime/enforcement";
+import { decideEgress, setEgressPolicy, setFleet } from "./runtime/enforcement";
+import type { EnforcementMode, EgressVerdict } from "./runtime/enforcement";
+import { AgentRegistry } from "./fleet/registry";
+import { AgentBudgetLedger } from "./fleet/budget";
 
 /**
  * What each mode does, in the startup log, in words an operator can act on.
@@ -32,6 +34,34 @@ async function main() {
   reloadCoordinator.installSignalHandler();
 
   /**
+   * Install the declared fleet before either proxy starts.
+   *
+   * Constructed once, here, rather than per proxy block: both transports call the same
+   * decideEgress, and two registries would mean two budget ledgers and an agent that gets
+   * its whole allowance twice by using both paths. Absent config leaves the fleet null,
+   * which is the single-agent deployment and behaves exactly as it did before agents existed.
+   *
+   * The constructor throws on a fleet that cannot resolve deterministically (two agents
+   * matching the same connection, a credential in a form that would put a secret in the
+   * config file). Letting that reach the operator as a boot failure is the point.
+   */
+  const fleet = config.fleet && config.fleet.agents.length > 0 ? new AgentRegistry(config.fleet) : null;
+  const budgets = fleet ? new AgentBudgetLedger() : null;
+  setFleet(fleet, budgets);
+  if (fleet) {
+    app.log.info(
+      {
+        agents: fleet.list().map((agent) => agent.id),
+        unmatched: fleet.unmatched,
+        scopedAllowlists: fleet.list().filter((agent) => agent.egress).length,
+        budgeted: fleet.list().filter((agent) => agent.budget).length,
+      },
+      `fleet: ${fleet.size} declared agent(s) on this host. Governance is per-agent and single-host: ` +
+        `there is no cross-instance identity and no shared budget.`
+    );
+  }
+
+  /**
    * File one egress connection on the audit chain and the dashboard.
    *
    * Egress evidence has to be tamper-evident, not merely present. An unchained append can be
@@ -51,7 +81,11 @@ async function main() {
       const matchedRules = [...r.matchedRules];
       const auditEvent = emit(
         {
-          agentId: r.client.comm ?? "unattributed",
+          // The attribution the decision actually enforced, echoed back through the record.
+          // Re-resolving here could disagree with the identity that was gated, and a ledger
+          // whose agentId was computed by a different code path than the allow is a ledger
+          // that cannot be used to answer "which agent did this".
+          agentId: r.attribution?.agentId ?? r.client.comm ?? "unattributed",
           plane: "network",
           action: `egress:${r.scheme}`,
           metadata: {
@@ -68,6 +102,7 @@ async function main() {
             ...(r.sniMismatch ? { sniMismatch: "true" } : {}),
             pid: r.client.pid == null ? "unknown" : String(r.client.pid),
             comm: r.client.comm ?? "unknown",
+            uid: r.client.uid == null ? "unknown" : String(r.client.uid),
             durationMs: String(r.durationMs ?? 0),
             bytesUp: String(r.bytesUp ?? 0),
             bytesDown: String(r.bytesDown ?? 0),
@@ -95,6 +130,10 @@ async function main() {
             // detected secret in the record that reports the detection. How large the query
             // was travels instead, in `pathQueryBytes` from the same source.
             ...(r.path === undefined ? {} : { path: r.path }),
+            // Which agent, on what evidence, judged against whose allowlist, and where its
+            // budget stood. Spread last so the decision's own account of the connection wins
+            // over anything assembled here.
+            ...r.attribution,
           },
           // Empty on purpose, and `emit` does not copy it either way. Nothing derived from
           // request content belongs in a field whose name invites someone to put it there.
@@ -121,6 +160,39 @@ async function main() {
     } catch {
       /* neither the chain nor the dashboard may break egress */
     }
+
+    // Charge the bytes this connection actually moved, after the record is filed. Separate
+    // from the try above on purpose: an audit sink failure must not also lose the accounting,
+    // or an agent could hold its budget open by making the chain fail.
+    const agentId = r.attribution?.agentId;
+    if (budgets && agentId && r.budgetTicket != null) {
+      budgets.settle(agentId, r.budgetTicket, (r.bytesUp ?? 0) + (r.bytesDown ?? 0));
+    }
+  };
+
+  /**
+   * The metadata fragment a verdict contributes to its record.
+   *
+   * Built here rather than inside decideEgress because it is a presentation concern: the
+   * verdict already carries these as typed fields, and only the audit record needs them
+   * flattened to strings.
+   */
+  const attributionOf = (verdict: EgressVerdict): Record<string, string> => {
+    const fields: Record<string, string> = {
+      agentId: verdict.agent.id,
+      agentLabel: verdict.agent.label,
+      agentMatchedOn: verdict.agent.matchedOn,
+      agentDeclared: verdict.agent.declared ? "true" : "false",
+      egressAllowlistSource: verdict.agent.allowlistSource,
+    };
+    if (verdict.budget) {
+      fields["budgetWindowSeconds"] = String(verdict.budget.windowSeconds);
+      fields["budgetRequests"] = String(verdict.budget.requests);
+      fields["budgetBytes"] = String(verdict.budget.bytes);
+      if (verdict.budget.maxRequests !== null) fields["budgetMaxRequests"] = String(verdict.budget.maxRequests);
+      if (verdict.budget.maxBytes !== null) fields["budgetMaxBytes"] = String(verdict.budget.maxBytes);
+    }
+    return fields;
   };
 
   try {
@@ -174,6 +246,12 @@ async function main() {
               path: event.path,
               headers: event.headers,
               body: event.body,
+              uid: event.client.uid,
+              credential: event.credential,
+              // A later look at one connection, so the budget reports the window and charges
+              // nothing. Set by the proxy, which is the only place that knows which call is
+              // the first one.
+              reDecision: event.reDecision,
             },
             mode,
             engine
@@ -188,6 +266,8 @@ async function main() {
             matchedRules: verdict.matchedRules,
             riskLevel: verdict.riskLevel,
             metadata: verdict.metadata,
+            attribution: attributionOf(verdict),
+            budgetTicket: verdict.budgetTicket,
           };
         },
         record: (r) => {
@@ -245,13 +325,17 @@ async function main() {
               host: attempt.host,
               port: attempt.port,
               scheme: attempt.scheme,
-              // No method and no /proc attribution on this path: a redirected connection
-              // carries neither, and decideEgress treats them as optional. An enforcing
-              // policy therefore sees a null client here and can fail closed on its own
-              // terms rather than being handed a guess.
+              // No method, no /proc attribution, and no presented credential on this path: a
+              // redirected connection carries none of them, and decideEgress treats them all
+              // as optional. An enforcing policy therefore sees a null client here and can
+              // fail closed on its own terms rather than being handed a guess. In fleet terms
+              // that means a redirected connection resolves to the undeclared agent, which
+              // `fleet.unmatched: "deny"` will refuse; docs/fleet.md states the interaction.
               method: attempt.scheme === "https" ? "CONNECT" : undefined,
               comm: null,
               pid: null,
+              uid: null,
+              credential: null,
             },
             mode,
             engine
@@ -263,6 +347,8 @@ async function main() {
             reasons: verdict.reasons,
             matchedRules: verdict.matchedRules,
             riskLevel: verdict.riskLevel,
+            attribution: attributionOf(verdict),
+            budgetTicket: verdict.budgetTicket,
           };
         },
         record: (r) => recordEgress(r, mode, "transparent"),

@@ -3,6 +3,10 @@ import { lockdownState } from "./lockdown";
 import { scanText } from "../planes/identity/dlp";
 import { scanInjection } from "../policy/injection";
 import { DECOY_DETECTION_ID, DECOY_RULE_ID, scanForDecoys } from "../decoy";
+import { AgentRegistry, UNDECLARED_AGENT_ID } from "../fleet/registry";
+import { AgentBudgetLedger } from "../fleet/budget";
+import type { AgentMatchSignal, RegisteredAgent } from "../fleet/registry";
+import type { BudgetCounters } from "../fleet/budget";
 import type { PolicyEngine } from "../policy/engine";
 import type { AgentContext, Decision, PolicyResult, RiskLevel } from "../types";
 import type { LockdownState } from "./lockdown";
@@ -102,6 +106,32 @@ export interface EgressAttempt {
   headers?: Readonly<Record<string, string>>;
   /** One buffered body. Its `direction` is what decides which pass this is. */
   body?: EgressBody;
+  /** Owning uid of the client socket, from /proc/net/tcp. Null when attribution failed. */
+  uid?: number | null;
+  /** Secret the client presented via Proxy-Authorization, already stripped of its scheme. */
+  credential?: string | null;
+  /**
+   * True on every decision after the first one about the SAME connection.
+   *
+   * The proxy asks again as more of an exchange becomes readable: the name a tunnel
+   * negotiated, then the request body, then the response body. Those are later looks at one
+   * connection, not new ones, and only the caller that owns the socket can tell the
+   * difference. Without it a plaintext HTTP exchange would be admitted three times against
+   * the agent's window and an SNI-mismatched tunnel twice, so `maxRequests: 30` would
+   * quietly mean ten exchanges.
+   */
+  reDecision?: boolean;
+}
+
+/** Which declared agent this connection was bound to, and on what evidence. */
+export interface EgressAgentAttribution {
+  id: string;
+  label: string;
+  matchedOn: AgentMatchSignal;
+  /** False when no declared agent claimed the connection. */
+  declared: boolean;
+  /** Which allowlist judged the destination: the process-wide one, or this agent's. */
+  allowlistSource: string;
 }
 
 export interface EgressVerdict {
@@ -123,6 +153,15 @@ export interface EgressVerdict {
    */
   metadata?: Record<string, string>;
   mode: EnforcementMode;
+  /** Always present. Undeclared connections report the comm and `matchedOn: "none"`. */
+  agent: EgressAgentAttribution;
+  /** The budget counters as they stood at this decision. Null when the agent has no budget. */
+  budget: BudgetCounters | null;
+  /**
+   * Handle for charging this connection's bytes to the agent's window once it closes. Null
+   * when nothing was admitted, so a caller cannot settle bytes against a refused attempt.
+   */
+  budgetTicket: number | null;
 }
 
 const EGRESS_ALLOWLIST_RULE_ID = "net:deny-egress-not-allowlisted";
@@ -131,6 +170,10 @@ const EGRESS_PORT_RULE_ID = "net:deny-egress-port-not-allowlisted";
 const EGRESS_PORT_DETECTION_ID = "det.net.egress.port_blocked";
 const LOCKDOWN_RULE_ID = "governance:lockdown";
 const LOCKDOWN_DETECTION_ID = "det.governance.lockdown.active";
+const FLEET_BUDGET_RULE_ID = "fleet:deny-agent-budget-exhausted";
+const FLEET_BUDGET_DETECTION_ID = "det.fleet.budget.exhausted";
+const FLEET_UNDECLARED_RULE_ID = "fleet:deny-undeclared-agent";
+const FLEET_UNDECLARED_DETECTION_ID = "det.fleet.agent.undeclared";
 
 const RISK_ORDER: Record<RiskLevel, number> = { low: 0, medium: 1, high: 2, critical: 3 };
 
@@ -374,13 +417,16 @@ function coverageNotes(findings: ContentFindings): string[] {
 }
 
 /**
- * Strict mode's allowlist, held as process state rather than passed per call.
+ * The process-wide allowlist, held as process state rather than passed per call.
  *
  * `decideEgress` runs once per connection on the proxy's critical path and is called from a
  * socket handler that has no view of configuration, so the allowlist is installed once at
- * start-up instead of being threaded through every frame. The trade is that the allowlist is
- * global to the process: one AgentWall instance enforces one allowlist, and a deployment
- * that needs per-agent allowlists needs per-agent instances.
+ * start-up instead of being threaded through every frame.
+ *
+ * This is the DEFAULT list, not the only one. A declared fleet agent may carry its own hosts
+ * and ports, and when it does, that list replaces this one for that agent's connections; see
+ * effectiveEgress() below. Which list judged a connection is recorded, so a reader never has
+ * to guess which allowlist an allow came from.
  */
 let allowlist: string[] = [];
 /**
@@ -393,6 +439,25 @@ let allowlist: string[] = [];
  * is a legible request for nothing.
  */
 let portAllowlist: number[] = [];
+
+/**
+ * The declared fleet, or null when nobody declared one.
+ *
+ * Null is the single-agent deployment and is the case that must cost nothing: no registry
+ * lookup, no budget bookkeeping, and records identical to the ones this file produced before
+ * agents existed, with the comm as the agentId.
+ */
+let fleetRegistry: AgentRegistry | null = null;
+let fleetBudgets: AgentBudgetLedger | null = null;
+/**
+ * Each declared agent's allowlist, normalised once at install time.
+ *
+ * normalizeHostname() on every entry of every agent's host list, on every connection, would
+ * put string work proportional to the size of the fleet's configuration in front of each
+ * model API call. It is a pure function of config, so it is computed when config is
+ * installed and read on the hot path.
+ */
+const agentEgress = new Map<string, { hosts: string[]; ports: number[] }>();
 
 /**
  * Install the strict-mode egress policy. Hostnames are normalised the same way the network
@@ -413,6 +478,54 @@ export function setEgressPolicy(policy: { hosts: readonly string[]; ports: reado
 }
 
 /**
+ * Install the declared fleet, or clear it by passing null.
+ *
+ * Separate from setEgressPolicy() rather than folded into it because they answer different
+ * questions and change on different schedules: one is "where may this host reach", the other
+ * is "who lives on this host". Passing null restores the pre-fleet behaviour exactly, which
+ * is what every test that does not care about agents wants and what an operator gets by
+ * omitting the `fleet` section.
+ */
+export function setFleet(registry: AgentRegistry | null, budgets: AgentBudgetLedger | null): void {
+  fleetRegistry = registry;
+  fleetBudgets = registry ? (budgets ?? new AgentBudgetLedger()) : null;
+  agentEgress.clear();
+  for (const agent of registry?.list() ?? []) {
+    if (!agent.egress) continue;
+    agentEgress.set(agent.id, {
+      hosts: (agent.egress.allowedHosts ?? []).map((entry) => normalizeHostname(entry)).filter((entry) => entry.length > 0),
+      ports: (agent.egress.allowedPorts ?? []).filter((port) => Number.isInteger(port) && port > 0 && port <= 65535),
+    });
+  }
+}
+
+/** The installed fleet, for the routes and dashboard that report on it. */
+export function fleetState(): { registry: AgentRegistry | null; budgets: AgentBudgetLedger | null } {
+  return { registry: fleetRegistry, budgets: fleetBudgets };
+}
+
+/**
+ * The host and port lists that judge one agent's connections, and which list they came from.
+ *
+ * An agent's list REPLACES the global one rather than narrowing it. Narrowing would be the
+ * safer-sounding rule and the wrong one: the whole point of a per-agent allowlist is that a
+ * scraper and an MCP wrapper have DIFFERENT destinations, not a subset of a shared set, and
+ * under intersection there is no way to say "this agent, and only this agent, may reach the
+ * internal registry". The cost is that an agent block is complete, not additive: an agent
+ * that declares hosts and forgets its model API loses it. Declaring only one of the two lists
+ * leaves the other at the global value, so narrowing just the ports stays a one-line change.
+ */
+function effectiveEgress(agentId: string | null): { hosts: string[]; ports: number[]; source: string } {
+  const scoped = agentId === null ? undefined : agentEgress.get(agentId);
+  if (!scoped) return { hosts: allowlist, ports: portAllowlist, source: "global" };
+  return {
+    hosts: scoped.hosts.length > 0 ? scoped.hosts : allowlist,
+    ports: scoped.ports.length > 0 ? scoped.ports : portAllowlist,
+    source: `agent:${agentId}`,
+  };
+}
+
+/**
  * Exact host match after normalisation, deliberately with no wildcard or suffix support.
  *
  * This is the same matching the egress inspector already does, and a second, looser
@@ -420,9 +533,29 @@ export function setEgressPolicy(policy: { hosts: readonly string[]; ports: reado
  * operator and read as a literal by the other half of the codebase silently allows nothing,
  * or silently allows everything, depending on which half wins.
  */
-function isAllowlisted(host: string): boolean {
+function isAllowlisted(host: string, hosts: readonly string[]): boolean {
   const normalized = normalizeHostname(host);
-  return normalized.length > 0 && allowlist.includes(normalized);
+  return normalized.length > 0 && hosts.includes(normalized);
+}
+
+/** Everything decideEgress resolved about the client before any rule was asked anything. */
+interface EgressPrincipal {
+  agent: EgressAgentAttribution;
+  /** The declared agent, when one claimed this connection. Carries the budget, if any. */
+  registered: RegisteredAgent | null;
+  hosts: readonly string[];
+  ports: readonly number[];
+  /**
+   * The agent's window as it stood before this attempt, read without charging it.
+   *
+   * Measured up front so the rule set can see it. The budget is charged last, only for an
+   * attempt everything else permitted, but the RULE that names a budget denial has to match
+   * during the single engine.evaluate() that produces the record's rule ids and detections.
+   * Reading the window costs one pass over an array bounded by the window's own ceiling.
+   */
+  standing: BudgetCounters | null;
+  /** True when a ceiling in `standing` is already reached. */
+  exhausted: boolean;
 }
 
 function buildContext(
@@ -430,7 +563,8 @@ function buildContext(
   mode: EnforcementMode,
   lockdown: LockdownState,
   allowlisted: boolean,
-  content: Record<string, string> | null
+  content: Record<string, string> | null,
+  principal: EgressPrincipal
 ): AgentContext {
   const authority = `${attempt.host}:${attempt.port}`;
   // The path, when the transport exposed one.
@@ -443,7 +577,12 @@ function buildContext(
   // "the path was /".
   const path = attempt.path ?? "";
   return {
-    agentId: attempt.comm ?? "unattributed",
+    // The resolved agent, not the raw comm. This is the whole point of the registry: a
+    // declarative rule scoped to `subject.agentId` binds to the identity the operator
+    // declared, rather than to whatever string the process last wrote into its own comm.
+    // With no fleet declared this is still the comm, so nothing an existing deployment
+    // wrote already changes meaning.
+    agentId: principal.agent.id,
     plane: "network",
     action: `egress:${attempt.scheme}`,
     // `url` is the key the network rules read a hostname out of; host and port are repeated
@@ -462,12 +601,30 @@ function buildContext(
       method: attempt.method ?? "CONNECT",
       comm: attempt.comm ?? "unknown",
       pid: attempt.pid == null ? "unknown" : String(attempt.pid),
+      uid: attempt.uid == null ? "unknown" : String(attempt.uid),
+      // The identity claim and the evidence for it travel together. "This was agent X" means
+      // something different when it came from a presented secret than when it came from a
+      // process name the process itself chose, and a record that states the first without
+      // the second is a record that overstates what is known.
+      agentLabel: principal.agent.label,
+      agentMatchedOn: principal.agent.matchedOn,
+      agentDeclared: principal.agent.declared ? "true" : "false",
       // Markers, following the pattern the MCP gates already use: the expensive or
       // configuration-dependent question is answered here, once, and the rule reads the
       // answer. It keeps the rule set free of imports from the runtime that calls it.
       enforcementMode: mode,
+      // The fleet's posture and this agent's standing with its budget, for the two rules in
+      // the built-in set that name a governance denial. Forging either can only produce a
+      // denial: the runtime re-checks both and does not consult a rule for permission.
+      fleetUnmatched: fleetRegistry?.unmatched ?? "global",
+      // Same exclusion as the runtime gate: on a re-decision the window already counts this
+      // connection, so a rule reading this marker would refuse it for its own admission.
+      agentBudgetExhausted: principal.exhausted && !attempt.reDecision ? "true" : "false",
       egressAllowlisted: allowlisted ? "true" : "false",
-      egressPortAllowlisted: portAllowlist.includes(attempt.port) ? "true" : "false",
+      egressPortAllowlisted: principal.ports.includes(attempt.port) ? "true" : "false",
+      // Which list produced those two verdicts. Without it an operator reading a denial
+      // cannot tell whether to edit the global allowlist or one agent's.
+      egressAllowlistSource: principal.agent.allowlistSource,
       lockdownActive: lockdown.active ? "true" : "false",
       // The content scan's answer, computed once per decision and read by the content rules.
       // Same contract as the markers above and the same safe direction: a forged marker
@@ -511,8 +668,53 @@ function describeLockdown(lockdown: LockdownState): string {
 }
 
 /**
+ * Bind one attempt to a declared agent and pick the allowlist that judges it.
+ *
+ * Runs before any rule so that the agentId a rule matches on is the resolved one. With no
+ * fleet declared this is two field reads and produces exactly the record shape that existed
+ * before agents did.
+ */
+function resolvePrincipal(attempt: EgressAttempt): EgressPrincipal {
+  if (!fleetRegistry) {
+    const id = attempt.comm ?? UNDECLARED_AGENT_ID;
+    return {
+      agent: { id, label: id, matchedOn: "none", declared: false, allowlistSource: "global" },
+      registered: null,
+      hosts: allowlist,
+      ports: portAllowlist,
+      standing: null,
+      exhausted: false,
+    };
+  }
+  const resolved = fleetRegistry.resolve({ uid: attempt.uid, comm: attempt.comm, credential: attempt.credential });
+  const egress = effectiveEgress(resolved.declared ? resolved.id : null);
+  const standing = resolved.agent && fleetBudgets ? fleetBudgets.counters(resolved.agent) : null;
+  return {
+    agent: {
+      id: resolved.id,
+      label: resolved.label,
+      matchedOn: resolved.matchedOn,
+      declared: resolved.declared,
+      allowlistSource: egress.source,
+    },
+    registered: resolved.agent,
+    hosts: egress.hosts,
+    ports: egress.ports,
+    standing,
+    exhausted:
+      standing !== null &&
+      ((standing.maxRequests !== null && standing.requests >= standing.maxRequests) ||
+        (standing.maxBytes !== null && standing.bytes >= standing.maxBytes)),
+  };
+}
+
+/**
  * One enforcing mode's real decision. Monitor is not handled here — it is defined in terms
  * of what this function returns, so it cannot be given its own copy of the logic.
+ *
+ * The budget is READ here and charged nowhere: monitor calls this twice to build its
+ * projections, and a counter that advanced inside it would bill one connection two or three
+ * times. Admission happens exactly once per attempt, in decideEgress, after this returns.
  */
 function enforce(
   attempt: EgressAttempt,
@@ -520,14 +722,16 @@ function enforce(
   engine: PolicyEngine,
   lockdown: LockdownState,
   content: ContentFindings | null,
-  contentMarkers: Record<string, string> | null
+  contentMarkers: Record<string, string> | null,
+  principal: EgressPrincipal
 ): EgressVerdict {
-  const allowlisted = isAllowlisted(attempt.host);
-  const result = engine.evaluate(buildContext(attempt, mode, lockdown, allowlisted, contentMarkers));
+  const allowlisted = isAllowlisted(attempt.host, principal.hosts);
+  const result = engine.evaluate(buildContext(attempt, mode, lockdown, allowlisted, contentMarkers, principal));
 
   const reasons = policyReasons(result);
   const matchedRules = [...result.matchedRules];
   const detectionIds = result.detections.map((detection) => detection.id);
+  const attribution = { agent: principal.agent, budget: null, budgetTicket: null };
 
   // A decoy hit is enforced here rather than left to a rule, for the same reason the strict
   // allowlist is: it is the one detection in the system that is evidence rather than
@@ -552,7 +756,73 @@ function enforce(
   // claim from "nothing found", and the ledger has to carry which one it is.
   if (content !== null) for (const note of coverageNotes(content)) pushUnique(reasons, note);
 
-  const strictBlock = mode === "strict" && (!allowlisted || !portAllowlist.includes(attempt.port));
+  // Who the client is comes before where it wants to go. An operator running a closed fleet
+  // has said that unattributed egress is itself the finding, and answering it with a host
+  // complaint would send them to edit an allowlist that was never the problem.
+  //
+  // The content findings above are gathered before these gates rather than after, because
+  // both of these return: a connection refused on identity still has to carry the evidence
+  // it was caught with, and the decoy floor still has to apply to the risk it reports. What
+  // was found in a body does not stop being critical because the client was also unknown.
+  if (fleetRegistry !== null && fleetRegistry.unmatched === "deny" && !principal.agent.declared) {
+    pushUnique(matchedRules, FLEET_UNDECLARED_RULE_ID);
+    pushUnique(detectionIds, FLEET_UNDECLARED_DETECTION_ID);
+    pushUnique(
+      reasons,
+      `no declared agent claims this connection (comm ${attempt.comm ?? "unknown"}, uid ` +
+        `${attempt.uid == null ? "unknown" : attempt.uid}) and fleet.unmatched is "deny"`
+    );
+    return {
+      decision: "deny",
+      riskLevel: decoyHit ? "critical" : "high",
+      reasons,
+      matchedRules,
+      detectionIds,
+      mode,
+      ...attribution,
+    };
+  }
+
+  // Read from the standing measured before any rule ran, so the projection monitor prints and
+  // the denial guarded and strict return are the same answer. Checked here as well as in the
+  // rule set, and this check is the authority, for the reason the allowlist gate below gives.
+  // Never on a re-decision. The window this reads now INCLUDES the connection being judged,
+  // because its first pass was admitted before the proxy could read enough of it to ask
+  // again. Refusing here would have a connection refused by the very row it opened, which
+  // showed up as the second of two permitted exchanges being blocked at its request-body
+  // pass. A connection is admitted once and is judged against the window it entered.
+  if (!attempt.reDecision && principal.exhausted && principal.standing !== null) {
+    pushUnique(matchedRules, FLEET_BUDGET_RULE_ID);
+    pushUnique(detectionIds, FLEET_BUDGET_DETECTION_ID);
+    const standing = principal.standing;
+    if (standing.maxRequests !== null && standing.requests >= standing.maxRequests) {
+      reasons.unshift(
+        `agent ${principal.agent.id} has used ${standing.requests} of ${standing.maxRequests} ` +
+          `connections in its ${standing.windowSeconds}s budget window`
+      );
+    }
+    if (standing.maxBytes !== null && standing.bytes >= standing.maxBytes) {
+      reasons.unshift(
+        `agent ${principal.agent.id} has used ${standing.bytes} of ${standing.maxBytes} ` +
+          `bytes in its ${standing.windowSeconds}s budget window`
+      );
+    }
+    return {
+      decision: "deny",
+      // Not critical. An agent at its ceiling is the control working as configured, and a
+      // fleet that pages someone every time a rate limit does its job trains the operator to
+      // ignore the pager. A decoy in the same exchange is a different matter: that is a
+      // finding about theft, and it keeps its floor.
+      riskLevel: decoyHit ? "critical" : "medium",
+      reasons,
+      matchedRules,
+      detectionIds,
+      mode,
+      ...attribution,
+    };
+  }
+
+  const strictBlock = mode === "strict" && (!allowlisted || !principal.ports.includes(attempt.port));
   if (strictBlock) {
     // Checked here as well as in the rule set, and this check is the authority.
     //
@@ -568,32 +838,45 @@ function enforce(
     // allowlisted host and recorded it as an ordinary allow: an agent asking for
     // `Host: allowlisted.example.com:22` got a tunnel to SSH under a config that said 443.
     // Host and port are one destination and are judged together.
+    // Both lists come from the principal, so a declared agent is judged against its own
+    // allowlist and the reasons name which list it was.
+    const listed = principal.agent.allowlistSource === "global" ? "egress allowlist" : `${principal.agent.id} egress allowlist`;
+    // Gathered separately and put at the FRONT of the reasons, because the forward proxy
+    // turns reasons[0] into the X-Agentwall-Block-Reason header and that header is the only
+    // thing a developer with a broken agent ever sees. Leaving the engine's generic
+    // "Destination host is not in the configured egress allowlist" in front of these was
+    // survivable when a host had exactly one allowlist. With a declared fleet it is not: it
+    // names neither the host nor which of several lists refused it, so the one line that
+    // reaches the client would answer nothing.
+    const gate: string[] = [];
     if (!allowlisted) {
       pushUnique(matchedRules, EGRESS_ALLOWLIST_RULE_ID);
       pushUnique(detectionIds, EGRESS_BLOCKED_DETECTION_ID);
       // Always name the host, even though the rule already contributes a reason.
       //
-      // The rule's reason is generic ("Destination host is not in the configured egress
-      // allowlist") because a rule cannot see the attempt. Suppressing this line whenever
-      // that generic one is present was a real defect: monitor mode's whole purpose is that
-      // an operator builds the allowlist by reading the ledger, and a ledger where every
-      // strict-mode projection is the same host-less sentence cannot be read that way. The
-      // duplication is worth it — one line carries the rule's meaning, this one carries the
-      // fact you need to act on.
-      pushUnique(reasons, `${attempt.host} is not in the egress allowlist`);
+      // The rule's reason is generic because a rule cannot see the attempt. Suppressing this
+      // line whenever that generic one is present was a real defect: monitor mode's whole
+      // purpose is that an operator builds the allowlist by reading the ledger, and a ledger
+      // where every strict-mode projection is the same host-less sentence cannot be read
+      // that way. The duplication is worth it — one line carries the rule's meaning, this
+      // one carries the fact you need to act on.
+      pushUnique(gate, `${attempt.host} is not in the ${listed}`);
     }
-    if (!portAllowlist.includes(attempt.port)) {
+    if (!principal.ports.includes(attempt.port)) {
       // Reported separately from the host, and both fire when both are wrong. An operator
       // fixing one and rediscovering the other on the next attempt learns the allowlist one
       // painful round-trip at a time.
       pushUnique(matchedRules, EGRESS_PORT_RULE_ID);
       pushUnique(detectionIds, EGRESS_PORT_DETECTION_ID);
       pushUnique(
-        reasons,
-        `port ${attempt.port} is not in the egress port allowlist` +
-          (portAllowlist.length > 0 ? ` (allowed: ${portAllowlist.join(", ")})` : " (the allowlist is empty)")
+        gate,
+        `port ${attempt.port} is not in the ${listed} ports` +
+          (principal.ports.length > 0 ? ` (allowed: ${principal.ports.join(", ")})` : " (the allowlist is empty)")
       );
     }
+    // unshift with a spread keeps the gate's own order (host, then port) ahead of whatever
+    // the rule set contributed.
+    reasons.unshift(...gate.filter((reason) => !reasons.includes(reason)));
   }
 
   if (strictBlock || decoyHit) {
@@ -606,11 +889,12 @@ function enforce(
       matchedRules,
       detectionIds,
       mode,
+      ...attribution,
     };
   }
 
   if (result.matchedRules.length > 0 && result.decision === "deny") {
-    return { decision: "deny", riskLevel: result.riskLevel, reasons, matchedRules, detectionIds, mode };
+    return { decision: "deny", riskLevel: result.riskLevel, reasons, matchedRules, detectionIds, mode, ...attribution };
   }
 
   if (result.decision === "approve" || result.decision === "redact") {
@@ -637,6 +921,7 @@ function enforce(
     matchedRules,
     detectionIds,
     mode,
+    ...attribution,
   };
 }
 
@@ -657,6 +942,11 @@ function enforce(
  * down rather than recomputed. Monitor mode evaluates twice to build its projections, and a
  * scan repeated inside those would triple the CPU cost of every proxied request and file a
  * decoy trigger three times for one sighting.
+ * The agent's budget is charged LAST, only for an attempt everything else permitted. Charging
+ * at the top and refunding on a denial would be the same arithmetic with a leak in it: any
+ * path that returned without refunding would silently bill an agent for connections it was
+ * never allowed to make, and the counter an operator uses to size the budget would drift
+ * upward with every blocked request. A denied connection costs nothing.
  */
 export function decideEgress(
   attempt: EgressAttempt,
@@ -666,7 +956,8 @@ export function decideEgress(
   const lockdown = lockdownState();
   const content = inspectContent(attempt);
   const markers = content === null ? null : contentMetadata(content);
-  const verdict = decide(attempt, mode, engine, lockdown, content, markers);
+  const principal = resolvePrincipal(attempt);
+  const verdict = decide(attempt, mode, engine, lockdown, content, markers, principal);
   // Attached to every verdict, denial or allow, so the audit record says what was looked at
   // even when nothing was found. A record that carries findings only when there are findings
   // cannot distinguish a clean scan from an absent one.
@@ -681,13 +972,17 @@ function decide(
   engine: PolicyEngine,
   lockdown: LockdownState,
   content: ContentFindings | null,
-  markers: Record<string, string> | null
+  markers: Record<string, string> | null,
+  principal: EgressPrincipal
 ): EgressVerdict {
+  const registered = principal.registered;
+  const ledger = fleetBudgets;
+
   if (lockdown.active) {
     // Evaluated anyway, so the ledger keeps whatever else was wrong with this destination
     // rather than recording only the stop. The verdict is not derived from the result.
     const result = engine.evaluate(
-      buildContext(attempt, mode, lockdown, isAllowlisted(attempt.host), markers)
+      buildContext(attempt, mode, lockdown, isAllowlisted(attempt.host, principal.hosts), markers, principal)
     );
     const matchedRules = [...result.matchedRules];
     const detectionIds = result.detections.map((detection) => detection.id);
@@ -700,6 +995,9 @@ function decide(
       matchedRules,
       detectionIds,
       mode,
+      agent: principal.agent,
+      budget: registered && ledger ? ledger.counters(registered) : null,
+      budgetTicket: null,
     };
   }
 
@@ -709,8 +1007,23 @@ function decide(
     // rules, a heuristic on the host — could disagree with what the mode actually does, and
     // a projection an operator cannot trust is worse than none: it invites the switch to
     // strict that takes production down.
-    const guarded = enforce(attempt, "guarded", engine, lockdown, content, markers);
-    const strict = enforce(attempt, "strict", engine, lockdown, content, markers);
+    const guarded = enforce(attempt, "guarded", engine, lockdown, content, markers, principal);
+    const strict = enforce(attempt, "strict", engine, lockdown, content, markers, principal);
+    // Charged even though nothing is gated, and after the projections so the counter each
+    // one described is the one that was true when it ran. Monitor exists so an operator can
+    // size a budget against real traffic; a window that stopped counting at the ceiling
+    // would answer "are you over" while hiding the only number worth having: by how much.
+    // A re-decision is not a new connection and is never admitted; see decideEgress below.
+    const budget = registered && ledger && !attempt.reDecision ? ledger.admit(registered) : null;
+    const reasons = [
+      "monitor: egress recorded, not gated",
+      guarded.decision === "deny"
+        ? `monitor: guarded mode would deny — ${guarded.reasons.join("; ")}`
+        : "monitor: guarded mode would allow",
+      strict.decision === "deny"
+        ? `monitor: strict mode would deny — ${strict.reasons.join("; ")}`
+        : "monitor: strict mode would allow",
+    ];
     return {
       decision: "allow",
       // Guarded's risk, not the higher of the two. Every rule-driven finding already shows
@@ -719,15 +1032,7 @@ function decide(
       // set the risk would stamp `high` on every request in exactly the deployment whose
       // purpose is to discover what the list should contain.
       riskLevel: guarded.riskLevel,
-      reasons: [
-        "monitor: egress recorded, not gated",
-        guarded.decision === "deny"
-          ? `monitor: guarded mode would deny — ${guarded.reasons.join("; ")}`
-          : "monitor: guarded mode would allow",
-        strict.decision === "deny"
-          ? `monitor: strict mode would deny — ${strict.reasons.join("; ")}`
-          : "monitor: strict mode would allow",
-      ],
+      reasons,
       // The structured fields describe what policy actually found. The hypothetical stays
       // in the reasons, because a detection named "blocked egress" attached to a request
       // that was allowed is a false statement, and the ledger is the one place that must
@@ -735,8 +1040,30 @@ function decide(
       matchedRules: guarded.matchedRules,
       detectionIds: guarded.detectionIds,
       mode: "monitor",
+      agent: principal.agent,
+      budget: budget?.counters ?? null,
+      budgetTicket: budget?.ticket ?? null,
     };
   }
 
-  return enforce(attempt, mode, engine, lockdown, content, markers);
+  const verdict = enforce(attempt, mode, engine, lockdown, content, markers, principal);
+  if (verdict.decision !== "allow") {
+    // Nothing is charged, and the record still carries where the agent stood. An operator
+    // reading a denial should not have to correlate two records to learn whether the agent
+    // was near its ceiling when policy stopped it for some other reason.
+    return { ...verdict, budget: principal.standing };
+  }
+
+  // A later look at a connection that was already admitted, so the window is reported as it
+  // stands and nothing is charged. One connection is one row however many times it is
+  // judged: the proxy asks again once it can read the negotiated name, the request body, and
+  // the response body, and admitting each of those would make `maxRequests` mean a third of
+  // what the operator wrote. The bytes still land on the row the first pass opened, because
+  // that pass is the one that handed back a ticket.
+  if (attempt.reDecision) {
+    return { ...verdict, budget: principal.standing, budgetTicket: null };
+  }
+
+  const budget = registered && ledger ? ledger.admit(registered) : null;
+  return { ...verdict, budget: budget?.counters ?? null, budgetTicket: budget?.ticket ?? null };
 }

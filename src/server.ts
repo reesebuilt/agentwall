@@ -20,6 +20,7 @@ import { damageControlRoutes } from "./routes/damage-control";
 import { lockdownRoutes } from "./routes/lockdown";
 import { initLockdown } from "./runtime/lockdown";
 import { probeRoutes } from "./routes/probe";
+import { fleetRoutes } from "./routes/fleet";
 import { FileBackedPolicyRuntime, ReloadResult } from "./policy/runtime";
 import { PolicySnapshot } from "./policy/engine";
 import { ReloadCoordinator } from "./runtime/reload";
@@ -187,6 +188,7 @@ export async function buildServer(config: AgentwallConfig): Promise<AgentwallSer
   await lockdownRoutes(app);
   await probeRoutes(app, engine, runtime);
   await reloadRoutes(app, reloadCoordinator);
+  await fleetRoutes(app);
 
   return { app, engine, gate, runtime, policyRuntime, reloadCoordinator };
 }

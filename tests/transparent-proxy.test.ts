@@ -399,8 +399,14 @@ describe("transparent proxy", () => {
     expect(record.scheme).toBe("http");
     expect(record.method).toBe("GET");
     // Attribution is not available on a redirected connection: the /proc helper the forward
-    // proxy uses is module-private to it. The record says so rather than guessing.
-    expect(record.client).toEqual({ pid: null, comm: null });
+    // proxy uses is module-private to it. The record says so rather than guessing, and that
+    // now includes the uid, which the forward path reads off the same /proc/net/tcp line as
+    // the socket inode. No presented credential either: a kernel-redirected connection is
+    // not a proxy request and carries no Proxy-Authorization to read.
+    expect(record.client).toEqual({ pid: null, comm: null, uid: null });
+    // And the secret itself never reaches a record on any path: a Proxy-Authorization value
+    // is evidence for a decision, not something to write into a ledger that lands on disk.
+    expect(record).not.toHaveProperty("credential");
     expect(record.bytesUp).toBeGreaterThanOrEqual(request.length);
     expect(record.bytesDown).toBeGreaterThan(0);
     expect(record.durationMs).toBeGreaterThanOrEqual(0);

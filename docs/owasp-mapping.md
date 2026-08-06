@@ -369,7 +369,7 @@ through. Downgrading is the only direction that cannot mislead.
 | --- | --- | --- | --- |
 | `T1190` | Exploit Public-Facing Application | `strong` | `net:block-ssrf-private` (deny) |
 | `T1552.005` | Cloud Instance Metadata API | `strong` | `net:block-metadata-endpoint` (deny) |
-| `T1041` | Exfiltration Over C2 Channel | `strong` | `content:block-secret-exfil` (deny), `net:deny-proxy-request-secret` (deny) |
+| `T1041` | Exfiltration Over C2 Channel | `strong` | `content:block-secret-exfil` (deny), `net:deny-proxy-request-secret` (deny), `fleet:deny-agent-budget-exhausted` (deny) |
 | `T1555` | Credentials from Password Stores | `partial` | `identity:flag-credential-access` (approve) |
 | `T1098.001` | Additional Cloud Credentials | `partial` | `browser:require-approval-oauth` (approve) |
 | `T1562` | Impair Defenses | `partial` | `tool:approve-manifest-drift` (approve) |
@@ -380,12 +380,21 @@ through. Downgrading is the only direction that cannot mislead.
 | `T1571` | Non-Standard Port | `strong` | `net:deny-egress-port-not-allowlisted` (deny) |
 | `T1489` | Service Stop | `strong` | `governance:lockdown` (deny) |
 | `T1552.001` | Credentials In Files | `strong` | `content:deny-spill-file-write` (deny) |
+| `T1036` | Masquerading | `strong` | `fleet:deny-undeclared-agent` (deny) |
 
 Two things this table does not mean. **Absence is not "not applicable":** a technique missing
 from this list means no detection in this codebase names it, and ATT&CK has hundreds. And the
 technique chosen for each detection is the catalog author's judgement about which ATT&CK entry
 best describes the behaviour, not an independent classification — read the detection's own
 description before relying on the mapping.
+
+One rating on this table needs its condition said out loud. The two `fleet:` rules are inert
+in a deployment that has not declared a fleet: `fleet:deny-undeclared-agent` fires only when
+`fleet.unmatched` is set to `deny`, and `fleet:deny-agent-budget-exhausted` only for an agent
+that was given a budget. The derivation rates a rule by what it does when it fires, which is
+the right question for the table and not the whole question for a reader. It puts the two
+fleet rules in the same class as `net:deny-egress-not-allowlisted`, which is equally inert
+outside strict mode and is rated `strong` on the same basis. See [Fleet governance](fleet.md).
 
 ## Drift in the other direction
 

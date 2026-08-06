@@ -1,0 +1,114 @@
+# Agentwall configuration example: several agents on one host
+#
+# The difference from examples/config.yaml is the `fleet` section. It turns one
+# host-wide allowlist into per-agent identity, per-agent allowlists, and per-agent
+# budgets, and it makes every egress record say WHICH agent rather than only which
+# process. Read docs/fleet.md before using this: what each identity signal is worth
+# differs sharply, and the doc says so.
+#
+# Scope: one instance, one host. There is no cross-host identity and no shared budget.
+
+port: 3000
+host: "127.0.0.1"
+logLevel: "info"
+
+approval:
+  mode: "auto"
+  timeoutMs: 30000
+  backend: "file"
+  persistencePath: "./agentwall-approvals.json"
+
+policy:
+  defaultDecision: "deny"
+
+dlp:
+  enabled: true
+  redactSecrets: true
+
+# Enforcement is instance-wide. There is no per-agent mode: an agent's allowlist
+# decides WHERE it may go, and this decides whether allowlists bite at all.
+enforcement:
+  mode: "strict"
+
+# The fallback list. It judges any connection no declared agent claims, and any
+# declared agent that did not name its own.
+egress:
+  enabled: true
+  defaultDeny: true
+  allowPrivateRanges: false
+  allowedHosts:
+    - "api.openai.com"
+  allowedSchemes:
+    - "https"
+  allowedPorts:
+    - 443
+
+fleet:
+  # "global" keeps the fallback above in force for anything unattributed, which is the
+  # safe default when adopting this. Switch to "deny" once the agent list is complete
+  # and you want unattributed egress to be a finding rather than ordinary traffic.
+  #
+  # Note before you switch: a connection redirected by `agentwall perimeter` carries no
+  # process name, no uid, and no proxy credential, so it resolves to the undeclared
+  # agent and "deny" refuses it. See docs/fleet.md.
+  unmatched: "global"
+
+  agents:
+    # Bound by two kernel facts. The uid is the strong half: a process cannot change its
+    # own without privilege. The comm is the weak half and is here to tell two agents
+    # under one account apart, not to keep a hostile one out -- a process sets its own
+    # comm, and Node in particular rewrites it at startup.
+    - id: "mcp-wrapper"
+      label: "MCP wrapper"
+      match:
+        uid: 1001
+        comm: ["aw-mcp"]
+      egress:
+        allowedHosts:
+          - "api.anthropic.com"
+        allowedPorts:
+          - 443
+      budget:
+        windowSeconds: 60
+        maxRequests: 120
+
+    # Bound by a secret it presents in Proxy-Authorization. Never write the secret here:
+    # only "sha256:<64 hex>" and "env:<VAR>" are accepted, because a config file in git
+    # is a credential you have to rotate. Agentwall strips the header before the request
+    # reaches the destination.
+    #
+    # Uncomment after exporting AGENTWALL_SCRAPER_TOKEN; an unset variable is a start-up
+    # failure rather than an agent that quietly never binds.
+    #
+    # - id: "scraper"
+    #   label: "Web scraper"
+    #   match:
+    #     credential: "env:AGENTWALL_SCRAPER_TOKEN"
+    #   egress:
+    #     allowedHosts:
+    #       - "news.example.com"
+    #   budget:
+    #     windowSeconds: 3600
+    #     maxBytes: 52428800
+
+    # Declares only ports, so it inherits the global host list above. An agent block
+    # replaces the lists it names and leaves the rest at the fallback value.
+    - id: "cron"
+      label: "Scheduled jobs"
+      match:
+        comm: ["aw-cron"]
+      egress:
+        allowedPorts:
+          - 443
+      budget:
+        windowSeconds: 3600
+        maxRequests: 200
+
+manifestIntegrity:
+  enabled: true
+
+watchdog:
+  enabled: true
+  staleAfterMs: 15000
+  timeoutMs: 30000
+  killSwitchMode: "deny_all"
