@@ -60,6 +60,16 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
   unhandled event killed the process on the next tick. A partition full enough to stop the audit
   file therefore took down the thing gating egress, on the record after the first one it could not
   write.
+- Every surface that reports a version or a Node floor now reads it from `package.json` instead of
+  holding its own copy. `GET /health` and the OpenTelemetry instrumentation scope both answered
+  `0.1.0` after the manifest had moved to `0.2.0`, so a liveness probe named a release that was
+  never cut. `agentwall doctor` compared only the major version against 20, so it green-checked
+  Node 20.x and Node 22.0.0 while `engines: >=22.12.0` refuses both at install time, and
+  `docs/install.md` still asked for "Node.js 20+" against a changelog that had already raised the
+  floor to 22.12.0. The new `src/version.ts` exports `packageVersion`, `nodeFloor`, and
+  `meetsNodeFloor`, comparing major, then minor, then patch. The release workflow now fails the
+  build when `dist/version.js` or `agentwall --version` disagrees with the tag, so the four
+  surfaces cannot silently drift apart again.
 
 ## [0.2.0] - 2026-08-05
 
