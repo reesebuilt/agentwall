@@ -205,15 +205,38 @@ jobs:
         run: python -m pytest -q
 
       # The README says the verifier carries no third-party code. A claim nobody checks is a
-      # claim that rots. Every import in the package must resolve against a bare interpreter.
+      # claim that rots, and the obvious spelling of this check rots quietly: importing the
+      # package and seeing it succeed only proves nothing third-party is MISSING from the
+      # runner. It passes the moment an image, or a test dependency, happens to ship the
+      # module the package should not be importing. So the imports are read out of the source
+      # and checked against sys.stdlib_module_names, which is compiled into the interpreter
+      # and does not care what is installed. The runtime import stays, because it catches the
+      # syntax errors and import cycles a static read does not.
       - name: No runtime dependencies
         run: |
           python - <<'EOF'
-          import pathlib, sys, tomllib
+          import ast, pathlib, sys, tomllib
+
           config = tomllib.loads(pathlib.Path("pyproject.toml").read_text())
           declared = config["project"]["dependencies"]
           if declared:
               sys.exit("verifier-py must declare no dependencies; pyproject lists %r" % (declared,))
+
+          allowed = set(sys.stdlib_module_names) | {"agentwall_verify"}
+          for path in sorted(pathlib.Path("agentwall_verify").rglob("*.py")):
+              for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+                  if isinstance(node, ast.ImportFrom):
+                      if node.level:
+                          continue
+                      roots = [(node.module or "").split(".")[0]]
+                  elif isinstance(node, ast.Import):
+                      roots = [alias.name.split(".")[0] for alias in node.names]
+                  else:
+                      continue
+                  for root in roots:
+                      if root not in allowed:
+                          sys.exit("%s imports %r, which is not in the standard library" % (path, root))
+          print("every import in agentwall_verify resolves to the standard library")
           EOF
           python -c "import agentwall_verify.cli, agentwall_verify.evidence, agentwall_verify.ed25519"
 
