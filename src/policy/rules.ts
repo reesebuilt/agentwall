@@ -607,4 +607,92 @@ export const builtinRules: PolicyRule[] = [
     riskLevel: "high",
     reason: "Credential material was written to a watched filesystem path",
   },
+  /**
+   * Content findings from the forward proxy's plaintext HTTP path.
+   *
+   * Marker matches, like the egress allowlist and lockdown rules above and for the same
+   * reason: the scan is expensive, it runs once per decision in the enforcement runtime, and
+   * the engine must stay a pure function of the context it is handed so a replayed context
+   * decides the same way it did live. Nothing here re-scans anything, and the matched value
+   * is deliberately not in the context to be re-scanned - the context is what the audit
+   * record is built from, and a DLP record carrying the secret it detected is worse than no
+   * record. What the markers carry is the class and the position; that is all a rule needs.
+   *
+   * These four are the heuristic half of content inspection and are meant to be editable. An
+   * operator who deletes them has turned off pattern-based content gating on the proxy, which
+   * is a legitimate choice for a detector with a real false-positive rate. The decoy check is
+   * the exception and is enforced by the runtime whether or not its rule survives, because a
+   * planted synthetic value appearing in traffic has no false-positive rate to trade against.
+   *
+   * Direction is part of every match. A secret going out and a secret coming back are
+   * different events with different responses, and one rule covering both would force the
+   * stricter answer onto the case that does not deserve it.
+   */
+  {
+    id: "net:deny-proxy-request-secret",
+    description: "Deny a proxied plaintext HTTP request whose path, headers, or body carry credential material",
+    plane: "network",
+    match: (ctx: AgentContext) =>
+      ctx.plane === "network" &&
+      ctx.metadata?.["contentDirection"] === "request" &&
+      (ctx.metadata?.["contentSecretTypes"] ?? "") !== "",
+    decision: "deny",
+    riskLevel: "critical",
+    reason: "Proxied request carries credential material out to the destination",
+  },
+  {
+    id: "net:deny-proxy-request-injection",
+    description: "Deny a proxied plaintext HTTP request carrying prompt-injection patterns",
+    plane: "network",
+    match: (ctx: AgentContext) =>
+      ctx.plane === "network" &&
+      ctx.metadata?.["contentDirection"] === "request" &&
+      (ctx.metadata?.["contentInjectionPatterns"] ?? "") !== "",
+    decision: "deny",
+    riskLevel: "high",
+    reason: "Proxied request carries injected instructions",
+  },
+  /**
+   * The response half, and the one worth having most.
+   *
+   * A poisoned tool result is the dominant real-world shape of this attack: the agent asks a
+   * server for data and the answer contains instructions aimed at the agent that reads it.
+   * Inspecting only what leaves misses it completely, which is what inspecting only egress
+   * had been doing.
+   */
+  {
+    id: "net:deny-proxy-response-injection",
+    description: "Deny a proxied plaintext HTTP response carrying prompt-injection patterns",
+    plane: "network",
+    match: (ctx: AgentContext) =>
+      ctx.plane === "network" &&
+      ctx.metadata?.["contentDirection"] === "response" &&
+      (ctx.metadata?.["contentInjectionPatterns"] ?? "") !== "",
+    decision: "deny",
+    riskLevel: "high",
+    reason: "Proxied response carries injected instructions back to the agent",
+  },
+  /**
+   * Recorded, not blocked, and the asymmetry with the request rule is deliberate.
+   *
+   * A response carrying a credential is usually the agent reading a secret it is entitled to:
+   * its own config endpoint, a token refresh, a vault fetch. Denying that would break the
+   * legitimate case far more often than it would catch anything, and there is no redaction
+   * available as a middle path - rewriting a body in flight means recomputing Content-Length
+   * and re-encoding whatever content encoding it arrived under. So the finding is filed with
+   * its class and position and the bytes are forwarded. An operator who wants it denied has
+   * one field to change, right here, and can see exactly what they are trading.
+   */
+  {
+    id: "net:flag-proxy-response-secret",
+    description: "Record credential material observed in a proxied plaintext HTTP response body",
+    plane: "network",
+    match: (ctx: AgentContext) =>
+      ctx.plane === "network" &&
+      ctx.metadata?.["contentDirection"] === "response" &&
+      (ctx.metadata?.["contentSecretTypes"] ?? "") !== "",
+    decision: "allow",
+    riskLevel: "high",
+    reason: "Proxied response carries credential material into the agent's context",
+  },
 ];

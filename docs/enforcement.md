@@ -202,7 +202,7 @@ every egress flow as high-risk by construction. That classification is right for
 classifier and useless in a ledger — it would stamp a finding on every ordinary model API
 call and leave you with nothing to triage.
 
-Three detections are specific to enforcement:
+Seven detections are specific to enforcement:
 
 - `det.net.egress.blocked` — strict mode refused a non-allowlisted destination.
   MITRE ATT&CK T1071, Application Layer Protocol (Command and Control).
@@ -212,6 +212,18 @@ Three detections are specific to enforcement:
   different hosts. Deliberately unmapped to ATT&CK, because the technique it resembles is one
   this cannot observe. See the limits below, and `unmappedDetections()` for why an honest
   blank beats a wrong technique id.
+- `det.net.proxy.request_secret`: a plaintext HTTP request carried credential material.
+  MITRE ATT&CK T1041, Exfiltration Over C2 Channel.
+- `det.net.proxy.request_injection`: a plaintext HTTP request carried injected instructions.
+  MITRE ATT&CK T1059, Command and Scripting Interpreter.
+- `det.net.proxy.response_injection`: a plaintext HTTP response carried injected
+  instructions back to the agent. MITRE ATT&CK T1059.
+- `det.net.proxy.response_secret`: a plaintext HTTP response carried credential material
+  into the agent's context. Recorded, not refused. MITRE ATT&CK T1552, Unsecured Credentials.
+
+A decoy hit on the proxy path files `identity:deny-decoy-triggered` and
+`det.identity.decoy.triggered`, the same ids the rest of the system uses, rather than a
+proxy-specific pair. It is the same finding wherever it is seen.
 
 ## What the proxy sees of a TLS connection
 
@@ -239,6 +251,99 @@ CONNECT line carried no name to compare, not that anyone lied.
 What this does NOT give you is content. See the limits below before drawing a wider
 conclusion from it than the code supports.
 
+## What the proxy reads of a request
+
+Until now, nothing. The DLP engine, the injection scanner, and the decoy tripwires all
+existed, were tested, and were wired to zero bytes of proxied traffic: no call site under
+`src/proxy/` reached any of them. The documentation described that as a consequence of
+encryption, which implied plaintext HTTP was being inspected. It was not.
+
+On plaintext HTTP, and on plaintext HTTP only, the proxy now inspects:
+
+| Surface | Scanned for | On deny |
+| --- | --- | --- |
+| Request path, including the query string | secrets, PII, injection, decoys | 403 before any upstream socket is opened |
+| Request headers | injection and decoys on every header; secrets on every header except `Authorization`, `Proxy-Authorization`, `Cookie` and `Set-Cookie` | 403 before any upstream socket is opened |
+| Request body | secrets, PII, injection, decoys | 403 before any upstream socket is opened |
+| Response headers | secrets, PII, injection, decoys | 403, because nothing has been written back yet |
+| Response body | secrets, PII, injection, decoys | 403, because nothing has been written back yet |
+
+A secret in a request is refused. Injected instructions in a request or a response are
+refused. A decoy anywhere is refused, in guarded and strict, and is refused by the runtime
+rather than by a rule so that replacing the rule set cannot switch it off. A secret in a
+**response** is recorded and forwarded: an agent reading a credential it is entitled to is
+the common case, and denying it breaks far more than it catches. PII is recorded in
+`contentPiiTypes` with no rule attached, so a deployment that wants to gate on it can write
+one against the marker.
+
+`Authorization` is exempt from credential scanning and from nothing else. A request
+authenticating itself to a destination it is already permitted to reach is not exfiltration,
+and treating it as such would block every authenticated call an agent makes the moment
+guarded mode came on. Decoys and injection patterns are still scanned there, because a decoy
+has no false-positive rate to trade against.
+
+Gzip, deflate, and brotli bodies are decompressed for inspection with a bounded output, so a
+compressed response is scanned rather than waved through. The bytes forwarded are always the
+originals: nothing is rewritten, re-encoded, or stripped, and an allowed exchange is
+byte-identical to an unproxied one.
+
+### The byte cap
+
+**256 KiB per body.** The number is the injection scanner's own work cap
+(`MAX_SCAN_CHARS`), imported rather than re-guessed, so the proxy never buffers bytes the
+scanner would not read and never scans fewer than it holds.
+
+Past the cap the exchange is **not refused**. The first 256 KiB are scanned, the remainder is
+streamed through uninspected, `bodyVisibility` on the record reads `partial`, and the reasons
+carry `the remainder was forwarded uninspected`. Refusing instead would break ordinary agent
+traffic, since a large response is not an attack, to buy protection an adversary evades by
+padding, or more simply by using https, which is not inspected at all. What the code will
+never do is the third option: truncate quietly and report a clean scan.
+
+Say the consequence plainly. **The request-body scan is evadable by padding.** Put a
+quarter-megabyte of filler in front of a credential and it goes out. Treat this control as
+one against accident, misconfiguration, and unsophisticated theft, not against an adversary
+who is choosing their transport.
+
+Buffering is bounded by time as well as size. A body that goes silent for one second is
+released with what has arrived and the rest is streamed; a body that never ends is not large,
+it is open, and holding one to scan it is how a proxy hangs the agent it is protecting.
+
+### Streams
+
+`text/event-stream`, `application/x-ndjson`, and `multipart/x-mixed-replace` responses are
+**exempt from body inspection entirely**, and the exemption is explicit rather than left for
+the idle deadline to discover a second late. MCP carries SSE. An event stream that pauses
+between events is behaving correctly, and buffering one to scan it converts a working
+transport into a hang. There is no half-measure available: a stream cannot be inspected whole
+without ceasing to be a stream.
+
+Their headers are still scanned, so this is not a hole a `Content-Type` opens across the
+whole exchange, only across the body it names. The record says `bodyVisibility: stream` and
+`responseContentBodyUnscannable: stream`, and the reasons say the body was not inspected.
+
+### Reading the record
+
+`bodyVisibility` is on every proxy record and exists to remove one specific ambiguity: a row
+with no findings can mean "nothing was there" or "we could not look", and the second reads
+exactly like the first to anyone skimming.
+
+| Value | Meaning |
+| --- | --- |
+| `tunneled` | CONNECT. Ciphertext. Nothing below the authority was ever readable. |
+| `unread` | The exchange ended, or was refused, before there was a body to read. |
+| `stream` | An event stream, passed through without buffering, deliberately. |
+| `partial` | Read to the cap or to a stall; the remainder was forwarded uninspected. |
+| `plaintext` | Read whole and scanned. |
+
+Findings themselves are namespaced by direction, because one exchange has two bodies:
+`requestContentSecretTypes`, `responseContentInjectionPatterns`, and so on. Each carries the
+class of what was found and `contentSites` carries where: a byte offset for a path or a
+body, a header name for a header. **The matched value is never recorded**, in the audit chain
+or in the flat ledger. The recorded `path` is the pathname with the query string removed for
+the same reason: `?api_key=...` is one of the shapes this scan exists to catch, and writing it
+down would put the live credential in the record that reports its detection.
+
 ## Limits
 
 Read these before relying on enforcement for anything.
@@ -254,26 +359,24 @@ Read these before relying on enforcement for anything.
   UID and has nftables redirect that UID's outbound TCP into the proxy, which removes the
   cooperation requirement at the cost of root, Linux, and a deliberate install. It is off
   unless you set it up, and it does not contain DNS. See [perimeter.md](perimeter.md).
-- **Decisions are made from host, port, scheme, and negotiated SNI.** The proxy does not
-  terminate TLS, so the body, path, and headers of a request are not visible and cannot
-  inform the decision. That is true of plaintext HTTP too, and not only of HTTPS: an http
-  request is relayed without its body or path being read, so the limit is a property of the
-  proxy rather than of encryption. Terminating TLS would need a CA in every runtime trust
-  store, which would break the harness-agnostic property the proxy exists for.
-- **Content inspection does not run on proxied traffic at all.** DLP, PII, and injection
-  scanning exist, and none of them are on this path. They run on content AgentWall is handed
-  directly: `/inspect/*` and `/evaluate` payloads, the MCP frames it wraps, channel messages,
-  and watched file writes. A secret in an https body is invisible because the body is
-  encrypted; a secret in an http body is invisible because nothing scans it. Neither is
-  detected, and a deployment that needs egress content scanning does not get it here.
+- **What informs a decision depends on the scheme, and the split is sharp.** A CONNECT tunnel
+  is judged from host, port, scheme, and the SNI the client negotiated: the proxy does not
+  terminate TLS, so the path, the headers, and both bodies of an https request are ciphertext
+  and no rule can reach them. Terminating TLS would need a CA in every runtime trust store,
+  which would break the harness-agnostic property the proxy exists for. A plaintext http
+  exchange is judged from all of it, subject to the cap and the stream exemption above.
+- **Content inspection on the proxy is plaintext HTTP and nothing else.** An https body is
+  invisible because it is encrypted. A CONNECT tunnel carrying HTTP inside it is invisible for
+  the same reason. The transparent listener relays raw TCP and parses no messages, so it does
+  not inspect content on either scheme; its records say `unread` or `tunneled` rather than
+  implying a clean scan. Anyone planning to rely on egress content scanning for https should
+  read that as "not available", not as "coming".
 - **Adding interception is not a small change, and the cost is not only the CA.** Minting a
   leaf certificate per destination means issuing X.509, and Node cannot: `crypto.X509Certificate`
   parses and verifies, it does not sign. Closing this gap therefore means either a fourth
   runtime dependency or shelling out to `openssl` on the connection path. This package has
   exactly three runtime dependencies and keeps it that way on purpose, so that trade is an
-  architectural decision rather than an implementation detail, and it is unmade. Anyone
-  planning to rely on egress content scanning should read that as "not available", not as
-  "coming".
+  architectural decision rather than an implementation detail, and it is unmade.
 - **The SNI cross-check catches a self-contradicting client, not domain fronting.** A CONNECT
   authority is a string the client typed; the SNI is what it then negotiated. When they
   disagree the proxy records `net:sni-connect-mismatch` and re-evaluates policy against the
@@ -289,11 +392,18 @@ Read these before relying on enforcement for anything.
   upstream socket at all. An SNI-level deny cannot, because the name only exists after the
   tunnel is up: the connection is torn down with zero payload bytes forwarded, but the
   destination did see a connection open and close.
+- **A clean scan means "no known pattern in the bytes we read".** Both engines are
+  deterministic pattern tables. Paraphrase defeats the injection scanner; a token scheme the
+  DLP table does not know defeats the DLP. The record says which surfaces were read and how
+  much of them, so a clean row can be read for what it is.
 - **Only `deny` is enforceable on a connection.** A rule returning `approve` or `redact` for
   an egress destination is recorded and the connection is allowed. There is nothing to answer
-  an approval prompt on a TCP connect, and redaction needs bodies the proxy cannot read. If a
-  destination must not be reached, keep it off the allowlist and run `strict`; do not rely on
-  an `approve` rule to stop it.
+  an approval prompt on a TCP connect. Redaction is not performed on a proxied body either,
+  even now that plaintext bodies are read: rewriting one in flight means recomputing
+  `Content-Length` and re-encoding whatever content or transfer encoding it arrived under, and
+  getting that wrong corrupts a live response over a finding that may be a false positive. If
+  a destination must not be reached, keep it off the allowlist and run `strict`; do not rely
+  on an `approve` rule to stop it.
 - **The allowlist is global to the process.** One AgentWall instance enforces one allowlist.
   Per-agent allowlists need per-agent instances.
 - **`strict` with an empty `allowedHosts` or an empty `allowedPorts` denies everything.** That

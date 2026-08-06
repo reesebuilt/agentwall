@@ -648,12 +648,34 @@ export function dlpPatternCatalog(): readonly DlpPatternInfo[] {
   return PATTERN_CATALOG;
 }
 
+/**
+ * Where one match was found, and what class it belongs to. Never what it was.
+ *
+ * This exists so an audit record can say "an AWS secret key started at byte 1042 of the
+ * request body" without the record becoming a second copy of the credential. A ledger is
+ * read by more people than the environment it protects, so the offset and the class are the
+ * most that may ever leave this module about a live secret.
+ */
+export interface DlpLocation {
+  /** Pattern type, e.g. "aws-access-key". The class, which is safe to log. */
+  type: string;
+  riskLabel: "secret" | "pii";
+  /** Offset of the match in the scanned text, in UTF-16 code units. */
+  start: number;
+  end: number;
+}
+
 export interface DlpScanResult {
   secretTypes: string[];
   piiTypes: string[];
   containsSecrets: boolean;
   containsPII: boolean;
   redactedText?: string;
+  /**
+   * Present only when the caller asked to locate. Absent and present-but-empty mean
+   * different things: absent is "nobody looked", empty is "looked and found nothing".
+   */
+  locations?: DlpLocation[];
 }
 
 export function defaultTrustForSource(source: ProvenanceSource): TrustLabel {
@@ -707,10 +729,19 @@ function applyRedactions(text: string, spans: RedactionSpan[]): string {
   return out + text.slice(cursor);
 }
 
-export function scanText(text: string, redact = false): DlpScanResult {
+/**
+ * `locate` asks for the position and class of every match, which callers that build audit
+ * records need and callers that only branch on a boolean do not. It is a third parameter
+ * rather than a property of `redact` because the two answer different questions: redaction
+ * rewrites the text for a downstream consumer, location describes the text for a ledger, and
+ * a proxy scanning a request body wants the second without paying for the first. Both force
+ * full enumeration, so the early break below survives only for the plain detection call.
+ */
+export function scanText(text: string, redact = false, locate = false): DlpScanResult {
   const secretTypes: string[] = [];
   const piiTypes: string[] = [];
   const spans: RedactionSpan[] = [];
+  const locations: DlpLocation[] | undefined = locate ? [] : undefined;
   // One allocation, shared by every marker test below. Cheaper than a regex traversal per
   // pattern, and the scan is dominated by the patterns that survive the filter.
   const lowered = text.toLowerCase();
@@ -732,9 +763,22 @@ export function scanText(text: string, redact = false): DlpScanResult {
         continue;
       }
       hit = true;
-      // Detection alone needs one hit; only redaction has to enumerate every occurrence.
-      if (!redact) break;
-      spans.push({ start: match.index, end: match.index + value.length, replacement: entry.redactReplacement });
+      if (locations) {
+        locations.push({
+          type: entry.type,
+          riskLabel: entry.riskLabel,
+          start: match.index,
+          end: match.index + value.length,
+        });
+      }
+      // Detection alone needs one hit; redaction and location have to enumerate every
+      // occurrence. Enumerating for location matters as much as for redaction: an operator
+      // reading "one secret" on a body that carried nine has been told the wrong size of
+      // incident.
+      if (!redact && !locate) break;
+      if (redact) {
+        spans.push({ start: match.index, end: match.index + value.length, replacement: entry.redactReplacement });
+      }
     }
 
     if (!hit) continue;
@@ -749,6 +793,7 @@ export function scanText(text: string, redact = false): DlpScanResult {
     containsSecrets: secretTypes.length > 0,
     containsPII: piiTypes.length > 0,
     redactedText: redact ? applyRedactions(text, spans) : undefined,
+    locations,
   };
 }
 

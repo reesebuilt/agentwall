@@ -82,6 +82,15 @@ export interface InjectionFinding {
    * secret it is trying to move.
    */
   excerpt: string;
+  /**
+   * Where the match sits in the scanned input, in UTF-16 code units, when the
+   * pass that surfaced it preserved positions. Absent for the base64 and hex
+   * passes, whose matches exist only in a decoded rendering and have no
+   * character-for-character home in the raw text. An audit record uses this to
+   * say where a finding was without quoting what it said.
+   */
+  start?: number;
+  end?: number;
 }
 
 export interface InjectionScanResult {

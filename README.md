@@ -148,10 +148,17 @@ Full detail, including the conformance corpus and what verification does not pro
   rejected whole and the previous ruleset stays in force, so a typo cannot leave you running
   with half a policy.
 - **DLP with inline redaction.** AWS keys, GitHub PATs and OAuth tokens, OpenAI keys, Slack
-  tokens, private keys, JWTs, SSNs, credit cards, emails, phone numbers. This runs on content
-  handed to AgentWall directly: the `/inspect/*` and `/evaluate` payloads, MCP frames it
-  wraps, channel messages, and watched file writes. It does not run on proxied traffic of
-  either scheme; see the limits table.
+  tokens, private keys, JWTs, SSNs, credit cards, emails, phone numbers. It runs on content
+  handed to AgentWall directly (the `/inspect/*` and `/evaluate` payloads, MCP frames it
+  wraps, channel messages, watched file writes) and on **plaintext HTTP** through the forward
+  proxy: path, headers, and both bodies, to a stated cap. It does not run on https through the
+  proxy, because that body is never decrypted. See the limits table.
+- **Content inspection on the proxy, for the one scheme that needs no CA.** A plaintext HTTP
+  request or response through the forward proxy is scanned for credentials, PII, injected
+  instructions, and planted decoy tokens before it is forwarded, and a detection blocks with a
+  403 and `X-Agentwall-Block-Reason` in `guarded` and `strict`. Response bodies are inspected
+  too: a poisoned tool result arriving in an answer is the shape a control that watches only
+  egress never sees. See [docs/enforcement.md](docs/enforcement.md).
 - **SSRF and egress inspection.** Scheme, port, and host allowlists blocking private, loopback,
   and link-local ranges plus cloud metadata endpoints. Shell command preflight and manifest
   drift detection alongside.
@@ -185,8 +192,10 @@ Stated plainly, because a security tool that oversells itself is worse than no t
 | A signature is necessary, not sufficient | On a host where the audited principal can read the signing key, an agent with root can sign anything the operator can. Off-box anchoring is what closes that gap. |
 | Verifier agreement is bounded by the corpus | The two verifiers return the same verdict on all 26 conformance cases. That is agreement about those cases, not a proof of equivalence, and it says nothing about a forgery neither has been asked to judge. |
 | No TLS interception | The ClientHello is read, so a tunnel is visible at hostname, port, and the SNI the client negotiated. Everything after the handshake is opaque: paths, headers, and bodies are never inspected. MITM would need a CA in every runtime trust store, which breaks the framework-agnostic property the proxy exists for. |
-| Content inspection never runs on proxied traffic | DLP, PII, and injection scanning apply to content AgentWall is handed directly, listed above. The proxy decides from host, port, scheme, and SNI alone. This is not only a TLS limit: a plaintext HTTP body relayed by the proxy is not scanned either, and neither is its path. |
 | The SNI cross-check is not domain-fronting detection | The proxy compares the CONNECT authority against the negotiated SNI and re-evaluates policy on the latter, which catches a client that names one host and negotiates another. Domain fronting puts its real destination in the HTTP Host header inside the session, and nothing short of interception can read that. Fronted traffic agrees at every layer this can see. |
+| Proxy content inspection is plaintext HTTP only | An http request and response through the forward proxy are read and scanned. An https one is not, because it is encrypted, and neither is anything inside a CONNECT tunnel. The transparent listener relays raw TCP and inspects no content on either scheme. |
+| The proxy content scan is capped at 256 KiB per body, and the cap is evadable | Past it the prefix is scanned and the remainder is forwarded uninspected, with the record saying so. Refusing large bodies instead would break ordinary agent traffic to buy protection that padding defeats anyway. Treat it as a control against accident and unsophisticated theft, not against an adversary choosing their transport. |
+| Event streams are exempt from body inspection | `text/event-stream` and friends are passed through unbuffered on purpose. MCP carries SSE, and buffering an event stream to scan it hangs it. Their headers are still scanned and the record says the body was not. |
 | Attribution is Linux-only | It reads `/proc/net/tcp` and `/proc/<pid>/fd`. There is no macOS or Windows equivalent. The rest of the server is portable; process attribution is not. |
 | Channel containment is Telegram only | Slack and Discord appear in the platform schema with no route implementation behind them. |
 | The watchdog does not auto-deny | It exposes heartbeat age and a stop flag, and a rule denies on the `watchdog_timeout` label, but nothing wires staleness to that label automatically. Treat it as a signal you act on. |

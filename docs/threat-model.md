@@ -20,11 +20,13 @@ It is no longer unavoidable. Running the agent as a dedicated unprivileged UID a
 
 Web pages, emails, tool output, and retrieved memory can contain adversarial instructions. Agentwall models that content explicitly with provenance and trust labels, then escalates when untrusted or derived content drives egress or sensitive actions.
 
+On the forward proxy, a plaintext HTTP response is scanned for injected instructions before any byte of it reaches the client, and a hit is refused with a 403. That covers the dominant real-world shape of this attack, where the answer to a tool call is the attack, and it covers it only on that scheme: an https response is never decrypted and never scanned, and an event-stream body is passed through uninspected because buffering one to scan it would hang it. Detection is a deterministic pattern table, so a clean scan means "no known pattern in the bytes we read", never "safe".
+
 ### Secret and PII exfiltration
 
 Content inspection detects common secrets and PII. Policy can deny secret-bearing egress and redact PII on risky flows.
 
-Read that with its scope attached, because the scope is narrow. Content inspection runs on content Agentwall is handed directly: `/inspect/*` and `/evaluate` payloads, the MCP frames it wraps, channel messages, and watched file writes. It does not run on traffic through the proxy. An https body is unreadable there because the proxy does not terminate TLS, and an http body is readable but is never scanned, so neither is inspected. Egress through the proxy is judged on host, port, scheme, and negotiated SNI alone. A secret leaving inside a request body to an allowlisted host is not detected by this control, and the allowlist is what stands between it and the network.
+Read that with its scope attached. Inspection runs on content Agentwall is handed directly - the `/inspect/*` and `/evaluate` payloads, the MCP frames it wraps, channel messages, watched file writes - and on plaintext HTTP through the forward proxy, where the request path, headers, and body are scanned before anything is opened upstream and a credential in any of them is refused. It does not run on https through the proxy, because that body is encrypted, so a secret leaving inside a TLS session is visible as a destination, a negotiated SNI, and a byte count and never as content; the egress allowlist is what stands between it and the network. The plaintext scan is bounded at 256 KiB per body and the bound is evadable by padding, which makes it a control against accident and unsophisticated theft rather than against an adversary who is choosing their transport.
 
 ### Tool and MCP manifest drift
 

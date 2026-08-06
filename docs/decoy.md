@@ -167,15 +167,21 @@ tell you what else moved with it, when the read happened, or whether the same ac
 access. It is the start of an investigation, not the conclusion of one.
 
 **A decoy is only seen on surfaces AgentWall inspects.** The token is inert on its own; it fires
-where something calls `scanForDecoys` on the content it is about to forward. Anything that leaves
-by a path with no gate on it - a direct socket that bypasses the proxy, any body relayed by the
-forward proxy, whether https and unreadable or http and simply never scanned, a channel the
-deployment never routed through AgentWall - carries the decoy out without a record. Be precise
-about the proxy in particular: no code on the proxy path calls `scanForDecoys`, so a decoy
-crossing it is not detected on either scheme, and TLS is not the reason on the http one.
-Planting a decoy in an environment variable
+where something calls `scanForDecoys` on the content it is about to forward. On the forward proxy
+that is now every plaintext HTTP exchange - path, headers, request body, response headers,
+response body - and a hit there is refused outright in `guarded` and `strict`, by the runtime
+rather than by a rule, so replacing the rule set cannot switch it off. It is not the https path:
+a CONNECT tunnel is never decrypted, so a decoy leaving inside one crosses no watcher. Nor is it
+anything that leaves by a path with no gate at all - a direct socket that bypasses the proxy, the
+transparent listener, which relays raw TCP and parses no messages, or a channel the deployment
+never routed through AgentWall. Planting a decoy in an environment variable
 does not put a watcher on that variable; it only makes the theft recognisable *if* the theft
 crosses a place that is watching.
+
+**On the proxy the watcher has a size and a shape.** A decoy past the 256 KiB body cap is not
+seen, and a decoy inside an event-stream body is not seen, because that body is never buffered.
+Both cases are recorded as such - `bodyVisibility` reads `partial` or `stream` - so a clean
+ledger can be told apart from an unread one.
 
 **A decoy only works while it is secret.** Anyone who can read your decoy file, or who can see a
 decoy value in a log or a screenshot, can filter it out of their traffic. Treat the file as a

@@ -8,6 +8,30 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 ## [Unreleased]
 
 ### Added
+- Content inspection on the forward proxy's plaintext HTTP path. The DLP engine, the injection
+  scanner, and the decoy tripwires all existed and were wired to zero proxied bytes: no call site
+  under `src/proxy/` reached any of them, and `scanForDecoys` had no call site on any request path
+  at all. An http exchange now has its request path, request headers, request body, response
+  headers, and response body scanned, and a detection blocks with a 403 and
+  `X-Agentwall-Block-Reason` under the existing guarded and strict semantics while monitor reports
+  what they would have done. Response bodies are inspected as well as requests, because a poisoned
+  tool result arriving in an answer is the shape a control that watches only egress never sees.
+  Four rules and four detections back it: `net:deny-proxy-request-secret`,
+  `net:deny-proxy-request-injection`, `net:deny-proxy-response-injection`, and
+  `net:flag-proxy-response-secret`, which records rather than refuses because an agent reading a
+  credential it is entitled to is the common case. A decoy hit is refused by the runtime rather
+  than by a rule, so replacing the rule set cannot switch it off.
+- `EgressAttempt` carries the request path, headers, and one buffered body, all optional because a
+  CONNECT tunnel genuinely has none of them and must not be made to fabricate them. `buildContext`
+  now puts the path into the synthesised URL and into its own payload field; it previously
+  synthesised `scheme://host:port` with nothing after the authority, so a rule written against a
+  URL path matched nothing and said nothing about why.
+- `bodyVisibility` on every proxy record, reading `tunneled`, `unread`, `stream`, `partial`, or
+  `plaintext`. It exists to remove one ambiguity: a row with no findings can mean "nothing was
+  there" or "we could not look", and the second reads exactly like the first to anyone skimming.
+  Findings are namespaced by direction and carry the class and the offset of each match, never the
+  matched value; the recorded path has its query string removed for the same reason, since
+  `?api_key=...` is one of the shapes the scan exists to catch.
 - An OpenTimestamps proof parser, `src/audit/ots-proof.ts`, implementing the proof grammar of
   `docs/audit-format.md`. It is bounded against hostile input with caps on argument size, total
   size, fork depth, operation count, and working message length, because the file being verified is
