@@ -1,0 +1,26 @@
+[package]
+name = "agentwall-verify-rs"
+version = "0.2.0"
+edition = "2021"
+rust-version = "1.90"
+description = "Independent Rust verifier for the Agentwall audit evidence format"
+license = "MIT"
+publish = false
+
+# No dependencies, deliberately. The point of a third verifier is that it agrees with the
+# other two by accident of reading the same specification, not because all three pulled the
+# same crate. A shared SHA-256 or a shared Ed25519 implementation would make two of the three
+# verdicts one verdict wearing two hats. Everything this binary needs is in src/, written
+# against docs/audit-format.md and checked against published test vectors.
+[dependencies]
+
+[[bin]]
+name = "agentwall-verify"
+path = "src/main.rs"
+
+[profile.release]
+overflow-checks = true
+
+[lib]
+name = "agentwall_verify_rs"
+path = "src/lib.rs"
