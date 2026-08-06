@@ -18,7 +18,12 @@ regexes = [
   '''sk-test-1234567890''',
   '''alice@example.com''',
   # The DLP engine's own github-pat detector needs a PAT-shaped literal to detect.
-  '''ghp_aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789'''
+  '''ghp_aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789''',
+  '''eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9\.eyJzdWIiOiJiZW5jaC1leGFtcGxlIiwiaWF0IjowfQ\.EXAMPLE\-signature\-not\-valid\-0000000''',  # jwt in bench/corpus/exfiltration.json
+  '''0123456789abcdef0123456789abcdef0123456789abcdef''',  # generic-api-key in tests/compliance.test.ts
+  '''\-\-\-\-\-BEGIN\ RSA\ PRIVATE\ KEY\-\-\-\-\-\\nMIIBOgIBAAJBAKj34GkxFhD90vcNLYLInFEX6Ppy1tPf9Cnzj4p4WGeKLs1Pt8Qu\\n\-\-\-\-\-END\ RSA\ PRIVATE\ KEY\-\-\-\-\-''',  # private-key in bench/corpus/dlp.json
+  '''AKIA3TQV7ZKM2XPD6R4L''',  # aws-access-token in docs/canary.md,
+  '''sk\-abcdefghijklmnopqrstuvwxyz0123456789''',  # generic-api-key, flagged by gitleaks 8.24.3 which CI pins
 ]
 
 # The conformance corpus signs synthetic checkpoints, so it has to carry the private key
