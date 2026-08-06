@@ -142,12 +142,33 @@ function pidHoldsInode(pid: number, target: string): boolean {
   return false;
 }
 
-function attributeSocket(remotePort: number): { pid: number | null; comm: string | null } {
-  if (!remotePort) return { pid: null, comm: null };
+/**
+ * Resolve one connection to the process that opened it.
+ *
+ * Both ends are required, and the row has to match both. A match on the client's port alone
+ * names the wrong process, reliably rather than occasionally: /proc/net/tcp lists LISTENING
+ * sockets before established ones, so any process listening on an address whose port happens
+ * to equal this client's ephemeral source port is found first, and the ledger attributes the
+ * call to it. Ephemeral ports and service ports come out of the same 16 bits, so the collision
+ * arrives without anyone arranging it. A wrong pid is worse than no pid: an operator sees a
+ * named process that never made the call, and the one that did is invisible.
+ *
+ * Where the evidence is ambiguous, nothing is named. Two rows can share both ports only if
+ * they differ in an address, and addresses are not compared here, so a second candidate means
+ * this function cannot tell which socket it was asked about. Declining is the honest answer and
+ * it costs nothing: attribution is best-effort and the connection proceeds either way.
+ */
+function attributeSocket(clientPort: number, proxyPort: number): { pid: number | null; comm: string | null } {
+  if (!clientPort || !proxyPort) return { pid: null, comm: null };
   try {
-    const want = `:${remotePort.toString(16).toUpperCase().padStart(4, "0")}`;
-    let inode: string | null = null;
+    const wantLocal = `:${clientPort.toString(16).toUpperCase().padStart(4, "0")}`;
+    const wantRemote = `:${proxyPort.toString(16).toUpperCase().padStart(4, "0")}`;
+    // Dynamic membership, and the count is the decision, so a Set rather than a lookup table.
+    const candidates = new Set<string>();
 
+    // Both tables, all the way through. Stopping at the first hit is what let a listening
+    // socket stand in for a connection, and a v4 row and a v6 row that both match are two
+    // candidates, not one answer.
     for (const table of ["/proc/net/tcp", "/proc/net/tcp6"]) {
       let content: string;
       try {
@@ -158,14 +179,11 @@ function attributeSocket(remotePort: number): { pid: number | null; comm: string
       for (const line of content.split("\n").slice(1)) {
         const cols = line.trim().split(/\s+/);
         if (cols.length < 10) continue;
-        if (cols[1].endsWith(want)) {
-          inode = cols[9];
-          break;
-        }
+        if (cols[1].endsWith(wantLocal) && cols[2].endsWith(wantRemote)) candidates.add(cols[9]);
       }
-      if (inode) break;
     }
-    if (!inode) return { pid: null, comm: null };
+    if (candidates.size !== 1) return { pid: null, comm: null };
+    const [inode] = candidates;
 
     const target = `socket:[${inode}]`;
 
@@ -252,6 +270,23 @@ export function createForwardProxy(opts: ForwardProxyOptions): Server {
   // HTTPS and anything else tunnelled: the majority of agent traffic.
   server.on("connect", (req: IncomingMessage, clientSocket: Socket, head: Buffer) => {
     const { host, port } = parseHostPort(req.url ?? "", 443);
+    // A client FIN ends the tunnel, both directions.
+    //
+    // http.Server builds its sockets with allowHalfOpen because its own parser decides when a
+    // connection is done. On a CONNECT the socket is handed over and the parser is out of the
+    // picture, and inheriting that setting means a client that goes away leaves a socket that
+    // never emits 'close': the FIN is forwarded to the destination and both descriptors stay
+    // open for as long as the destination tolerates a half-closed peer, with nothing recorded.
+    // Reproduced on this file before this line existed, with both a graceful end() and a hard
+    // destroy() from the client, and the destination could still write into the tunnel
+    // afterwards. An agent and a cooperating destination can hold one pair of descriptors per
+    // connection that way, and the ledger shows none of them.
+    //
+    // The cost is real and worth naming: a client that shuts down only its write side and
+    // expects to keep reading gets cut off. Nothing an agent's HTTPS client does looks like
+    // that, and squid defaults `half_closed_clients` to off for the same reason, so the
+    // resource the ambiguity costs is worth more than the pattern it forbids.
+    clientSocket.allowHalfOpen = false;
     // Attribution is deliberately NOT done here. Walking /proc costs ~44ms and scales
     // with total fds on the box; paying that before the tunnel opens taxes every single
     // model API call. It is resolved after the connection is established instead: the
@@ -266,6 +301,7 @@ export function createForwardProxy(opts: ForwardProxyOptions): Server {
       startedAt: Date.now(),
     };
     const clientPort = clientSocket.remotePort ?? 0;
+    const proxyPort = clientSocket.localPort ?? 0;
     // Defaulted rather than left unset: the catch-all below can reach finish() before
     // decide() has run, and a record with no decision at all is worse evidence than one
     // that says the connection was never gated.
@@ -284,7 +320,7 @@ export function createForwardProxy(opts: ForwardProxyOptions): Server {
     // "unattributed", never take the proxy down. decide() still runs, so an
     // enforce policy sees a null client and can fail closed on its own terms.
     try {
-      event.client = attributeSocket(clientPort);
+      event.client = attributeSocket(clientPort, proxyPort);
     } catch {
       event.client = { pid: null, comm: null };
     }
@@ -313,7 +349,13 @@ export function createForwardProxy(opts: ForwardProxyOptions): Server {
 
     const upstream = netConnect(port, host, () => {
       clientSocket.write("HTTP/1.1 200 Connection Established\r\n\r\n");
-      if (head?.length) upstream.write(head);
+      // The head is bytes the client pipelined with its CONNECT. They are relayed, so they
+      // are counted: bytes that reach the destination and appear in no record are an evidence
+      // gap a client can open on purpose by sending its first record early.
+      if (head?.length) {
+        upstream.write(head);
+        bytesUp += head.length;
+      }
       // Counters attach HERE, not earlier. Adding a "data" listener puts the socket into
       // flowing mode immediately; doing that before the pipe exists means any bytes a
       // client sends before the 200 are counted and then dropped on the floor.
@@ -332,6 +374,18 @@ export function createForwardProxy(opts: ForwardProxyOptions): Server {
     upstream.on("error", (e) => bail(e as Error, `upstream ${host}:${port}`));
     clientSocket.on("error", (e) => bail(e as Error, "client"));
     upstream.on("close", finish);
+    // Registered outside the connect callback so it also covers a client that gave up while the
+    // upstream connect was still in flight. Nothing else releases the destination when a client
+    // leaves without erroring, because a FIN is not an error: the line above is what turns the
+    // client's FIN into a 'close' at all, and this is what the 'close' has to do. Measured
+    // before both existed, on a destination that tolerates a half-closed peer: three socket
+    // descriptors stayed open after the client was gone, the destination could still write into
+    // the tunnel, and no record was ever filed. An agent can abandon connections as fast as it
+    // can open them.
+    clientSocket.on("close", () => {
+      upstream.destroy();
+      finish();
+    });
     })().catch((err: unknown) => {
       // Last line of defence. Node exits on unhandled rejections, and this proxy
       // is the single egress path for 35 cron jobs, so one bad connection must
@@ -357,18 +411,28 @@ export function createForwardProxy(opts: ForwardProxyOptions): Server {
       port,
       scheme: "http",
       method: req.method ?? "GET",
-      client: attributeSocket(req.socket.remotePort ?? 0),
+      client: attributeSocket(req.socket.remotePort ?? 0, req.socket.localPort ?? 0),
       startedAt: Date.now(),
     };
     const verdict = resolveVerdict(opts.decide(event));
     let bytesDown = 0;
+    // One record per attempt, from one place. This exchange can end four ways, three of them
+    // filed their own copy, so a response that ended and then errored was recorded twice, and
+    // the fourth, a client that gives up, was recorded not at all.
+    let recorded = false;
+    let abandoned = false;
+    const finish = () => {
+      if (recorded) return;
+      recorded = true;
+      opts.record({ ...event, ...verdict, durationMs: Date.now() - event.startedAt, bytesUp: 0, bytesDown });
+    };
 
     if (verdict.decision === "deny") {
       const reason = verdict.reasons[0] ? headerSafe(verdict.reasons[0]) : "";
       const headers: Record<string, string> = {};
       if (reason) headers["x-agentwall-block-reason"] = reason;
       res.writeHead(403, headers).end("agentwall: destination not allowed\n");
-      opts.record({ ...event, ...verdict, durationMs: Date.now() - event.startedAt, bytesUp: 0, bytesDown: 0 });
+      finish();
       return;
     }
 
@@ -384,16 +448,34 @@ export function createForwardProxy(opts: ForwardProxyOptions): Server {
         res.writeHead(upRes.statusCode ?? 502, upRes.headers);
         upRes.on("data", (c) => (bytesDown += c.length));
         upRes.pipe(res);
-        upRes.on("end", () =>
-          opts.record({ ...event, ...verdict, durationMs: Date.now() - event.startedAt, bytesUp: 0, bytesDown })
-        );
+        upRes.on("end", finish);
       }
     );
     upstream.on("error", (err) => {
+      // A teardown this proxy performed itself is not a destination failure. Reporting it as
+      // one would put an error naming the destination in the operator's log for something the
+      // client did.
+      if (abandoned) {
+        finish();
+        return;
+      }
       opts.onError?.(err as Error, `upstream ${parsed.hostname}:${port}`);
       if (!res.headersSent) res.writeHead(502);
       res.end();
-      opts.record({ ...event, ...verdict, durationMs: Date.now() - event.startedAt, bytesUp: 0, bytesDown });
+      finish();
+    });
+    // The client giving up is the only signal this proxy gets that a destination which
+    // accepted and then said nothing is never going to answer: there is no deadline here, so
+    // the client's own timeout is what ends the wait. Nothing recorded by now means the
+    // exchange never completed, since both completion paths record. Until this released the
+    // outgoing request, it outlived the client that asked for it, holding a live connection to
+    // the destination that no record mentioned.
+    res.on("close", () => {
+      if (!recorded) {
+        abandoned = true;
+        upstream.destroy();
+      }
+      finish();
     });
     req.pipe(upstream);
   });
