@@ -112,7 +112,10 @@ const OWASP_LLM: readonly ControlMapping[] = [
       "The proxy rows above cover plaintext HTTP only, and that scope is the claim: an " +
       "http request and response are read and scanned to a 256 KiB cap, an https body is " +
       "never decrypted and never scanned, and an event stream is passed through " +
-      "uninspected on both schemes because buffering one to scan it would hang it.",
+      "uninspected on both schemes because buffering one to scan it would hang it. The cap " +
+      "is evadable by padding, deliberately rather than by oversight: past it the prefix is " +
+      "scanned and the remainder is forwarded uninspected with the record saying so, so an " +
+      "injected instruction placed behind a quarter-megabyte of filler goes through.",
   },
   {
     framework: "owasp-llm",
