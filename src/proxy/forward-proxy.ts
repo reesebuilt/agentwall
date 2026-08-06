@@ -1,6 +1,9 @@
 import { createServer as createHttpServer, IncomingMessage, ServerResponse, request as httpRequest } from "http";
+import type { ClientRequest, IncomingHttpHeaders } from "http";
 import { connect as netConnect, Socket, Server } from "net";
 import { readdirSync, readFileSync, readlinkSync } from "fs";
+import { brotliDecompressSync, constants as zlibConstants, gunzipSync, inflateSync } from "zlib";
+import { MAX_SCAN_CHARS } from "../policy/injection";
 import type { RiskLevel } from "../types";
 import { MAX_CLIENT_HELLO_BYTES, peekClientHello } from "./tls-peek";
 
@@ -43,9 +46,70 @@ export interface ProxyVerdict {
   reasons?: readonly string[];
   matchedRules?: readonly string[];
   riskLevel?: RiskLevel;
+  /**
+   * Evidence the caller already computed, carried verbatim onto the record. Content
+   * inspection puts the class and position of each finding here and never the matched value,
+   * because a DLP record that leaks the secret it detected is worse than no record at all.
+   */
+  metadata?: Readonly<Record<string, string>>;
 }
 
 export type ProxyDecideResult = ProxyDecision | ProxyVerdict;
+
+/**
+ * One buffered message body, when the transport let the proxy read one.
+ *
+ * Structurally identical to `EgressAttempt`'s body on purpose: `src/index.ts` passes this
+ * straight into the decision path, and a second shape between here and there would be one
+ * more place for the two to disagree about what was inspected.
+ */
+export interface ProxyBody {
+  direction: "request" | "response";
+  /** What was buffered, decoded. A prefix, not the whole body, when `truncated` is true. */
+  text: string;
+  truncated: boolean;
+  /** Wire bytes buffered, before any decompression. Not the body's real length when truncated. */
+  bytes: number;
+  /** Upstream status, on a response. */
+  status?: number;
+  /** Content-Encoding the body arrived under, when it was anything but identity. */
+  encoding?: string;
+  /**
+   * Why the bytes were not inspected, when they were not, so a caller cannot mistake an
+   * empty `text` for an empty body. `stream` is an event stream, deliberately never
+   * buffered. `encoding` is a compressed body that would not decode inside its bound.
+   */
+  unscannable?: "stream" | "encoding";
+}
+
+/**
+ * How much of this exchange's content the proxy could actually read.
+ *
+ * Recorded on every record because it is the difference between a clean scan that means
+ * "nothing was there" and a clean scan that means "we could not look". A ledger full of
+ * findings-free rows is reassuring only if you can tell which of those two it is.
+ *
+ *   tunneled:  CONNECT. Ciphertext; nothing below the authority was ever readable.
+ *   unread:    the exchange ended before there was a body to read, or was refused first.
+ *   stream:    an event stream, passed through without buffering, deliberately.
+ *   partial:   read to the byte cap or a stall, and the remainder forwarded uninspected.
+ *   plaintext: read whole and scanned.
+ */
+export type BodyVisibility = "tunneled" | "unread" | "stream" | "partial" | "plaintext";
+
+/**
+ * How much each state saw, so an exchange with several passes can report its weakest one.
+ * `tunneled` and `unread` sit together at the bottom: both mean no content was inspected,
+ * and a CONNECT connection never mixes with an HTTP pass, so they never have to be ordered
+ * against each other.
+ */
+const VISIBILITY_ORDER: Record<BodyVisibility, number> = {
+  tunneled: 0,
+  unread: 0,
+  stream: 1,
+  partial: 2,
+  plaintext: 3,
+};
 
 export interface ProxyEvent {
   host: string;
@@ -65,14 +129,45 @@ export interface ProxyEvent {
   sni?: string;
   /** Set only when `sni` was read AND differs from the host on the CONNECT line. */
   sniMismatch?: boolean;
+  /**
+   * Request target INCLUDING the query string, which is the whole point of it being here:
+   * `decide` scans the query, and a credential smuggled out as `?api_key=...` is one of the
+   * shapes this path exists to catch. Absent on CONNECT, which carries an authority and
+   * nothing else. See `ProxyRecord.path`, which is deliberately not the same string.
+   */
+  path?: string;
+  /** Headers of the message being decided on, names lowercased, repeats joined with ", ". */
+  headers?: Readonly<Record<string, string>>;
+  /** One buffered body. Present only on the calls made after a body has been read. */
+  body?: ProxyBody;
 }
 
-export interface ProxyRecord extends ProxyEvent {
+/**
+ * What gets written down.
+ *
+ * `headers` and `body` are removed from the shape rather than merely left unset, because
+ * this object is handed to an audit chain AND serialised whole into a flat ledger file. A
+ * field that a future maintainer could populate without noticing is a field that will
+ * eventually carry a request body into a log, and a DLP record that leaks the secret it
+ * detected is worse than no record. What the record carries about content is its
+ * classification: `metadata` holds the class and position of each finding and never a value.
+ */
+export interface ProxyRecord extends Omit<ProxyEvent, "headers" | "body" | "path"> {
+  /**
+   * The resource, pathname only, with the query string stripped. Not `ProxyEvent.path`: the
+   * query is scanned in full and recorded never, because it is attacker-chosen content and
+   * routinely carries the exact credential the scan just reported. `metadata.pathQueryBytes`
+   * says how much of it there was.
+   */
+  path?: string;
   decision: ProxyDecision;
   /** Why, as returned by `decide`. Empty when the decision came back as a bare string. */
   reasons: readonly string[];
   matchedRules: readonly string[];
   riskLevel?: RiskLevel;
+  /** Evidence from every decision made about this exchange, folded into one bag. */
+  metadata?: Readonly<Record<string, string>>;
+  bodyVisibility: BodyVisibility;
   durationMs: number;
   bytesUp: number;
   bytesDown: number;
@@ -82,9 +177,26 @@ export interface ForwardProxyOptions {
   port: number;
   host: string;
   /**
-   * Called once per connection, before anything is opened upstream. Return "deny", or a
-   * verdict whose decision is "deny", to refuse. A bare string is accepted for callers that
-   * have nothing to explain; a verdict carries the reason the client is shown.
+   * The decision seam, called at every point where more of the exchange has become visible.
+   * Return "deny", or a verdict whose decision is "deny", to refuse. A bare string is
+   * accepted for callers that have nothing to explain; a verdict carries the reason the
+   * client is shown and the evidence the record keeps.
+   *
+   * A CONNECT tunnel is decided once, from host and port, before anything is opened
+   * upstream. A plaintext HTTP exchange is decided up to three times, and the order is the
+   * point of it:
+   *
+   *   1. the connection, from host, port, scheme, and method alone. First, and with no
+   *      content, so a destination that was never going to be allowed is refused before the
+   *      proxy pins a quarter-megabyte of its request body waiting to inspect it.
+   *   2. the request, adding `path`, `headers`, and `body`. Still before anything is opened
+   *      upstream, so a refusal here costs the destination nothing, not even a handshake.
+   *   3. the response, adding the response headers and body, before a single byte is written
+   *      back to the client, so a poisoned answer can still be turned into a real 403.
+   *
+   * Every verdict folds: any deny denies, reasons and matched rules union, the highest risk
+   * wins, and metadata accumulates namespaced by direction. An implementation that ignores
+   * the new fields behaves exactly as it did, at the cost of being asked more than once.
    */
   decide: (event: ProxyEvent) => ProxyDecideResult;
   record: (record: ProxyRecord) => void;
@@ -268,6 +380,7 @@ export interface ResolvedVerdict {
   reasons: readonly string[];
   matchedRules: readonly string[];
   riskLevel?: RiskLevel;
+  metadata?: Readonly<Record<string, string>>;
 }
 
 function resolveVerdict(result: ProxyDecideResult): ResolvedVerdict {
@@ -279,6 +392,7 @@ function resolveVerdict(result: ProxyDecideResult): ResolvedVerdict {
     reasons: result.reasons ?? NO_STRINGS,
     matchedRules: result.matchedRules ?? NO_STRINGS,
     riskLevel: result.riskLevel,
+    metadata: result.metadata,
   };
 }
 
@@ -342,9 +456,251 @@ export function crossCheckNegotiatedName(
       ],
       matchedRules: [SNI_MISMATCH_RULE, ...current.matchedRules, ...negotiatedVerdict.matchedRules],
       riskLevel: negotiatedVerdict.riskLevel ?? current.riskLevel,
+      // Unioned rather than replaced, for the same reason the reasons are. A verdict's
+      // metadata is evidence its author already computed, and a second opinion that dropped
+      // the first one's evidence would leave a record explaining half of its own decision.
+      // The negotiated name wins a key collision, because it is the better-sourced of the
+      // two hostnames and its pass ran last.
+      metadata:
+        current.metadata || negotiatedVerdict.metadata
+          ? { ...current.metadata, ...negotiatedVerdict.metadata }
+          : undefined,
     },
     refuse: negotiatedVerdict.decision === "deny",
   };
+}
+
+const RISK_ORDER: Record<RiskLevel, number> = { low: 0, medium: 1, high: 2, critical: 3 };
+
+/**
+ * Every verdict this exchange produced, folded into the one the record carries.
+ *
+ * A plaintext HTTP exchange is decided up to three times and files one record, so the record
+ * has to describe all three without letting the last one erase the first two. Deny wins over
+ * allow because a refusal happened; reasons and rules union rather than replace, because
+ * "blocked for reason A" that silently dropped reason B leaves an operator fixing half a
+ * problem; risk takes the maximum, because the worst thing found is what the row is about.
+ */
+class VerdictLedger {
+  decision: ProxyDecision = "allow";
+  riskLevel: RiskLevel | undefined;
+  readonly reasons: string[] = [];
+  readonly matchedRules: string[] = [];
+  readonly metadata: Record<string, string> = {};
+
+  fold(verdict: ResolvedVerdict): ResolvedVerdict {
+    if (verdict.decision === "deny") this.decision = "deny";
+    for (const reason of verdict.reasons) if (!this.reasons.includes(reason)) this.reasons.push(reason);
+    for (const rule of verdict.matchedRules) if (!this.matchedRules.includes(rule)) this.matchedRules.push(rule);
+    if (verdict.riskLevel && (this.riskLevel === undefined || RISK_ORDER[verdict.riskLevel] > RISK_ORDER[this.riskLevel])) {
+      this.riskLevel = verdict.riskLevel;
+    }
+    if (verdict.metadata) this.absorb(verdict.metadata);
+    return verdict;
+  }
+
+  /**
+   * Content evidence, namespaced by the direction it describes.
+   *
+   * The request pass and the response pass produce the same key names for different bodies,
+   * so folding them flat would have the response quietly overwrite the request and a record
+   * would report one finding where there were two. `contentSecretTypes` from the request pass
+   * lands as `requestContentSecretTypes`; the direction key itself is dropped, because after
+   * the rename it is saying the same thing twice.
+   */
+  private absorb(metadata: Readonly<Record<string, string>>): void {
+    const prefix = metadata["contentDirection"] === "response" ? "response" : "request";
+    for (const [key, value] of Object.entries(metadata)) {
+      if (key === "contentDirection") continue;
+      this.metadata[`${prefix}${key.charAt(0).toUpperCase()}${key.slice(1)}`] = value;
+    }
+  }
+}
+
+/**
+ * Bytes of one request or response body the proxy will hold in memory to inspect it.
+ *
+ * An unbounded buffer in a proxy is a memory-exhaustion primitive handed to whoever can make
+ * it fetch a URL, which in a security tool is a self-inflicted denial of service. The number
+ * is the injection scanner's own work cap rather than a fresh guess: buffering more than the
+ * scanner will read pins memory to scan nothing, and buffering less throws away bytes it
+ * would have read. Deriving one from the other is what stops them drifting apart.
+ *
+ * Past the cap the exchange is not refused. The prefix is scanned, the remainder is streamed
+ * through uninspected, and the record says `partial` and carries the byte count, because the
+ * alternative, refusing every response over a quarter-megabyte, breaks ordinary agent
+ * traffic to buy protection an attacker evades by using https, which is not inspected at all.
+ * What is NOT acceptable is the third option: truncating quietly and reporting a clean scan.
+ */
+export const CONTENT_SCAN_MAX_BYTES = MAX_SCAN_CHARS;
+
+/**
+ * How long a body may go silent before the proxy stops waiting for the rest of it.
+ *
+ * Buffering is bounded by size and by time, and time is the one that matters more, because a
+ * body that never ends is not large, it is open. Anything that pauses a full second mid-body
+ * is a stream rather than a download, and holding a stream to scan it is how a proxy hangs
+ * the agent it is protecting. The degradation is graceful: what arrived is scanned, the rest
+ * flows, and the record says `partial`.
+ */
+const BODY_IDLE_MS = 1000;
+
+/**
+ * Content types whose body is an open stream rather than a document.
+ *
+ * These are exempt from buffering entirely, and the exemption is explicit rather than left to
+ * the idle timer to discover a second late. MCP carries SSE, and an event stream that pauses
+ * between events is behaving correctly; buffering it to scan it converts a working transport
+ * into a hang. There is no half-measure worth taking here, because a stream cannot be
+ * inspected whole without ceasing to be a stream, so it is passed through and the record
+ * says so.
+ */
+function isStreamingType(value: string | undefined): boolean {
+  if (value === undefined) return false;
+  const type = value.split(";", 1)[0].trim().toLowerCase();
+  return type === "text/event-stream" || type === "application/x-ndjson" || type === "multipart/x-mixed-replace";
+}
+
+/** Node hands back repeated headers as arrays; the scanners want one string per name. */
+function flattenHeaders(headers: IncomingHttpHeaders): Record<string, string> {
+  const flat: Record<string, string> = {};
+  for (const [name, value] of Object.entries(headers)) {
+    if (value === undefined) continue;
+    flat[name] = Array.isArray(value) ? value.join(", ") : value;
+  }
+  return flat;
+}
+
+/**
+ * A body decoded for inspection, and nothing else.
+ *
+ * `text` is what the scanners read. The bytes that go downstream are always the originals:
+ * this never rewrites a body, never strips `Accept-Encoding`, and never re-encodes anything,
+ * so an allowed exchange is byte-identical to an unproxied one and a false positive cannot
+ * corrupt a live response.
+ *
+ * `limit` is the scan extent, and it is applied here rather than at read time. A socket hands
+ * over whatever arrived, so the last chunk before the cap routinely carries bytes past it,
+ * and those bytes have to be kept for replay. Keeping them and scanning them would make the
+ * real bound "the cap plus one socket read", which is not a bound anyone can state; the
+ * chunks are kept whole and the scan is cut at exactly the cap. The cut can split a
+ * multi-byte character at the boundary, which costs one replacement character in a quarter
+ * of a megabyte and buys a limit that means what it says.
+ *
+ * Decompressing at all is not optional in practice. Any real server negotiates gzip, so a
+ * scanner that read compressed bytes would find nothing in most bodies and would report that
+ * nothing as a clean scan, which is the exact ambiguity this whole path exists to remove.
+ * `maxOutputLength` is what makes it safe: a decompression bomb hits a ceiling and comes back
+ * marked unscannable rather than taking the heap with it. `Z_SYNC_FLUSH` is what makes it
+ * useful on a truncated body, where the deflate stream has no end marker because the cap cut
+ * it off; without it every capped compressed body would decode to nothing.
+ */
+function decodeForScan(
+  chunks: readonly Buffer[],
+  limit: number,
+  contentEncoding: string | undefined
+): { text: string; encoding?: string; unscannable?: "encoding" } {
+  const joined = Buffer.concat(chunks);
+  const raw = joined.length > limit ? joined.subarray(0, limit) : joined;
+  const encoding = contentEncoding?.trim().toLowerCase() ?? "";
+  if (encoding === "" || encoding === "identity") return { text: raw.toString("utf8") };
+
+  const options = { maxOutputLength: CONTENT_SCAN_MAX_BYTES, finishFlush: zlibConstants.Z_SYNC_FLUSH };
+  try {
+    if (encoding === "gzip" || encoding === "x-gzip") {
+      return { text: gunzipSync(raw, options).toString("utf8"), encoding };
+    }
+    if (encoding === "deflate") return { text: inflateSync(raw, options).toString("utf8"), encoding };
+    if (encoding === "br") {
+      return { text: brotliDecompressSync(raw, { maxOutputLength: CONTENT_SCAN_MAX_BYTES }).toString("utf8"), encoding };
+    }
+  } catch {
+    // A bomb that hit the ceiling, or a corrupt stream. Either way the bytes are forwarded
+    // and the record says they were not read, which is the one answer that is never a lie.
+    return { text: "", encoding, unscannable: "encoding" };
+  }
+  // An encoding nobody here knows, including `zstd` and any multi-layer value. Not guessed at.
+  return { text: "", encoding, unscannable: "encoding" };
+}
+
+/** What a bounded read produced: the bytes read, to be both scanned and replayed downstream. */
+interface BufferedBody {
+  /**
+   * The scan extent, capped at `CONTENT_SCAN_MAX_BYTES`. Not the length of `chunks`, which
+   * can run past it by one socket read, and not the length of the body, which can run past
+   * it without limit.
+   */
+  bytes: number;
+  /** The read stopped at the cap or at a stall, and the source still has bytes in it. */
+  truncated: boolean;
+  chunks: Buffer[];
+}
+
+/**
+ * Read a body up to the cap, the stall deadline, or its end, whichever comes first.
+ *
+ * The chunks are handed back rather than consumed because nothing may be dropped: whatever
+ * was read has to be replayed downstream byte for byte, and on the truncated path the source
+ * is left paused with its remainder intact for the caller to pipe.
+ *
+ * A chunk that crosses the cap is kept whole, because those bytes still have to be forwarded,
+ * and `bytes` is capped so the SCAN does not silently extend past the stated limit with them.
+ * Holding one extra socket read is a memory cost anyone can bound; scanning "the cap plus
+ * however much arrived at once" is a limit nobody can state.
+ */
+function readBoundedBody(source: IncomingMessage, onReady: (body: BufferedBody) => void): void {
+  const chunks: Buffer[] = [];
+  let buffered = 0;
+  let truncated = false;
+  let settled = false;
+  let idle: NodeJS.Timeout | undefined;
+
+  const settle = (): void => {
+    if (settled) return;
+    settled = true;
+    clearTimeout(idle);
+    source.pause();
+    source.removeListener("data", onData);
+    source.removeListener("end", onEnd);
+    source.removeListener("error", onEnd);
+    source.removeListener("aborted", onEnd);
+    onReady({ bytes: Math.min(buffered, CONTENT_SCAN_MAX_BYTES), truncated, chunks });
+  };
+
+  // Reset on every chunk rather than armed once: a slow but steady download should be read
+  // to the cap, while a stream that goes quiet after its first event should be released.
+  const arm = (): void => {
+    clearTimeout(idle);
+    idle = setTimeout(() => {
+      truncated = true;
+      settle();
+    }, BODY_IDLE_MS);
+    idle.unref();
+  };
+
+  const onData = (chunk: Buffer): void => {
+    chunks.push(chunk);
+    buffered += chunk.length;
+    if (buffered >= CONTENT_SCAN_MAX_BYTES) {
+      // Reported as truncated even for a body that lands exactly on the cap, because at this
+      // instant nothing can distinguish that from one byte more. Over-reporting incomplete
+      // coverage is the only direction of error this control is allowed to make.
+      truncated = true;
+      settle();
+      return;
+    }
+    arm();
+  };
+
+  // An aborted or errored read settles with what it has. The caller's own error handling
+  // decides what happens to the exchange; this function's job is only to stop waiting.
+  const onEnd = (): void => settle();
+
+  source.on("data", onData);
+  source.on("end", onEnd);
+  source.on("error", onEnd);
+  source.on("aborted", onEnd);
+  arm();
 }
 
 /**
@@ -411,7 +767,17 @@ export function createForwardProxy(opts: ForwardProxyOptions): Server {
     const finish = () => {
       if (recorded) return;
       recorded = true;
-      opts.record({ ...event, ...verdict, durationMs: Date.now() - event.startedAt, bytesUp, bytesDown });
+      // Always `tunneled`, never anything else. The plaintext path can say what it read of a
+      // body; this one never can, and the record must say so rather than leave a reader to
+      // infer opacity from the absence of findings.
+      opts.record({
+        ...event,
+        ...verdict,
+        bodyVisibility: "tunneled",
+        durationMs: Date.now() - event.startedAt,
+        bytesUp,
+        bytesDown,
+      });
     };
 
     void (async () => {
@@ -641,7 +1007,9 @@ export function createForwardProxy(opts: ForwardProxyOptions): Server {
     });
   });
 
-  // Plain HTTP arrives as an absolute-URI request rather than CONNECT.
+  // Plain HTTP arrives as an absolute-URI request rather than CONNECT, and is the one scheme
+  // this proxy can read. Everything below exists because it can: the path, the headers, and
+  // both bodies are handed to `decide` before they are forwarded.
   server.on("request", (req: IncomingMessage, res: ServerResponse) => {
     let parsed: URL;
     try {
@@ -651,6 +1019,16 @@ export function createForwardProxy(opts: ForwardProxyOptions): Server {
       return;
     }
     const port = Number(parsed.port || 80);
+    const path = parsed.pathname + parsed.search;
+    /**
+     * The connection, with no content on it.
+     *
+     * `path` is deliberately absent here and added only to the two calls that carry a body.
+     * Putting it on the base event scans the path twice, once at each decision, which files a
+     * decoy sighting twice for one appearance and lets the first pass refuse a request before
+     * its body has been read, leaving a record that names the URL finding and knows nothing
+     * about what was in the body of the same request. One pass over the content, one story.
+     */
     const event: ProxyEvent = {
       host: parsed.hostname,
       port,
@@ -659,70 +1037,249 @@ export function createForwardProxy(opts: ForwardProxyOptions): Server {
       client: attributeSocket(req.socket.remotePort ?? 0, req.socket.localPort ?? 0),
       startedAt: Date.now(),
     };
-    const verdict = resolveVerdict(opts.decide(event));
+
+
+    const ledger = new VerdictLedger();
+    let bytesUp = 0;
     let bytesDown = 0;
-    // One record per attempt, from one place. This exchange can end four ways, three of them
-    // filed their own copy, so a response that ended and then errored was recorded twice, and
-    // the fourth, a client that gives up, was recorded not at all.
+    let visibility: BodyVisibility | undefined;
+    let upstream: ClientRequest | undefined;
     let recorded = false;
     let abandoned = false;
-    const finish = () => {
-      if (recorded) return;
-      recorded = true;
-      opts.record({ ...event, ...verdict, durationMs: Date.now() - event.startedAt, bytesUp: 0, bytesDown });
+
+    /**
+     * The weakest visibility any pass achieved, because that is the honest summary. An
+     * exchange whose request was read whole and whose response was an event stream reports
+     * `stream`: some of its content went by uninspected, and a row that said `plaintext`
+     * would invite a reader to trust a scan that did not cover everything. Which pass was
+     * which is in the direction-namespaced metadata.
+     */
+    const observed = (level: BodyVisibility): void => {
+      if (visibility === undefined || VISIBILITY_ORDER[level] < VISIBILITY_ORDER[visibility]) visibility = level;
     };
 
-    if (verdict.decision === "deny") {
+    // One record per exchange, filed exactly once. Every exit reaches this: a refusal, an
+    // upstream failure, a completed response, and a client that walked away mid-flight.
+    const finish = (): void => {
+      if (recorded) return;
+      recorded = true;
+      opts.record({
+        ...event,
+        // The pathname, without the query. `event.path` carries the query because `decide`
+        // has to scan it; the record must not, because a query is attacker-chosen content and
+        // `?api_key=AKIA...` is precisely the shape this path was built to catch. Writing it
+        // here would put the live credential into the audit chain and into the flat ledger as
+        // the evidence for its own detection. The size goes instead: enough to know a query
+        // was there and how big, and `metadata.contentSites` already says what class of thing
+        // was found in it and at what offset.
+        path: parsed.pathname,
+        decision: ledger.decision,
+        reasons: ledger.reasons,
+        matchedRules: ledger.matchedRules,
+        riskLevel: ledger.riskLevel,
+        metadata: { ...ledger.metadata, pathQueryBytes: String(parsed.search.length) },
+        bodyVisibility: visibility ?? "unread",
+        durationMs: Date.now() - event.startedAt,
+        bytesUp,
+        bytesDown,
+      });
+    };
+
+    /**
+     * Refuse the exchange with a 403 the client can actually read.
+     *
+     * `Connection: close` rather than destroying the request stream. `IncomingMessage`'s
+     * destroy() tears down the socket the response is about to be written to, so refusing a
+     * request whose body was still arriving would kill its own 403 and leave a developer
+     * staring at a reset instead of a reason. The header lets Node flush the response first
+     * and close after; `resume()` then drains whatever the client is still sending straight
+     * to the floor so a large upload cannot hold the socket open behind the refusal.
+     */
+    const refuse = (verdict: ResolvedVerdict, body: string): void => {
       const reason = verdict.reasons[0] ? headerSafe(verdict.reasons[0]) : "";
-      const headers: Record<string, string> = {};
+      const headers: Record<string, string> = { connection: "close" };
       if (reason) headers["x-agentwall-block-reason"] = reason;
-      res.writeHead(403, headers).end("agentwall: destination not allowed\n");
+      if (!res.headersSent) res.writeHead(403, headers);
+      res.end(body);
+      req.resume();
       finish();
+    };
+
+    // Decision 1: the destination, from host and port alone, before a single body byte is
+    // buffered. Deciding this first is what stops a request to a destination that was never
+    // going to be allowed from pinning a quarter-megabyte of memory on its way to a refusal.
+    const connection = ledger.fold(resolveVerdict(opts.decide(event)));
+    if (connection.decision === "deny") {
+      refuse(connection, "agentwall: destination not allowed\n");
       return;
     }
 
-    const upstream = httpRequest(
-      {
-        host: parsed.hostname,
-        port,
-        path: parsed.pathname + parsed.search,
-        method: req.method,
-        headers: req.headers,
-      },
-      (upRes) => {
-        res.writeHead(upRes.statusCode ?? 502, upRes.headers);
-        upRes.on("data", (c) => (bytesDown += c.length));
+    // A client that hangs up mid-exchange must not leave the upstream request open forever
+    // and unrecorded. Inspection widens that window by design, since the proxy now waits for
+    // a body before opening anything, so the release is explicit rather than incidental.
+    // `abandoned` is set first because destroying the outgoing request makes it emit its own
+    // error, and a teardown we performed ourselves must not be reported as the destination
+    // failing: that would put a fictional upstream fault in the operator's error log every
+    // time a client pressed ctrl-c.
+    const abandon = (): void => {
+      abandoned = true;
+      upstream?.destroy();
+      finish();
+    };
+    req.on("aborted", abandon);
+    res.on("close", abandon);
+
+    const forward = (buffered: BufferedBody): void => {
+      const outbound = httpRequest(
+        {
+          host: parsed.hostname,
+          port,
+          path,
+          method: req.method,
+          // Forwarded exactly as they arrived. The scan reads a copy; it never rewrites what
+          // the destination sees, so an allowed request is byte-identical to an unproxied one.
+          headers: req.headers,
+        },
+        (upRes) => respond(upRes)
+      );
+      upstream = outbound;
+      outbound.on("error", (err) => {
+        if (abandoned) return;
+        opts.onError?.(err, `upstream ${parsed.hostname}:${port}`);
+        if (!res.headersSent) res.writeHead(502);
+        res.end();
+        finish();
+      });
+
+      for (const chunk of buffered.chunks) {
+        bytesUp += chunk.length;
+        outbound.write(chunk);
+      }
+      if (buffered.truncated) {
+        // The read stopped at the cap or at a stall; the rest of the request still has to
+        // reach the destination, uninspected and counted.
+        req.on("data", (chunk: Buffer) => (bytesUp += chunk.length));
+        req.pipe(outbound);
+      } else {
+        outbound.end();
+      }
+    };
+
+    const respond = (upRes: IncomingMessage): void => {
+      const headers = flattenHeaders(upRes.headers);
+      const status = upRes.statusCode ?? 502;
+
+      const relay = (chunks: readonly Buffer[], rest: boolean): void => {
+        res.writeHead(status, upRes.headers);
+        for (const chunk of chunks) {
+          bytesDown += chunk.length;
+          res.write(chunk);
+        }
+        if (!rest) {
+          res.end();
+          finish();
+          return;
+        }
+        upRes.on("data", (chunk: Buffer) => (bytesDown += chunk.length));
         upRes.pipe(res);
         upRes.on("end", finish);
-      }
-    );
-    upstream.on("error", (err) => {
-      // A teardown this proxy performed itself is not a destination failure. Reporting it as
-      // one would put an error naming the destination in the operator's log for something the
-      // client did.
-      if (abandoned) {
-        finish();
+      };
+
+      // An event stream is exempt from buffering, explicitly, rather than half-buffered until
+      // the idle timer notices. MCP carries SSE and an event stream that pauses between
+      // events is behaving correctly; holding one to scan it converts a working transport
+      // into a hang. Its headers are still decided on, so this is not a hole a `Content-Type`
+      // opens on the whole exchange, only on the body it names.
+      if (isStreamingType(headers["content-type"])) {
+        observed("stream");
+        const verdict = ledger.fold(
+          resolveVerdict(
+            opts.decide({
+              ...event,
+              path,
+              headers,
+              body: { direction: "response", text: "", truncated: false, bytes: 0, status, unscannable: "stream" },
+            })
+          )
+        );
+        if (verdict.decision === "deny") {
+          upRes.destroy();
+          refuse(verdict, "agentwall: response not allowed\n");
+          return;
+        }
+        relay([], true);
         return;
       }
-      opts.onError?.(err as Error, `upstream ${parsed.hostname}:${port}`);
-      if (!res.headersSent) res.writeHead(502);
-      res.end();
-      finish();
-    });
-    // The client giving up is the only signal this proxy gets that a destination which
-    // accepted and then said nothing is never going to answer: there is no deadline here, so
-    // the client's own timeout is what ends the wait. Nothing recorded by now means the
-    // exchange never completed, since both completion paths record. Until this released the
-    // outgoing request, it outlived the client that asked for it, holding a live connection to
-    // the destination that no record mentioned.
-    res.on("close", () => {
-      if (!recorded) {
-        abandoned = true;
-        upstream.destroy();
+
+      readBoundedBody(upRes, (buffered) => {
+        if (recorded) return;
+        observed(buffered.truncated ? "partial" : "plaintext");
+        const decoded = decodeForScan(buffered.chunks, buffered.bytes, headers["content-encoding"]);
+        // Decision 3: the response, before one byte of it is written back. This is the pass
+        // that catches the poisoned tool result, which is the shape a control that inspects
+        // only egress never sees at all.
+        const verdict = ledger.fold(
+          resolveVerdict(
+            opts.decide({
+              ...event,
+              path,
+              headers,
+              body: {
+                direction: "response",
+                text: decoded.text,
+                truncated: buffered.truncated,
+                bytes: buffered.bytes,
+                status,
+                encoding: decoded.encoding,
+                unscannable: decoded.unscannable,
+              },
+            })
+          )
+        );
+        if (verdict.decision === "deny") {
+          // Nothing has been written downstream yet, so a poisoned response is still a real
+          // 403 with a reason rather than a truncated body the client has to guess about.
+          upRes.destroy();
+          refuse(verdict, "agentwall: response content not allowed\n");
+          return;
+        }
+        relay(buffered.chunks, buffered.truncated);
+      });
+    };
+
+    readBoundedBody(req, (buffered) => {
+      if (recorded) return;
+      observed(buffered.truncated ? "partial" : "plaintext");
+      const headers = flattenHeaders(req.headers);
+      const decoded = decodeForScan(buffered.chunks, buffered.bytes, headers["content-encoding"]);
+      // Decision 2: the request, with everything the proxy can read of it, and still before
+      // anything is opened upstream. A refusal here costs the destination nothing at all.
+      const verdict = ledger.fold(
+        resolveVerdict(
+          opts.decide({
+            ...event,
+            path,
+            headers,
+            body: {
+              direction: "request",
+              text: decoded.text,
+              truncated: buffered.truncated,
+              bytes: buffered.bytes,
+              encoding: decoded.encoding,
+              unscannable: decoded.unscannable,
+            },
+          })
+        )
+      );
+      if (verdict.decision === "deny") {
+        // No req.destroy() here: it destroys the socket the 403 is about to be written to.
+        // refuse() closes the connection through the header instead, after the reason has
+        // reached the wire.
+        refuse(verdict, "agentwall: request content not allowed\n");
+        return;
       }
-      finish();
+      forward(buffered);
     });
-    req.pipe(upstream);
   });
 
   server.listen(opts.port, opts.host);

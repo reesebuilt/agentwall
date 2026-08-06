@@ -52,17 +52,23 @@ survive the thing it cites being renamed or deleted.
 
 ### LLM01 Prompt Injection — `partial`
 
-Evidence: `src/policy/injection.ts`, `src/mcp/gates.ts`,
+Evidence: `src/policy/injection.ts`, `src/mcp/gates.ts`, `src/proxy/forward-proxy.ts`,
 `inj.instruction_override.ignore_previous`, `inj.tool_coercion.run_shell_command`,
 `det.mcp.input.injection`, `det.mcp.response.injection`, `det.mcp.tool.poisoned`,
+`det.net.proxy.request_injection`, `det.net.proxy.response_injection`,
 `mcp:deny-input-injection`, `mcp:deny-response-injection`, `mcp:deny-tool-poisoning`,
+`net:deny-proxy-request-injection`, `net:deny-proxy-response-injection`,
 `content:approve-untrusted-derived-egress`.
 
 Known limits: detection is deterministic pattern matching over normalized text, so
 paraphrase defeats it — an instruction override written in words no pattern anticipates
 scans clean. It raises the cost of the copy-pasted attack and produces an explainable audit
 record; it is not a proof of absence. Nothing here inspects the model's reasoning, so an
-injection that survives the scan is uncontested from that point on.
+injection that survives the scan is uncontested from that point on. The proxy rows cover
+plaintext HTTP only, and that scope is the claim: an http request and response are read and
+scanned to a 256 KiB cap, an https body is never decrypted and never scanned, and an event
+stream is passed through uninspected on both schemes because buffering one to scan it would
+hang it.
 
 This is deliberately not rated `strong`. Prompt injection is the risk this project talks
 about most, and rating the hardest open problem in the field as strongly covered on the
@@ -71,10 +77,13 @@ strength of a pattern table would be the exact failure this page exists to avoid
 ### LLM02 Sensitive Information Disclosure — `strong`
 
 Evidence: `src/planes/identity/dlp.ts`, `src/decoy/index.ts`,
-`src/spill/watch.ts`, `det.content.secret.exfil`, `det.mcp.input.secret`,
-`det.mcp.response.secret`, `det.net.metadata.access`, `det.identity.decoy.triggered`,
-`det.content.spill.file_write`, `content:block-secret-exfil`, `content:redact-pii`,
+`src/spill/watch.ts`, `src/proxy/forward-proxy.ts`, `det.content.secret.exfil`,
+`det.mcp.input.secret`, `det.mcp.response.secret`, `det.net.metadata.access`,
+`det.net.proxy.request_secret`, `det.net.proxy.response_secret`,
+`det.identity.decoy.triggered`, `det.content.spill.file_write`,
+`content:block-secret-exfil`, `content:redact-pii`,
 `mcp:redact-input-secret`, `mcp:redact-response-secret`,
+`net:deny-proxy-request-secret`, `net:flag-proxy-response-secret`,
 `channel:deny-sensitive-content-egress`, `channel:redact-pii-content-egress`,
 `net:block-metadata-endpoint`, `identity:deny-decoy-triggered`,
 `content:deny-spill-file-write`.
@@ -82,12 +91,16 @@ Evidence: `src/planes/identity/dlp.ts`, `src/decoy/index.ts`,
 Known limits: the scanner is a pattern table, so a secret in a format it does not know — an
 internal token scheme, a bare high-entropy string — passes. Decoy values close part of
 that hole by being synthetic and therefore unmistakable, but only for credentials someone
-planted on purpose. The harder limit is what the scanner is handed: proxied traffic is not
-handed to it at all. An https body is opaque because the forward proxy does not terminate
-TLS, and an http body is readable but is never scanned, so egress of a secret through the
-proxy is visible as a destination, a negotiated SNI, and a byte count, never as content. What
-the scanner does see is content given to AgentWall directly: the inspection routes, the MCP
-frames it wraps, channel messages, and watched file writes.
+planted on purpose. On the proxy the limit is the scheme: a plaintext http request has its
+path, headers, and body scanned and a secret in any of them is refused, while an https body
+is opaque because that proxy does not terminate TLS, so egress of a secret over https is
+visible as a destination, a negotiated SNI, and a byte count and never as content. The
+plaintext scan is bounded too, and the bound is evadable on purpose rather than by
+oversight: past 256 KiB the prefix is scanned and the remainder forwarded, which padding
+defeats. Treat the http path as a control against accident and unsophisticated theft, not
+against an adversary who can simply choose https. What the scanner also sees is content
+given to AgentWall directly: the inspection routes, the MCP frames it wraps, channel
+messages, and watched file writes.
 
 ### LLM03 Supply Chain Vulnerabilities — `partial`
 
@@ -356,13 +369,13 @@ through. Downgrading is the only direction that cannot mislead.
 | --- | --- | --- | --- |
 | `T1190` | Exploit Public-Facing Application | `strong` | `net:block-ssrf-private` (deny) |
 | `T1552.005` | Cloud Instance Metadata API | `strong` | `net:block-metadata-endpoint` (deny) |
-| `T1041` | Exfiltration Over C2 Channel | `strong` | `content:block-secret-exfil` (deny) |
+| `T1041` | Exfiltration Over C2 Channel | `strong` | `content:block-secret-exfil` (deny), `net:deny-proxy-request-secret` (deny) |
 | `T1555` | Credentials from Password Stores | `partial` | `identity:flag-credential-access` (approve) |
 | `T1098.001` | Additional Cloud Credentials | `partial` | `browser:require-approval-oauth` (approve) |
 | `T1562` | Impair Defenses | `partial` | `tool:approve-manifest-drift` (approve) |
 | `T1195` | Supply Chain Compromise | `partial` | `mcp:deny-tool-poisoning` (deny), `mcp:approve-tool-drift` (approve) |
-| `T1552` | Unsecured Credentials | `partial` | `mcp:redact-input-secret` (redact), `mcp:redact-response-secret` (redact), `identity:deny-decoy-triggered` (deny) |
-| `T1059` | Command and Scripting Interpreter | `strong` | `mcp:deny-input-injection` (deny), `mcp:deny-response-injection` (deny) |
+| `T1552` | Unsecured Credentials | `partial` | `mcp:redact-input-secret` (redact), `mcp:redact-response-secret` (redact), `identity:deny-decoy-triggered` (deny), `net:flag-proxy-response-secret` (allow) |
+| `T1059` | Command and Scripting Interpreter | `strong` | `mcp:deny-input-injection` (deny), `mcp:deny-response-injection` (deny), `net:deny-proxy-request-injection` (deny), `net:deny-proxy-response-injection` (deny) |
 | `T1071` | Application Layer Protocol | `strong` | `net:deny-egress-not-allowlisted` (deny) |
 | `T1571` | Non-Standard Port | `strong` | `net:deny-egress-port-not-allowlisted` (deny) |
 | `T1489` | Service Stop | `strong` | `governance:lockdown` (deny) |

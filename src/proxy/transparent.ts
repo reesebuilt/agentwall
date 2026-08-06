@@ -299,7 +299,19 @@ function handleConnection(client: Socket, opts: TransparentProxyOptions): void {
     if (recorded) return;
     recorded = true;
     try {
-      opts.record({ ...event, ...verdict, durationMs: Date.now() - startedAt, bytesUp, bytesDown });
+      opts.record({
+        ...event,
+        ...verdict,
+        // This listener relays raw TCP: it peeks only far enough to name the destination and
+        // never parses a message, so no body on either scheme is inspected here. Recorded as
+        // such rather than left to look like a clean scan. `tunneled` for a captured TLS
+        // connection, which could not be read; `unread` for a redirected plaintext one, which
+        // could have been and is not, because content inspection lives on the forward proxy.
+        bodyVisibility: event.scheme === "https" ? "tunneled" : "unread",
+        durationMs: Date.now() - startedAt,
+        bytesUp,
+        bytesDown,
+      });
     } catch (err) {
       report(opts, err);
     }

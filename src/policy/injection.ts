@@ -442,8 +442,14 @@ const COMPILED: RegExp[] = INJECTION_PATTERNS.map((p) => new RegExp(p.pattern.so
  * critical path is a denial-of-service primitive handed to the attacker. The
  * cap is in code units rather than UTF-8 bytes because regex work scales with
  * code units, which is the thing actually being bounded.
+ *
+ * Exported because the forward proxy sizes its own body buffer from it. The two caps have to
+ * agree in one direction or the other or both are wrong: buffering more than this scans
+ * nothing extra and only widens the memory a hostile body can pin, and buffering less throws
+ * away bytes the scanner would have read. Deriving one from the other is what stops them
+ * drifting apart the next time somebody tunes either number.
  */
-const MAX_SCAN_CHARS = 256 * 1024;
+export const MAX_SCAN_CHARS = 256 * 1024;
 
 /** Maximum source characters exposed in a finding's excerpt, before redaction. */
 const EXCERPT_MAX = 120;
@@ -899,6 +905,10 @@ export function scanInjection(text: string, opts?: { strip?: boolean }): Injecti
             severity: spec.severity,
             pass: form.pass,
             excerpt: rawRange ? buildExcerpt(source, rawRange[0], rawRange[1]) : buildExcerpt(form.text, start, end),
+            // Only the raw range is published. An offset into a decoded rendering would
+            // point at a position that does not exist in the bytes anyone can go and look
+            // at, which is worse than saying nothing.
+            ...(rawRange ? { start: rawRange[0], end: rawRange[1] } : {}),
           });
         }
         if (!strip) break;

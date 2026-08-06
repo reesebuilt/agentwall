@@ -234,6 +234,58 @@ export const detectionCatalog: DetectionMapping[] = [
     },
     severity: "high",
   },
+  {
+    id: "det.net.proxy.request_secret",
+    ruleId: "net:deny-proxy-request-secret",
+    name: "Credential material in a proxied request",
+    description:
+      "A plaintext HTTP request through the forward proxy carried credential material in its path, headers, or body, and was refused. This is the first control in the product that sees a proxied body at all; the same request over https is invisible to it, because that body is never decrypted.",
+    mitreAttack: {
+      tactic: "Exfiltration",
+      technique: "Exfiltration Over C2 Channel",
+      techniqueId: "T1041",
+    },
+    severity: "critical",
+  },
+  {
+    id: "det.net.proxy.request_injection",
+    ruleId: "net:deny-proxy-request-injection",
+    name: "Injected instructions in a proxied request",
+    description:
+      "A plaintext HTTP request through the forward proxy carried prompt-injection patterns in its path, headers, or body. An agent relaying an instruction override to a downstream service is aiming it at whatever consumes the request next.",
+    mitreAttack: {
+      tactic: "Execution",
+      technique: "Command and Scripting Interpreter",
+      techniqueId: "T1059",
+    },
+    severity: "high",
+  },
+  {
+    id: "det.net.proxy.response_injection",
+    ruleId: "net:deny-proxy-response-injection",
+    name: "Injected instructions in a proxied response",
+    description:
+      "A plaintext HTTP response through the forward proxy carried prompt-injection patterns back to the agent. A poisoned tool result is the dominant real-world shape of this attack, and a control that inspects only egress never sees it.",
+    mitreAttack: {
+      tactic: "Execution",
+      technique: "Command and Scripting Interpreter",
+      techniqueId: "T1059",
+    },
+    severity: "high",
+  },
+  {
+    id: "det.net.proxy.response_secret",
+    ruleId: "net:flag-proxy-response-secret",
+    name: "Credential material in a proxied response",
+    description:
+      "A plaintext HTTP response through the forward proxy carried credential material into the agent's context. Recorded rather than refused: a response carrying a secret is usually the agent reading one it is entitled to, and blocking that breaks the legitimate case far more often than it catches anything.",
+    mitreAttack: {
+      tactic: "Credential Access",
+      technique: "Unsecured Credentials",
+      techniqueId: "T1552",
+    },
+    severity: "high",
+  },
 ];
 
 const detectionByRule = new Map<string, DetectionMapping[]>(

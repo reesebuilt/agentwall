@@ -54,7 +54,6 @@ async function main() {
           agentId: r.client.comm ?? "unattributed",
           plane: "network",
           action: `egress:${r.scheme}`,
-          payload: {},
           metadata: {
             host: r.host,
             port: String(r.port),
@@ -77,7 +76,29 @@ async function main() {
             // be read back a month later.
             enforcementMode: mode,
             transportMode,
+            // How much of this exchange was actually readable. Without it a row with no
+            // findings is ambiguous between "nothing was there" and "we could not look",
+            // and the second one reads exactly like the first to anyone skimming.
+            bodyVisibility: r.bodyVisibility,
+            // The content scan's evidence, already namespaced by direction: what class of
+            // thing was found and where. Never the matched value. A DLP record that carries
+            // the secret it detected hands anyone with log access the thing the detection
+            // existed to protect, and this record goes to a SIEM and an incident ticket.
+            //
+            // Spread last so a content key can never shadow one of the fixed fields above;
+            // every key it produces is `content`-prefixed, so today it cannot, and this keeps
+            // that true if one is ever renamed.
+            ...(r.metadata ?? {}),
+            // The resource, pathname only. `ProxyRecord.path` has already had its query
+            // string removed by the proxy, because a query is attacker-chosen content and is
+            // one of the places the scan finds credentials; recording it here would put the
+            // detected secret in the record that reports the detection. How large the query
+            // was travels instead, in `pathQueryBytes` from the same source.
+            ...(r.path === undefined ? {} : { path: r.path }),
           },
+          // Empty on purpose, and `emit` does not copy it either way. Nothing derived from
+          // request content belongs in a field whose name invites someone to put it there.
+          payload: {},
         },
         {
           // The real verdict, not a fixed string. Monitor mode still records "allow" here
@@ -146,6 +167,13 @@ async function main() {
               method: event.method,
               comm: event.client.comm,
               pid: event.client.pid,
+              // Everything the plaintext HTTP path could read, passed straight through. All
+              // three are absent on CONNECT and on the connection-level call the proxy makes
+              // before any body exists, so `decideEgress` scans exactly when there is
+              // something to scan and the tunnel path costs nothing it did not cost before.
+              path: event.path,
+              headers: event.headers,
+              body: event.body,
             },
             mode,
             engine
@@ -159,6 +187,7 @@ async function main() {
             reasons: verdict.reasons,
             matchedRules: verdict.matchedRules,
             riskLevel: verdict.riskLevel,
+            metadata: verdict.metadata,
           };
         },
         record: (r) => {

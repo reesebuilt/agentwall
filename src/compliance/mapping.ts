@@ -88,14 +88,19 @@ const OWASP_LLM: readonly ControlMapping[] = [
     evidence: [
       "src/policy/injection.ts",
       "src/mcp/gates.ts",
+      "src/proxy/forward-proxy.ts",
       "inj.instruction_override.ignore_previous",
       "inj.tool_coercion.run_shell_command",
       "det.mcp.input.injection",
       "det.mcp.response.injection",
       "det.mcp.tool.poisoned",
+      "det.net.proxy.request_injection",
+      "det.net.proxy.response_injection",
       "mcp:deny-input-injection",
       "mcp:deny-response-injection",
       "mcp:deny-tool-poisoning",
+      "net:deny-proxy-request-injection",
+      "net:deny-proxy-response-injection",
       "content:approve-untrusted-derived-egress",
     ],
     gap:
@@ -103,7 +108,11 @@ const OWASP_LLM: readonly ControlMapping[] = [
       "defeats it: an instruction override written in words no pattern anticipates scans " +
       "clean. It raises the cost of the copy-pasted attack and produces an explainable " +
       "audit record; it is not a proof of absence. Nothing here inspects the model's " +
-      "reasoning, so an injection that survives the scan is uncontested from that point on.",
+      "reasoning, so an injection that survives the scan is uncontested from that point on. " +
+      "The proxy rows above cover plaintext HTTP only, and that scope is the claim: an " +
+      "http request and response are read and scanned to a 256 KiB cap, an https body is " +
+      "never decrypted and never scanned, and an event stream is passed through " +
+      "uninspected on both schemes because buffering one to scan it would hang it.",
   },
   {
     framework: "owasp-llm",
@@ -114,16 +123,21 @@ const OWASP_LLM: readonly ControlMapping[] = [
       "src/planes/identity/dlp.ts",
       "src/decoy/index.ts",
       "src/spill/watch.ts",
+      "src/proxy/forward-proxy.ts",
       "det.content.secret.exfil",
       "det.mcp.input.secret",
       "det.mcp.response.secret",
       "det.net.metadata.access",
+      "det.net.proxy.request_secret",
+      "det.net.proxy.response_secret",
       "det.identity.decoy.triggered",
       "det.content.spill.file_write",
       "content:block-secret-exfil",
       "content:redact-pii",
       "mcp:redact-input-secret",
       "mcp:redact-response-secret",
+      "net:deny-proxy-request-secret",
+      "net:flag-proxy-response-secret",
       "channel:deny-sensitive-content-egress",
       "channel:redact-pii-content-egress",
       "net:block-metadata-endpoint",
@@ -134,10 +148,15 @@ const OWASP_LLM: readonly ControlMapping[] = [
       "The scanner is a pattern table, so a secret in a format it does not know — an " +
       "internal token scheme, a bare high-entropy string — passes. Decoy values close part " +
       "of that hole by being synthetic and therefore unmistakable, but only for credentials " +
-      "someone planted on purpose. The harder limit is what the scanner is handed: https " +
-      "bodies through the forward proxy are opaque because that proxy does not terminate " +
-      "TLS, so egress of a secret over https is visible as a destination and a byte count, " +
-      "not as content.",
+      "someone planted on purpose. On the proxy the limit is the scheme: a plaintext http " +
+      "request has its path, headers, and body scanned and a secret in any of them is " +
+      "refused, while an https body is opaque because that proxy does not terminate TLS, so " +
+      "egress of a secret over https remains visible as a destination and a byte count and " +
+      "never as content. The plaintext scan is bounded too, and the bound is evadable on " +
+      "purpose rather than by oversight: past 256 KiB the prefix is scanned and the " +
+      "remainder forwarded, which padding defeats. Treat the http path as a control against " +
+      "accident and unsophisticated theft, not against an adversary who can simply choose " +
+      "https.",
   },
   {
     framework: "owasp-llm",
