@@ -60,6 +60,13 @@ async function main() {
             port: String(r.port),
             scheme: r.scheme,
             method: r.method,
+            // Present only when a ClientHello was actually read, so an https record with no
+            // `sni` key means no name was recovered rather than "the name was empty". The
+            // mismatch flag is written as its own field rather than left to be recomputed
+            // from host vs sni: the comparison was made at decision time and the ledger
+            // should carry the answer, not the ingredients.
+            ...(r.sni ? { sni: r.sni } : {}),
+            ...(r.sniMismatch ? { sniMismatch: "true" } : {}),
             pid: r.client.pid == null ? "unknown" : String(r.client.pid),
             comm: r.client.comm ?? "unknown",
             durationMs: String(r.durationMs ?? 0),

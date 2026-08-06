@@ -37,6 +37,19 @@ export const detectionCatalog: DetectionMapping[] = [
     severity: "critical",
   },
   {
+    id: "det.net.sni.connect-mismatch",
+    ruleId: "net:sni-connect-mismatch",
+    name: "CONNECT host and TLS SNI disagree",
+    description:
+      "A tunnelled connection named one host on its CONNECT line and negotiated a different one in its ClientHello. The proxy re-evaluated policy against the negotiated name. This is a client contradicting itself to the proxy, NOT domain fronting: fronting hides its real destination in the HTTP Host header inside the TLS session, which a proxy that does not terminate TLS cannot read.",
+    // Deliberately unmapped. The nearest-looking technique is T1090.004 (Domain Fronting),
+    // and it is the wrong one: ATT&CK defines that as SNI disagreeing with the inner Host
+    // header, which is invisible here. Claiming it would publish an ATT&CK coverage row for
+    // traffic this cannot see. `unmappedDetections()` is the honest home for a real detection
+    // with no accurate framework row, and the compliance suite reports it as such.
+    severity: "high",
+  },
+  {
     id: "det.content.secret.exfil",
     ruleId: "content:block-secret-exfil",
     name: "Potential secret exfiltration",

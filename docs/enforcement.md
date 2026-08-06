@@ -196,12 +196,42 @@ every egress flow as high-risk by construction. That classification is right for
 classifier and useless in a ledger — it would stamp a finding on every ordinary model API
 call and leave you with nothing to triage.
 
-Two detections are specific to enforcement:
+Three detections are specific to enforcement:
 
 - `det.net.egress.blocked` — strict mode refused a non-allowlisted destination.
   MITRE ATT&CK T1071, Application Layer Protocol (Command and Control).
 - `det.governance.lockdown.active` — the emergency stop refused an action.
   MITRE ATT&CK T1489, Service Stop (Impact).
+- `det.net.sni.connect-mismatch`: a tunnel whose CONNECT authority and negotiated SNI named
+  different hosts. Deliberately unmapped to ATT&CK, because the technique it resembles is one
+  this cannot observe. See the limits below, and `unmappedDetections()` for why an honest
+  blank beats a wrong technique id.
+
+## What the proxy sees of a TLS connection
+
+A `CONNECT` line is a string the client typed. The proxy now also reads the ClientHello, the
+first record of the TLS handshake, which the client sends in the clear before any key
+exchange completes. The SNI extension in it carries the hostname the client is actually
+asking the server for. Reading it needs no CA, no trust-store change, and no ability to
+decrypt anything: this is an observation, not interception.
+
+Two things follow.
+
+**The destination gets a second, better source.** A record for a tunnelled connection carries
+`metadata.sni` when a name was recovered. Absent means no name was available, which covers a
+client that omits SNI, an Encrypted Client Hello, a non-TLS protocol tunnelled over CONNECT,
+and a handshake that never arrived whole. There is no guessing in between.
+
+**Disagreement is recorded and acted on.** When the SNI differs from the CONNECT authority,
+the record carries `metadata.sniMismatch` and the rule `net:sni-connect-mismatch`, and policy
+is evaluated a second time against the negotiated name. That second evaluation runs only
+after the first said allow, so it can refuse what the CONNECT line was permitted to do and
+can never permit what it was refused. An IP-literal CONNECT authority always registers as a
+disagreement, because an address can never equal a hostname; on that path the flag means the
+CONNECT line carried no name to compare, not that anyone lied.
+
+What this does NOT give you is content. See the limits below before drawing a wider
+conclusion from it than the code supports.
 
 ## Limits
 
@@ -218,10 +248,41 @@ Read these before relying on enforcement for anything.
   UID and has nftables redirect that UID's outbound TCP into the proxy, which removes the
   cooperation requirement at the cost of root, Linux, and a deliberate install. It is off
   unless you set it up, and it does not contain DNS. See [perimeter.md](perimeter.md).
-- **Decisions are made from host, port, and scheme.** The proxy does not terminate TLS, so
-  the body, path, and headers of an HTTPS request are not visible and cannot inform the
-  decision. Terminating TLS would need a CA in every runtime trust store, which would break
-  the harness-agnostic property the proxy exists for.
+- **Decisions are made from host, port, scheme, and negotiated SNI.** The proxy does not
+  terminate TLS, so the body, path, and headers of a request are not visible and cannot
+  inform the decision. That is true of plaintext HTTP too, and not only of HTTPS: an http
+  request is relayed without its body or path being read, so the limit is a property of the
+  proxy rather than of encryption. Terminating TLS would need a CA in every runtime trust
+  store, which would break the harness-agnostic property the proxy exists for.
+- **Content inspection does not run on proxied traffic at all.** DLP, PII, and injection
+  scanning exist, and none of them are on this path. They run on content AgentWall is handed
+  directly: `/inspect/*` and `/evaluate` payloads, the MCP frames it wraps, channel messages,
+  and watched file writes. A secret in an https body is invisible because the body is
+  encrypted; a secret in an http body is invisible because nothing scans it. Neither is
+  detected, and a deployment that needs egress content scanning does not get it here.
+- **Adding interception is not a small change, and the cost is not only the CA.** Minting a
+  leaf certificate per destination means issuing X.509, and Node cannot: `crypto.X509Certificate`
+  parses and verifies, it does not sign. Closing this gap therefore means either a fourth
+  runtime dependency or shelling out to `openssl` on the connection path. This package has
+  exactly three runtime dependencies and keeps it that way on purpose, so that trade is an
+  architectural decision rather than an implementation detail, and it is unmade. Anyone
+  planning to rely on egress content scanning should read that as "not available", not as
+  "coming".
+- **The SNI cross-check catches a self-contradicting client, not domain fronting.** A CONNECT
+  authority is a string the client typed; the SNI is what it then negotiated. When they
+  disagree the proxy records `net:sni-connect-mismatch` and re-evaluates policy against the
+  negotiated name, which can only ever add a denial, because it runs after an allow. What it
+  cannot see is the fronting case ATT&CK calls T1090.004: there the real destination is in
+  the HTTP Host header inside the TLS session, every layer the proxy can read agrees, and the
+  connection passes. The detection is left unmapped in the catalog for exactly that reason.
+- **A name recovered from a ClientHello is a hostname and nothing else.** No port, no path,
+  no header, no body. A client that omits SNI, uses Encrypted Client Hello, or tunnels a
+  non-TLS protocol produces no name at all, and the CONNECT authority stands alone. That is
+  a fail-open by design: the destination was already authorised before the peek ran.
+- **An SNI denial costs the destination a TCP handshake.** A CONNECT-level deny opens no
+  upstream socket at all. An SNI-level deny cannot, because the name only exists after the
+  tunnel is up: the connection is torn down with zero payload bytes forwarded, but the
+  destination did see a connection open and close.
 - **Only `deny` is enforceable on a connection.** A rule returning `approve` or `redact` for
   an egress destination is recorded and the connection is allowed. There is nothing to answer
   an approval prompt on a TCP connect, and redaction needs bodies the proxy cannot read. If a

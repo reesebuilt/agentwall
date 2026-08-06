@@ -82,9 +82,12 @@ Evidence: `src/planes/identity/dlp.ts`, `src/decoy/index.ts`,
 Known limits: the scanner is a pattern table, so a secret in a format it does not know — an
 internal token scheme, a bare high-entropy string — passes. Decoy values close part of
 that hole by being synthetic and therefore unmistakable, but only for credentials someone
-planted on purpose. The harder limit is what the scanner is handed: https bodies through the
-forward proxy are opaque because that proxy does not terminate TLS, so egress of a secret
-over https is visible as a destination and a byte count, not as content.
+planted on purpose. The harder limit is what the scanner is handed: proxied traffic is not
+handed to it at all. An https body is opaque because the forward proxy does not terminate
+TLS, and an http body is readable but is never scanned, so egress of a secret through the
+proxy is visible as a destination, a negotiated SNI, and a byte count, never as content. What
+the scanner does see is content given to AgentWall directly: the inspection routes, the MCP
+frames it wraps, channel messages, and watched file writes.
 
 ### LLM03 Supply Chain Vulnerabilities — `partial`
 

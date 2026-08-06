@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it } from "@jest/globals";
 import { connect as netConnect, createServer as createNetServer, Socket } from "net";
 import type { AddressInfo, Server as NetServer } from "net";
-import { createTransparentProxy, extractHttpHost, extractSni } from "../src/proxy/transparent";
+import { createTransparentProxy, extractHttpHost } from "../src/proxy/transparent";
+import { extractSni } from "../src/proxy/tls-peek";
 import type { TransparentAttempt } from "../src/proxy/transparent";
 import type { ProxyDecision, ProxyRecord, ProxyVerdict } from "../src/proxy/forward-proxy";
 
