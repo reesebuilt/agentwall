@@ -124,6 +124,13 @@ shown inline, a signed receipt timeline, and the offline command above printed o
 UI is never the root of trust. It has no approve, deny, or edit path and serves no script. See
 [docs/evidence-viewer.md](docs/evidence-viewer.md).
 
+Several hosts are `/evidence/fleet`, the same shape one level up: it reads each host's chain from
+a path its evidence was delivered to, verifies each independently on its own bytes, and prints all
+four verifier implementations against each host's own file. The chains are not merged, a host it
+could not read renders as unreachable rather than as clean, and what none of it can see is a table
+on the page rather than a footnote. It is a reader and never an authority: if it is down, every
+host keeps enforcing and keeps recording. See [docs/fleet-evidence.md](docs/fleet-evidence.md).
+
 ## What it does
 
 - **Egress enforcement, in three modes.** `monitor` evaluates and allows while reporting what
@@ -227,7 +234,7 @@ this project declines.
 [Lockdown](docs/lockdown.md) ·
 [Architecture](docs/architecture.md) · [Threat model](docs/threat-model.md) ·
 [Verification](docs/verification.md) · [Audit format](docs/audit-format.md) ·
-[Evidence viewer](docs/evidence-viewer.md) ·
+[Evidence viewer](docs/evidence-viewer.md) · [Fleet evidence](docs/fleet-evidence.md) ·
 [API and configuration](docs/reference.md) · [Probe API](docs/probe-api.md) ·
 [Why](docs/why.md) · [Benchmark](docs/benchmark.md) ·
 [Compliance](docs/compliance.md) · [Decoy tokens](docs/decoy.md) ·

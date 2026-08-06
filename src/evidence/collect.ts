@@ -62,6 +62,57 @@ export const FAULT_CONDEMNS: Record<RecordFault, boolean> = {
 
 export type FileRole = "live" | "sealed" | "unsealed";
 
+/**
+ * The fleet attribution a record carries, read back from the named metadata keys
+ * `src/index.ts` and `src/runtime/enforcement.ts` write.
+ *
+ * Named keys, never the metadata block. The block holds agent-supplied strings and grows
+ * whenever anything upstream adds a field, so carrying it whole would put unreviewed content
+ * into every view that reads a record. What a reviewer needs from it is a short fixed list,
+ * and a short fixed list is what this is.
+ *
+ * `null` on the whole object means the record names no agent at all. That is the honest
+ * answer for a record written before any egress resolution ran, and it is different from an
+ * agent whose signals resolved to nothing.
+ */
+export interface RecordAgent {
+	label: string | null;
+	/** `credential`, `uid`, `comm`, or a combination. What the identity claim actually rests on. */
+	matchedOn: string | null;
+	/** Whether a declared fleet agent claimed this connection, or it fell through. */
+	declared: boolean | null;
+	/** `global`, or `agent:<id>`. Which allowlist judged it. */
+	allowlistSource: string | null;
+}
+
+/**
+ * What one proxied connection's record says about how much of it was readable.
+ *
+ * Present only on records the proxy record path wrote, which is what `bodyVisibility`
+ * identifies: every forward and transparent record carries it and nothing else does. A
+ * `/evaluate` decision has no body and no destination, so it gets `null` rather than a row
+ * of empty strings that would read like a connection nobody looked at.
+ */
+export interface RecordEgress {
+	host: string | null;
+	port: string | null;
+	scheme: string | null;
+	/** `monitor`, `guarded`, or `strict`. An "allow" under monitor blocked nothing. */
+	enforcementMode: string | null;
+	/** `forward` or `transparent`. The transparent path resolves no fleet identity. */
+	transportMode: string | null;
+	/** `tunneled`, `unread`, `bypassed`, `stream`, `partial`, `plaintext`, or `intercepted`. */
+	bodyVisibility: string | null;
+	/** True when either direction was read only to the inspection cap. */
+	contentTruncated: boolean;
+	/**
+	 * Classes of secret the content scan named, both directions, deduplicated. Never a value:
+	 * the writer records the class and the offset and nothing else, and a reader that
+	 * reconstituted more than the writer stored would be inventing evidence.
+	 */
+	secretTypes: string[];
+}
+
 export interface EvidenceRecord {
 	/** Absolute path of the file the record was read from. */
 	file: string;
@@ -90,6 +141,10 @@ export interface EvidenceRecord {
 	chainGapDeclared: boolean;
 	/** How many records the writer said were lost at this point, when it said. */
 	droppedRecords: string | null;
+	/** Null when the record names no fleet agent. */
+	agent: RecordAgent | null;
+	/** Null when the record is not a proxied connection. */
+	egress: RecordEgress | null;
 	faults: RecordFault[];
 }
 
@@ -199,6 +254,84 @@ function asDetections(value: unknown): { id: string; name: string; severity: str
 
 function asString(value: unknown): string | null {
 	return typeof value === "string" ? value : null;
+}
+
+/**
+ * The fleet keys the writers actually emit, in one place.
+ *
+ * A reader that spelled a key differently from the writer reports "no agent" for every
+ * record forever and looks exactly like a fleet nobody declared. Naming them once here is
+ * what lets a test hold the reader against the writer instead of against itself.
+ */
+export const AGENT_KEYS = {
+	label: "agentLabel",
+	matchedOn: "agentMatchedOn",
+	declared: "agentDeclared",
+	allowlistSource: "egressAllowlistSource",
+} as const;
+
+/**
+ * Content keys arrive under two spellings and a reader that knows only one reports the other
+ * path as clean.
+ *
+ * The plaintext proxy folds a request pass and a response pass into one record, so
+ * `VerdictLedger.absorb` prefixes each key with the direction it describes: `contentTruncated`
+ * from the request pass lands as `requestContentTruncated`. The TLS interception path files one
+ * record PER inner exchange, so it never folds two passes together and never prefixes: its
+ * `finalise` copies the verdict's metadata verbatim and the key stays `contentTruncated`.
+ *
+ * Both spellings are read here. Interception is the one mode in which an https body IS
+ * decrypted and scanned, so a reader that missed its keys would report the mode with the most
+ * visibility as the mode with the least, which inverts the meaning of the coverage section
+ * these counters feed.
+ */
+export const EGRESS_KEYS = {
+	host: "host",
+	port: "port",
+	scheme: "scheme",
+	enforcementMode: "enforcementMode",
+	transportMode: "transportMode",
+	/** Present on every proxy record and on nothing else, so it is what identifies one. */
+	bodyVisibility: "bodyVisibility",
+	truncated: ["contentTruncated", "requestContentTruncated", "responseContentTruncated"],
+	secretTypes: ["contentSecretTypes", "requestContentSecretTypes", "responseContentSecretTypes"],
+} as const;
+
+function agentOf(metadata: Record<string, unknown>): RecordAgent | null {
+	const label = asString(metadata[AGENT_KEYS.label]);
+	const matchedOn = asString(metadata[AGENT_KEYS.matchedOn]);
+	const declared = asString(metadata[AGENT_KEYS.declared]);
+	const allowlistSource = asString(metadata[AGENT_KEYS.allowlistSource]);
+	if (label === null && matchedOn === null && declared === null && allowlistSource === null) return null;
+	return {
+		label,
+		matchedOn,
+		// Tri-state on purpose. `null` is "the record does not say", which is a different fact
+		// from "no declared agent claimed this" and must not collapse into false.
+		declared: declared === null ? null : declared === "true",
+		allowlistSource,
+	};
+}
+
+function egressOf(metadata: Record<string, unknown>): RecordEgress | null {
+	const bodyVisibility = asString(metadata[EGRESS_KEYS.bodyVisibility]);
+	if (bodyVisibility === null) return null;
+	const secretTypes = new Set<string>();
+	for (const key of EGRESS_KEYS.secretTypes) {
+		for (const type of (asString(metadata[key]) ?? "").split(",")) {
+			if (type.trim() !== "") secretTypes.add(type.trim());
+		}
+	}
+	return {
+		host: asString(metadata[EGRESS_KEYS.host]),
+		port: asString(metadata[EGRESS_KEYS.port]),
+		scheme: asString(metadata[EGRESS_KEYS.scheme]),
+		enforcementMode: asString(metadata[EGRESS_KEYS.enforcementMode]),
+		transportMode: asString(metadata[EGRESS_KEYS.transportMode]),
+		bodyVisibility,
+		contentTruncated: EGRESS_KEYS.truncated.some((key) => asString(metadata[key]) === "true"),
+		secretTypes: [...secretTypes].sort(),
+	};
 }
 
 export function collectEvidence(paths: AnchorPaths): EvidenceCollection {
@@ -328,6 +461,8 @@ export function collectEvidence(paths: AnchorPaths): EvidenceCollection {
 				highRiskFlow: false,
 				chainGapDeclared: false,
 				droppedRecords: null,
+				agent: null as RecordAgent | null,
+				egress: null as RecordEgress | null,
 			};
 
 			// Checked on the raw bytes, because JSON.parse collapses a duplicate member and the
@@ -389,6 +524,8 @@ export function collectEvidence(paths: AnchorPaths): EvidenceCollection {
 				highRiskFlow: ev.highRiskFlow === true,
 				chainGapDeclared: ev.action === AUDIT_CHAIN_GAP_ACTION,
 				droppedRecords: asString(metadata.droppedRecords),
+				agent: agentOf(metadata),
+				egress: egressOf(metadata),
 				faults,
 			});
 			fileRecords++;

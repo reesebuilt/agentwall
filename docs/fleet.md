@@ -3,11 +3,22 @@
 Several agents on one host, each with its own identity, its own egress allowlist, and its own
 budget. Records say **which agent**, not just which process.
 
-Scope, first, because it changes what everything below means: this is per-agent governance
-**within one AgentWall instance**. There is no clustered control plane, no cross-host
-identity, and no shared budget. Two instances enforce two independent copies of their own
-limits against their own traffic. [Multi-host](#what-multi-host-would-take) says what closing
-that would actually require; it is not implemented and nothing here pretends otherwise.
+Scope, first, because it changes what everything below means: this is per-agent **governance**
+within one AgentWall instance. There is no clustered control plane and no shared budget. Two
+instances enforce two independent copies of their own limits against their own traffic.
+[Multi-host](#what-multi-host-would-take) says what is genuinely missing and what turned out
+not to be.
+
+One thing that section used to overstate, corrected here because a stale limit is worse than
+no limit: **the credential tier of identity already crosses a host boundary.** A credential is
+presented by the client on the proxy connection, not derived from the local kernel, so the same
+declared agent resolves identically on any host that has the same declaration. What is missing
+for it is issuance, rotation and revocation, which is a much smaller problem than the one that
+paragraph described. The `uid` and `comm` tiers really are local facts and really do not travel.
+
+Evidence across hosts is a separate question and is answered separately: see
+[fleet evidence](fleet-evidence.md) for the read-only aggregator that verifies each host's chain
+on its own bytes.
 
 ## Why this exists
 
@@ -179,38 +190,53 @@ A denied request tells the client the specific reason first, so
 of several allowlists refused it. The full reason list, both allowlists, and the counters are
 in the chain.
 
+Across hosts, `GET /evidence/fleet` is a separate, read-only surface that verifies each host's
+chain on its own bytes and rolls the records up per agent: which agents ran, on which hosts, in
+which window, what each attempted, and what refused it. It is a reader and never an authority,
+and it governs nothing. See [fleet evidence](fleet-evidence.md).
+
 ## What multi-host would take
 
-Not implemented, and this section exists so that nobody mistakes the section above for it.
-`src/org/federation.ts` polls peer instances into a read-only summary view; that is reporting,
-not governance. Making per-agent governance work across hosts needs at least:
+This section used to list five requirements. Two of them were overstated and one is now
+answered, so it is rewritten rather than left standing: a limit that is no longer true costs
+more credibility than the limit it was describing.
 
-1. **An identity that survives the host boundary.** `uid` and `comm` are local facts about one
-   kernel. Two hosts with a uid 1001 have two different accounts. A cross-host principal needs
-   a credential, which means issuance, rotation, and revocation, which means a CA or an OIDC
-   issuer, and mTLS or signed tokens rather than a shared secret in a config file.
-2. **A shared budget with a consistency story.** A 120-per-minute ceiling across three
-   instances is either a distributed counter (a coordination service on the egress hot path,
-   and an outage in it becomes an egress outage) or per-instance sub-budgets that sum to the
-   ceiling (no coordination, wrong answer whenever load is uneven). Both are defensible; the
-   choice has to be stated, because "120 per minute across the fleet" means different things
-   under each.
-3. **Config distribution with a rollback that is faster than the mistake.** A fleet-wide
-   allowlist push that is wrong takes every agent offline at once. That needs staged rollout
-   and an automatic revert, which is a deployment system, not a config file.
-4. **A merged audit chain, or an honest statement that there is not one.** Today each instance
-   hash-chains and anchors its own records. N instances produce N chains. Merging them into
-   one ordered ledger needs a total order across hosts, which needs either a single writer or
-   agreed clocks; the honest alternative is N chains with a cross-reference and a reader that
-   is told so.
-5. **A control plane that fails safe.** Whatever holds the identities and budgets is now
-   between every agent and the internet. If it is down, does egress stop or continue
-   ungoverned? Both answers are bad, and picking one is a product decision rather than an
-   implementation detail.
+**Solved, and it was mostly already solved.** A cross-host principal needs an identity that is
+not a local kernel fact, and the credential tier is exactly that. It is presented by the client
+in `Proxy-Authorization` on the proxy connection and compared against `sha256:<hex>` or
+`env:<VAR>` in the declaration, so the same agent id resolves on every host carrying the same
+declaration. No CA and no OIDC issuer is required for that to work today. The `uid` and `comm`
+tiers do not travel and never will: two hosts with a uid 1001 have two different accounts.
 
-None of that is hard to describe and all of it is a different product surface from a proxy on
-one box. The current answer stays: one instance, one host, per-agent governance inside it, and
-[federation](reference.md) for a read-only view across several.
+**Answered by a deliberate design choice, not by building it.** Evidence across hosts is
+read-only aggregation over separate chains, not a merged ledger and not a control plane. See
+[fleet evidence](fleet-evidence.md), which states what the aggregate proves, why the chains stay
+apart, and the failure semantics: if the aggregator is down, every host keeps enforcing and keeps
+recording, and only visibility is lost.
+
+**Genuinely still missing, in rough order of difficulty:**
+
+1. **Credential lifecycle.** Issuance, rotation and revocation for the credential tier. Today a
+   declaration names a digest or an environment variable and rotating one is a config edit and a
+   reload on every host. That is workable for a handful of hosts and not for a hundred, and there
+   is no revocation list: the only way to retire a credential is to remove it everywhere.
+2. **Signed policy bundles, pulled on an interval.** A fleet-wide allowlist push that is wrong
+   takes every agent offline at once. Pull rather than push, so no agent host needs an inbound
+   listener, and a host that cannot reach the source keeps enforcing the last good bundle. That
+   also needs a rollback faster than the mistake, which is a deployment concern rather than a
+   config file.
+3. **A shared budget with a consistency story.** A 120-per-minute ceiling across three instances
+   is either a distributed counter (a coordination service on the egress hot path, and an outage
+   in it becomes an egress outage) or per-instance sub-budgets that sum to the ceiling (no
+   coordination, wrong answer whenever load is uneven). Both are defensible; the choice has to be
+   stated, because "120 per minute across the fleet" means different things under each. Nothing
+   in this repository does either, and budgets remain per-instance and in memory.
+
+What is explicitly **not** on that list any more is a control plane holding identities and
+budgets between every agent and the internet. That was described here as a thing multi-host
+would need. It is not, and building it would be a mistake: it makes a management outage into an
+agent outage. The answer is federation on evidence, which is what
+[fleet evidence](fleet-evidence.md) implements.
 
 ## Related
 
@@ -219,3 +245,5 @@ one box. The current answer stays: one instance, one host, per-agent governance 
   carries no identity.
 - [FloodGuard](runtime-floodguard.md): the other rate control, and what it keys on instead.
 - [Audit evidence format](audit-format.md): what a record is and how it is chained.
+- [Fleet evidence](fleet-evidence.md): the read-only aggregator over several hosts' chains,
+  what the aggregate proves, and why the chains are not merged.

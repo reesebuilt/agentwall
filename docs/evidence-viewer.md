@@ -211,6 +211,9 @@ what such a record says depends on which parser reads it.
 - **Completeness is not shown, because it cannot be.** An intact chain shows that what was
   written was not altered afterwards, never that everything which should have been written was.
   A decision that was never recorded leaves nothing to detect, here or in any verifier.
+- **One chain.** This surface reads the chain this instance is writing. Several hosts are
+  [fleet evidence](fleet-evidence.md), which is the same shape one level up: it reads each
+  host's chain from a path, verifies each independently, and deliberately does not merge them.
 
 ## Tests behind the claims on this page
 

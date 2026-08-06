@@ -22,6 +22,7 @@ import { initLockdown } from "./runtime/lockdown";
 import { probeRoutes } from "./routes/probe";
 import { fleetRoutes } from "./routes/fleet";
 import { evidenceRoutes } from "./routes/evidence";
+import { fleetEvidenceRoutes } from "./routes/fleet-evidence";
 import { FileBackedPolicyRuntime, ReloadResult } from "./policy/runtime";
 import { PolicySnapshot } from "./policy/engine";
 import { ReloadCoordinator } from "./runtime/reload";
@@ -191,6 +192,13 @@ export async function buildServer(config: AgentwallConfig): Promise<AgentwallSer
   await reloadRoutes(app, reloadCoordinator);
   await fleetRoutes(app);
   await evidenceRoutes(app, auditPath);
+  // Registered after the single-host viewer so its `/evidence/*` mutating block is already in
+  // place. The fleet surface installs its own 405s over its own paths regardless, because a
+  // read-only contract that depends on another module having been registered first is not a
+  // contract. The sources file is separate from the audit file on purpose: an aggregator is
+  // usually not a host that runs agents, and requiring it to have a local chain to show
+  // somebody else's would be a coupling with nothing behind it.
+  await fleetEvidenceRoutes(app, process.env.AGENTWALL_FLEET_EVIDENCE);
 
   return { app, engine, gate, runtime, policyRuntime, reloadCoordinator };
 }
