@@ -5,7 +5,7 @@ import { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
 import { ApprovalGate } from "../approval/gate";
 import { PolicyEngine } from "../policy/engine";
-import { builtinRules } from "../policy/rules";
+import { ReloadCoordinator } from "../runtime/reload";
 import { RuntimeState } from "../dashboard/state";
 import { RuntimeFloodGuard } from "../runtime/floodguard";
 import { prioritizePendingApprovals, summarizeApprovalSessionLane, summarizeApprovalSessionLaneLabel } from "../dashboard/approval-queue";
@@ -1074,7 +1074,10 @@ export async function dashboardRoutes(
   gate: ApprovalGate,
   runtime: RuntimeState,
   floodGuard: RuntimeFloodGuard,
-  policyRuntime?: FileBackedPolicyRuntime
+  // Explicitly `| undefined` rather than optional so the required parameter below can follow
+  // it. buildServer is the only caller and always passes both.
+  policyRuntime: FileBackedPolicyRuntime | undefined,
+  reloadCoordinator: ReloadCoordinator
 ): Promise<void> {
   const buildDashboardPayload = async () => {
     const snapshot = runtime.getSnapshot(engine.getRules().length);
@@ -1188,12 +1191,25 @@ export async function dashboardRoutes(
       if (!policyRuntime) {
         return reply.status(400).send({ error: "Policy reload requires policy.configPath." });
       }
-      const result = policyRuntime.reload();
-      if (!result.reloaded) {
-        return reply.status(400).send({ error: result.error?.message ?? "Failed to reload policy" });
+      // Through the coordinator, so this control lands on the audit chain like every other
+      // reload trigger. It already validated and applied correctly, and left no record at all,
+      // which made the chain's account of policy changes complete except for whichever changes
+      // an operator made from the dashboard.
+      const report = reloadCoordinator.applyExternalReload(policyRuntime.reload(), {
+        source: "dashboard",
+        operatorId: req.operator?.id,
+      });
+      if (!report.ok) {
+        return reply.status(400).send({ error: report.policy.error ?? "Failed to reload policy" });
       }
-      engine.replaceRules([...builtinRules, ...result.rules]);
-      return reply.send({ ok: true, action: "reload_policy", ruleCount: engine.getRules().length });
+      return reply.send({
+        ok: true,
+        action: "reload_policy",
+        ruleCount: report.policy.ruleCount,
+        policyVersion: report.policy.policyVersion,
+        diff: report.policy.diff,
+        warnings: report.warnings,
+      });
     }
 
     setTimeout(() => {
@@ -1223,12 +1239,15 @@ export async function dashboardRoutes(
     }
 
     const nextRule = buildScopedDeclarativeRule(parsed.data);
-    const result = policyRuntime.upsertDeclarativeRule(nextRule);
-    if (!result.reloaded) {
-      return reply.status(400).send({ error: result.error?.message ?? "Failed to save scoped guardrail" });
+    const report = reloadCoordinator.applyExternalReload(policyRuntime.upsertDeclarativeRule(nextRule), {
+      source: "dashboard",
+      operatorId: req.operator?.id,
+      reason: `Scoped guardrail ${nextRule.id} saved from the dashboard`,
+    });
+    if (!report.ok) {
+      return reply.status(400).send({ error: report.policy.error ?? "Failed to save scoped guardrail" });
     }
 
-    engine.replaceRules([...builtinRules, ...result.rules]);
     const policyCatalog = buildPolicyCatalog(policyRuntime);
     const savedRule = policyCatalog.scopedRules.find((item) => item.id === nextRule.id) ?? buildScopedRuleCatalogItem(nextRule);
     return reply.send({ ok: true, rule: savedRule, policyCatalog });
@@ -1253,12 +1272,18 @@ export async function dashboardRoutes(
       }
     }
 
-    const result = latestResult ?? policyRuntime.reload();
-    if (!result.reloaded) {
-      return reply.status(400).send({ error: result.error?.message ?? "Failed to reload channel firewall profile" });
+    // The loop above already reloaded through the runtime on each rule. One record covers the
+    // profile, because one profile write is one operator action, and its diff names every rule
+    // the write touched.
+    const report = reloadCoordinator.applyExternalReload(latestResult ?? policyRuntime.reload(), {
+      source: "dashboard",
+      operatorId: req.operator?.id,
+      reason: `Channel firewall profile '${parsed.data.profile}' saved for ${parsed.data.agentId} on ${parsed.data.channelId}`,
+    });
+    if (!report.ok) {
+      return reply.status(400).send({ error: report.policy.error ?? "Failed to reload channel firewall profile" });
     }
 
-    engine.replaceRules([...builtinRules, ...result.rules]);
     const policyCatalog = buildPolicyCatalog(policyRuntime);
     const lane = policyCatalog.channelFirewall.lanes.find((item) => item.agentId === parsed.data.agentId && item.channelId === parsed.data.channelId) ?? {
       agentId: parsed.data.agentId,
