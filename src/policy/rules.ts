@@ -528,6 +528,24 @@ export const builtinRules: PolicyRule[] = [
     reason: "Destination host is not in the configured egress allowlist",
   },
   /**
+   * The port half of the strict-mode allowlist, separate from the host half so a denial
+   * names which of the two was wrong. Same marker contract and the same safe direction:
+   * forging the marker produces a denial, never an allow, and the enforcement runtime
+   * re-checks the port list itself rather than trusting this rule to be present.
+   */
+  {
+    id: "net:deny-egress-port-not-allowlisted",
+    description: "Deny proxied egress to a port outside the configured allowlist in strict enforcement mode",
+    plane: "network",
+    match: (ctx: AgentContext) =>
+      ctx.plane === "network" &&
+      ctx.metadata?.["enforcementMode"] === "strict" &&
+      ctx.metadata?.["egressPortAllowlisted"] === "false",
+    decision: "deny",
+    riskLevel: "high",
+    reason: "Destination port is not in the configured egress port allowlist",
+  },
+  /**
    * The emergency stop, expressed as a rule so that a halted action is recorded with the
    * same shape as any other denial: a rule id, a detection, and an ATT&CK mapping an
    * analyst can pivot on. It matches on the marker rather than reading the lockdown state

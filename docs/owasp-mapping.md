@@ -361,6 +361,7 @@ through. Downgrading is the only direction that cannot mislead.
 | `T1552` | Unsecured Credentials | `partial` | `mcp:redact-input-secret` (redact), `mcp:redact-response-secret` (redact), `identity:deny-decoy-triggered` (deny) |
 | `T1059` | Command and Scripting Interpreter | `strong` | `mcp:deny-input-injection` (deny), `mcp:deny-response-injection` (deny) |
 | `T1071` | Application Layer Protocol | `strong` | `net:deny-egress-not-allowlisted` (deny) |
+| `T1571` | Non-Standard Port | `strong` | `net:deny-egress-port-not-allowlisted` (deny) |
 | `T1489` | Service Stop | `strong` | `governance:lockdown` (deny) |
 | `T1552.001` | Credentials In Files | `strong` | `content:deny-spill-file-write` (deny) |
 

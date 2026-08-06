@@ -47,12 +47,22 @@ const TABLE = "inet agentwall";
  *
  * Scoping the redirect to 80 and 443 removes that class entirely: those are the two ports where
  * the port the proxy infers is the port the agent asked for. Everything else falls through to the
- * default-drop that is already last, so :8443 becomes a kernel drop rather than a silent misroute.
- * This narrows the perimeter — it opens nothing.
+ * default-drop that is already last, so an agent that dials :8443 itself meets a kernel drop rather
+ * than a silent misroute. This narrows the perimeter — it opens nothing.
  *
- * Residual limit, stated rather than hidden: nftables matches ports, not protocols. A TLS stream
- * deliberately sent to port 80 is still attributed to 443, because at that point nothing in the
- * stream or the socket disagrees. The remaining exposure is one port wide instead of 65535.
+ * Two residual limits, stated rather than hidden.
+ *
+ * First, nftables matches ports and not protocols: a TLS stream deliberately sent to port 80 is
+ * still attributed to 443, because at that point nothing in the stream or the socket disagrees.
+ * That one really is a single port wide.
+ *
+ * Second, and this is the limit the first sentence of this comment could mislead somebody into
+ * missing: the drop constrains what the AGENT may dial, never what the PROXY opens on its behalf.
+ * The proxy uid is exempt by design and connects to whatever the stream names, and an HTTP request
+ * names its own port — `Host: host:8443` is honoured, judged as :8443, and opened as :8443. So the
+ * captured pair is not a port allowlist and this ruleset does not make any port unreachable. It is
+ * not a misattribution either: the verdict is evaluated against exactly the destination that gets
+ * opened. Port containment is egress policy's job, and policy has to key on port for it to bite.
  *
  * These must agree with the proxy's `config.transparent.tlsPort` (default 443). They fail closed
  * if they do not: a TLS port the ruleset does not capture is dropped by the kernel, not misrouted.

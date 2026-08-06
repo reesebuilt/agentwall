@@ -67,6 +67,8 @@ export interface EgressVerdict {
 
 const EGRESS_ALLOWLIST_RULE_ID = "net:deny-egress-not-allowlisted";
 const EGRESS_BLOCKED_DETECTION_ID = "det.net.egress.blocked";
+const EGRESS_PORT_RULE_ID = "net:deny-egress-port-not-allowlisted";
+const EGRESS_PORT_DETECTION_ID = "det.net.egress.port_blocked";
 const LOCKDOWN_RULE_ID = "governance:lockdown";
 const LOCKDOWN_DETECTION_ID = "det.governance.lockdown.active";
 
@@ -82,14 +84,33 @@ const RISK_ORDER: Record<RiskLevel, number> = { low: 0, medium: 1, high: 2, crit
  * that needs per-agent allowlists needs per-agent instances.
  */
 let allowlist: string[] = [];
+/**
+ * Permitted destination ports. An empty list permits nothing.
+ *
+ * Empty means deny for the same reason the host list does: strict mode is allowlist-only, and
+ * an empty allowlist read as "allow everything" would turn the strictest mode into the most
+ * permissive one at exactly the moment an operator misconfigures it. The shipped config
+ * defaults this to `[443]`, so reaching the empty case takes writing `allowedPorts: []`, which
+ * is a legible request for nothing.
+ */
+let portAllowlist: number[] = [];
 
 /**
- * Install the strict-mode allowlist. Entries are normalised the same way the network
- * inspector normalises them, so an IPv6 entry copied bracketed from a log matches a bare
- * one from a config file and casing never decides an allow.
+ * Install the strict-mode egress policy. Hostnames are normalised the same way the network
+ * inspector normalises them, so an IPv6 entry copied bracketed from a log matches a bare one
+ * from a config file and casing never decides an allow.
+ *
+ * Both fields are required rather than optional. `egress.allowedPorts` was configurable, was
+ * defaulted to `[443]`, and was enforced by the `/evaluate` inspector but by nothing on the
+ * proxy path — so a strict deployment that had written a port allowlist reached any port on
+ * an allowlisted host, and the ledger recorded it as an ordinary allow. A key that reads as a
+ * control and is not one is worse than an absent key, because the operator stops looking. An
+ * optional parameter here would let a future call site recreate exactly that gap by omission,
+ * so omission is a compile error instead.
  */
-export function setEgressAllowlist(hosts: readonly string[]): void {
-  allowlist = hosts.map((entry) => normalizeHostname(entry)).filter((entry) => entry.length > 0);
+export function setEgressPolicy(policy: { hosts: readonly string[]; ports: readonly number[] }): void {
+  allowlist = policy.hosts.map((entry) => normalizeHostname(entry)).filter((entry) => entry.length > 0);
+  portAllowlist = policy.ports.filter((port) => Number.isInteger(port) && port > 0 && port <= 65535);
 }
 
 /**
@@ -135,6 +156,7 @@ function buildContext(
       // answer. It keeps the rule set free of imports from the runtime that calls it.
       enforcementMode: mode,
       egressAllowlisted: allowlisted ? "true" : "false",
+      egressPortAllowlisted: portAllowlist.includes(attempt.port) ? "true" : "false",
       lockdownActive: lockdown.active ? "true" : "false",
     },
     flow: { direction: "egress" },
@@ -190,7 +212,7 @@ function enforce(
   const matchedRules = [...result.matchedRules];
   const detectionIds = result.detections.map((detection) => detection.id);
 
-  if (mode === "strict" && !allowlisted) {
+  if (mode === "strict" && (!allowlisted || !portAllowlist.includes(attempt.port))) {
     // Checked here as well as in the rule set, and this check is the authority.
     //
     // The rule exists so that the denial carries a rule id, a description, and an ATT&CK
@@ -199,18 +221,38 @@ function enforce(
     // would silently turn strict mode back into guarded mode. Strict must fail closed
     // against its own configuration, so the allowlist gate does not depend on a rule being
     // present to work.
-    pushUnique(matchedRules, EGRESS_ALLOWLIST_RULE_ID);
-    pushUnique(detectionIds, EGRESS_BLOCKED_DETECTION_ID);
-    // Always name the host, even though the rule already contributes a reason.
     //
-    // The rule's reason is generic ("Destination host is not in the configured egress
-    // allowlist") because a rule cannot see the attempt. Suppressing this line whenever
-    // that generic one is present was a real defect: monitor mode's whole purpose is that
-    // an operator builds the allowlist by reading the ledger, and a ledger where every
-    // strict-mode projection is the same host-less sentence cannot be read that way. The
-    // duplication is worth it — one line carries the rule's meaning, this one carries the
-    // fact you need to act on.
-    pushUnique(reasons, `${attempt.host} is not in the egress allowlist`);
+    // The port is part of the gate, not a separate inspector's business. `allowedPorts` was
+    // enforced only by the `/evaluate` inspector, so strict mode reached any port on an
+    // allowlisted host and recorded it as an ordinary allow: an agent asking for
+    // `Host: allowlisted.example.com:22` got a tunnel to SSH under a config that said 443.
+    // Host and port are one destination and are judged together.
+    if (!allowlisted) {
+      pushUnique(matchedRules, EGRESS_ALLOWLIST_RULE_ID);
+      pushUnique(detectionIds, EGRESS_BLOCKED_DETECTION_ID);
+      // Always name the host, even though the rule already contributes a reason.
+      //
+      // The rule's reason is generic ("Destination host is not in the configured egress
+      // allowlist") because a rule cannot see the attempt. Suppressing this line whenever
+      // that generic one is present was a real defect: monitor mode's whole purpose is that
+      // an operator builds the allowlist by reading the ledger, and a ledger where every
+      // strict-mode projection is the same host-less sentence cannot be read that way. The
+      // duplication is worth it — one line carries the rule's meaning, this one carries the
+      // fact you need to act on.
+      pushUnique(reasons, `${attempt.host} is not in the egress allowlist`);
+    }
+    if (!portAllowlist.includes(attempt.port)) {
+      // Reported separately from the host, and both fire when both are wrong. An operator
+      // fixing one and rediscovering the other on the next attempt learns the allowlist one
+      // painful round-trip at a time.
+      pushUnique(matchedRules, EGRESS_PORT_RULE_ID);
+      pushUnique(detectionIds, EGRESS_PORT_DETECTION_ID);
+      pushUnique(
+        reasons,
+        `port ${attempt.port} is not in the egress port allowlist` +
+          (portAllowlist.length > 0 ? ` (allowed: ${portAllowlist.join(", ")})` : " (the allowlist is empty)")
+      );
+    }
     const risk = verdictRisk(result);
     return {
       decision: "deny",

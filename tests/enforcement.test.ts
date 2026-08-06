@@ -10,7 +10,7 @@ import type { AgentwallConfig } from "../src/config";
 import { PolicyEngine } from "../src/policy/engine";
 import { createForwardProxy } from "../src/proxy/forward-proxy";
 import type { ProxyRecord } from "../src/proxy/forward-proxy";
-import { decideEgress, setEgressAllowlist } from "../src/runtime/enforcement";
+import { decideEgress, setEgressPolicy } from "../src/runtime/enforcement";
 import type { EgressAttempt } from "../src/runtime/enforcement";
 import { engageLockdown, resetLockdown } from "../src/runtime/lockdown";
 import type { PolicyRule } from "../src/types";
@@ -38,12 +38,12 @@ describe("enforcement modes", () => {
 
   beforeEach(() => {
     resetLockdown();
-    setEgressAllowlist([]);
+    setEgressPolicy({ hosts: [], ports: [443] });
   });
 
   afterEach(() => {
     resetLockdown();
-    setEgressAllowlist([]);
+    setEgressPolicy({ hosts: [], ports: [443] });
   });
 
   it("allows in monitor mode what guarded and strict would both deny, and says so", () => {
@@ -81,7 +81,7 @@ describe("enforcement modes", () => {
   });
 
   it("projects two allows once the destination is on the allowlist", () => {
-    setEgressAllowlist(["api.example.com"]);
+    setEgressPolicy({ hosts: ["api.example.com"], ports: [443] });
     const verdict = decideEgress(UNMATCHED_TARGET, "monitor", engine);
 
     expect(verdict.reasons).toContain("monitor: guarded mode would allow");
@@ -129,7 +129,7 @@ describe("enforcement modes", () => {
   });
 
   it("allows an allowlisted host in strict mode, matching case-insensitively", () => {
-    setEgressAllowlist(["API.Example.COM"]);
+    setEgressPolicy({ hosts: ["API.Example.COM"], ports: [443] });
     const verdict = decideEgress(UNMATCHED_TARGET, "strict", engine);
 
     expect(verdict.decision).toBe("allow");
@@ -137,7 +137,7 @@ describe("enforcement modes", () => {
   });
 
   it("still denies an allowlisted host that a rule denies", () => {
-    setEgressAllowlist(["10.1.2.3"]);
+    setEgressPolicy({ hosts: ["10.1.2.3"], ports: [443] });
     const verdict = decideEgress(PRIVATE_TARGET, "strict", engine);
 
     expect(verdict.decision).toBe("deny");
@@ -188,12 +188,12 @@ describe("lockdown overrides the enforcement mode", () => {
   beforeEach(() => {
     resetLockdown();
     // Allowlisted, so nothing but the stop itself can be responsible for the denial.
-    setEgressAllowlist(["api.example.com"]);
+    setEgressPolicy({ hosts: ["api.example.com"], ports: [443] });
   });
 
   afterEach(() => {
     resetLockdown();
-    setEgressAllowlist([]);
+    setEgressPolicy({ hosts: [], ports: [443] });
   });
 
   for (const mode of ["monitor", "guarded", "strict"] as const) {

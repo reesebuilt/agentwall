@@ -5,7 +5,7 @@ import type { ProxyRecord } from "./proxy/forward-proxy";
 import { createTransparentProxy } from "./proxy/transparent";
 import { emit } from "./audit/logger";
 import { detectionsForRules } from "./policy/detections";
-import { decideEgress, setEgressAllowlist } from "./runtime/enforcement";
+import { decideEgress, setEgressPolicy } from "./runtime/enforcement";
 import type { EnforcementMode } from "./runtime/enforcement";
 
 /**
@@ -113,7 +113,7 @@ async function main() {
       // in that bargain: the engine is held by reference and reloads mutate it in place, so
       // a hot-reloaded rule takes effect on the next connection.
       const mode = config.enforcement?.mode ?? "monitor";
-      setEgressAllowlist(config.egress.allowedHosts);
+      setEgressPolicy({ hosts: config.egress.allowedHosts, ports: config.egress.allowedPorts });
 
       createForwardProxy({
         port: proxyPort,
@@ -182,7 +182,7 @@ async function main() {
       // Read once for the same reason the forward proxy reads it once: decideEgress runs
       // inside a socket handler with no view of configuration.
       const mode = config.enforcement?.mode ?? "monitor";
-      setEgressAllowlist(config.egress.allowedHosts);
+      setEgressPolicy({ hosts: config.egress.allowedHosts, ports: config.egress.allowedPorts });
 
       createTransparentProxy({
         port: transparent.port,

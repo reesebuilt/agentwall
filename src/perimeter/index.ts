@@ -234,8 +234,13 @@ function commandVerify(resolved: ResolvedSpec): number {
   console.log("    network stack. Those are other planes' problem.");
   console.log("  - what is inside a TLS session. The proxy does not terminate TLS; it decides from the");
   console.log("    destination the stream names, and denies a stream that names none.");
-  console.log("  - the port of a TLS stream sent to port 80. Ports are matched by the kernel, protocols are");
-  console.log("    not, so such a stream is still attributed to 443 of the host its SNI names.");
+  console.log("  - ports. The kernel captures :80 and :443 and drops the rest, but the proxy connects on");
+  console.log("    the agent's behalf to whatever the stream names, and an HTTP request may name its own");
+  console.log("    port via `Host: host:PORT`. Nothing is misrouted — the verdict is evaluated against");
+  console.log("    exactly the port that gets opened — but this ruleset makes no port unreachable. Port");
+  console.log("    containment comes from egress policy, so a port-blind allowlist allows every port.");
+  console.log("  - the port of a TLS stream sent to :80. The kernel matches ports, not protocols, so such");
+  console.log("    a stream is still attributed to 443 of the host its SNI names.");
   if (allowLoopback) {
     console.log(`  - loopback: uid ${agentUid} may reach other services on this host directly, and one of`);
     console.log("    them may be a route to the outside. You opened this with --allow-loopback.");

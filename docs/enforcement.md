@@ -50,9 +50,15 @@ silently hand you allowlist-only enforcement without an allowlist.
 
 ### `strict`
 
-Allowlist-only. The destination host must appear in `egress.allowedHosts` or the connection
-is refused, whether or not any rule had an opinion about it. Rules still apply on top: an
-allowlisted host that a rule denies is still denied.
+Allowlist-only, on both halves of the destination. The host must appear in
+`egress.allowedHosts` **and** the port in `egress.allowedPorts`, or the connection is refused,
+whether or not any rule had an opinion about it. Rules still apply on top: an allowlisted
+destination that a rule denies is still denied.
+
+Host and port are one destination and are judged together. An agent that can reach
+`allowlisted.example.com` on any port it names turns a web allowlist into shell, database, or
+admin access on that same host, so an allowlisted host on a port you did not list is a denial,
+and the reason names the port and the permitted set rather than only the host.
 
 Matching is an exact hostname match after normalisation — lowercased, IPv6 brackets stripped,
 trailing DNS root dot removed. There are no wildcards and no suffix matching. `example.com`
@@ -69,9 +75,11 @@ enforcement:
   mode: monitor          # monitor | guarded | strict
 
 egress:
-  allowedHosts:          # strict mode's allowlist
+  allowedHosts:          # strict mode's host allowlist
     - api.vendor.example
     - github.com
+  allowedPorts:          # strict mode's port allowlist; both must match
+    - 443
 ```
 
 Omit the `enforcement` section entirely and you get `monitor`. Config files written before
@@ -218,6 +226,7 @@ Read these before relying on enforcement for anything.
   an `approve` rule to stop it.
 - **The allowlist is global to the process.** One AgentWall instance enforces one allowlist.
   Per-agent allowlists need per-agent instances.
-- **`strict` with an empty `allowedHosts` denies everything.** That is the honest consequence
-  of allowlist-only rather than a bug, but it is worth knowing before a restart. The start-up
-  log reports the mode and the allowlist size for exactly this reason.
+- **`strict` with an empty `allowedHosts` or an empty `allowedPorts` denies everything.** That
+  is the honest consequence of allowlist-only rather than a bug, but it is worth knowing
+  before a restart. Both lists are allowlists, so empty means nothing is permitted rather than
+  everything. The start-up log reports the mode and the allowlist size for exactly this reason.

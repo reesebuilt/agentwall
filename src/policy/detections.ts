@@ -170,6 +170,19 @@ export const detectionCatalog: DetectionMapping[] = [
     severity: "high",
   },
   {
+    id: "det.net.egress.port_blocked",
+    ruleId: "net:deny-egress-port-not-allowlisted",
+    name: "Blocked egress to a non-allowlisted port",
+    description:
+      "A proxied agent tried to reach a port outside the configured egress port allowlist while strict enforcement was active, and the connection was refused. Reaching an unexpected port on an otherwise permitted host is how an agent turns a web allowlist into shell, database, or admin access.",
+    mitreAttack: {
+      tactic: "Command and Control",
+      technique: "Non-Standard Port",
+      techniqueId: "T1571",
+    },
+    severity: "high",
+  },
+  {
     id: "det.governance.lockdown.active",
     ruleId: "governance:lockdown",
     name: "Action refused by the operator lockdown",

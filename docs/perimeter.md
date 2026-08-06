@@ -35,8 +35,17 @@ connection to the proxy port and ends with a single uid-scoped `drop`.
 The capture is scoped to those two ports rather than to all TCP because the proxy reads the
 destination out of the stream, and TLS carries no port there. Capturing `:8443` would mean
 policing it as `:443` — the right host, the wrong service, under an allow verdict. Scoping
-the redirect sends every other port to the drop instead, which is a narrowing: unreachable
-rather than misrouted.
+the redirect sends every other port the agent dials to the drop instead, which is a
+narrowing: unreachable rather than misrouted.
+
+Be precise about what that narrowing covers, because it is easy to over-read. **The ruleset
+decides what the agent may dial. The proxy decides what is opened.** Those are different
+sets: the proxy UID is exempt from the redirect and reaches the network directly, which is
+the whole design. A plain HTTP request names its own port in the authority, so an agent that
+sends `Host: allowlisted.example.com:22` on the captured `:80` has the listener name `:22`,
+policy judge `:22`, and — on an allow — the proxy open `:22` and replay the bytes. Port
+containment therefore comes from egress policy, not from nftables. See the limits below for
+what policy does and does not check.
 
 The drop is the part that matters. A set of redirects over a permissive default contains
 nothing: it moves the traffic it knows about and waves through QUIC, raw sockets, ICMP
@@ -83,9 +92,12 @@ connection, including the ordinary ones to `:443`, is policed and then dialled a
 the right host, the wrong service, under an allow verdict. Leave it alone unless you have
 also changed what the ruleset captures.
 
-One residual exposure survives, because nftables matches ports and not protocols: a TLS
-stream deliberately sent to port `80` is captured, named by its SNI, and then attributed to
-`tlsPort`. The window is one port wide instead of sixty-five thousand, not zero.
+Two consequences follow, and they are not symmetric. Because nftables matches ports and not
+protocols, a TLS stream deliberately sent to port `80` is captured, named by its SNI, and
+attributed to `tlsPort` — for TLS the port really is pinned, and that window is one port
+wide. Plain HTTP is the opposite: it names its own port in the `Host:` authority, so the
+captured set does not bound the ports an HTTP request can reach. See the limits for what
+that means and where port containment actually has to come from.
 
 Give it a port of its own. `AGENTWALL_PROXY_PORT` starts the `CONNECT` forward proxy, and
 the two are separate listeners in one process that cannot share a number. A failed bind is
@@ -180,7 +192,8 @@ Options, shared by every subcommand that takes a spec:
 
 Flag beats environment variable beats built-in default. `--dns-resolver` must be a bare IPv4
 or IPv6 literal: a hostname would have to be resolved to be written into a rule, and
-resolving it needs the DNS that rule is what permits.
+resolving it needs the DNS that rule is what permits. An IPv6 resolver renders as `ip6 daddr`
+rather than `ip daddr`.
 
 `help`, `--help`, and `-h` print the full usage text and exit `0`. Other exit codes are `0`
 for ok, `1` for not installed or refused, and `2` for bad usage or a spec that could never be
@@ -298,13 +311,19 @@ Perimeter NOT correctly installed.
   default-drop present: false
 ```
 
-It also fails a perimeter that is installed but captures too much. A redirect that takes
-every TCP port, or any port outside `{ 80, 443 }`, is reported as a problem naming the
-offending port, because the proxy cannot recover a port from the stream and would police such
-a connection as `443` of the same host — the wrong service, under an allow verdict, written
-into a signed ledger. A capture *narrower* than `{ 80, 443 }` is reported healthy: an
-uncaptured port meets the default-drop, and a refusal is not a lie. Both problems set the
-perimeter to not-installed, which is also what makes `run` refuse to start the agent.
+It also fails a perimeter that is installed but captures the wrong thing, in three ways. A
+redirect that takes every TCP port is reported as capturing everything. A redirect that names
+any port outside `{ 80, 443 }` is reported with the offending port named. And a redirect
+whose `tcp dport` expression cannot be resolved to a port list — a named set, for instance —
+is reported as unverifiable, with the expression quoted and an instruction to confirm the
+capture by hand, because a check that cannot read a rule must say so rather than pass it.
+
+The reason is the same in all three: the proxy cannot recover a port from the stream, so a
+connection captured on any other port is policed and recorded as `443` of the same host — the
+wrong service, under an allow verdict, written into a signed ledger. A capture *narrower*
+than `{ 80, 443 }` is reported healthy, because an uncaptured port meets the default-drop and
+a refusal is not a lie. All three problems set the perimeter to not-installed, which is also
+what makes `run` refuse to start the agent.
 
 "Could not read the table" and "not installed" are kept apart. Listing a table needs
 `CAP_NET_ADMIN`, so the common failure is a permission error, and reporting that as "not
@@ -337,8 +356,13 @@ Not contained:
     network stack. Those are other planes' problem.
   - what is inside a TLS session. The proxy does not terminate TLS; it decides from the
     destination the stream names, and denies a stream that names none.
-  - the port of a TLS stream sent to port 80. Ports are matched by the kernel, protocols are
-    not, so such a stream is still attributed to 443 of the host its SNI names.
+  - ports. The kernel captures :80 and :443 and drops the rest, but the proxy connects on
+    the agent's behalf to whatever the stream names, and an HTTP request may name its own
+    port via `Host: host:PORT`. Nothing is misrouted — the verdict is evaluated against
+    exactly the port that gets opened — but this ruleset makes no port unreachable. Port
+    containment comes from egress policy, so a port-blind allowlist allows every port.
+  - the port of a TLS stream sent to :80. The kernel matches ports, not protocols, so such
+    a stream is still attributed to 443 of the host its SNI names.
 ```
 
 A containment control described only by what it blocks invites the reader to assume it blocks
@@ -460,16 +484,27 @@ anything else.
   closed, which is correct, but the honest consequence is that it breaks that client rather
   than containing it. The same applies to any TLS connection that carries no name at all: a
   bare IP literal, or a client that simply omits the extension.
-- **The agent reaches only `:80` and `:443`, and anything else on those ports is refused, not
-  understood.** The capture is scoped to those two ports, so every other destination port —
-  a database wire protocol, SSH, a TLS service on `:8443` — meets the default-drop and is
-  simply unreachable. On the two captured ports there are two parsers and no third, so a
-  non-HTTP, non-TLS stream sent to one of them fails to name a destination and is denied.
-  Contained either way, but not proxied: if the agent legitimately needs one of those, the
-  perimeter is not the tool that lets it through. The residue is that nftables matches ports
-  rather than protocols, so a TLS stream deliberately sent to `:80` is captured, named by its
-  SNI, and attributed to `transparent.tlsPort` — one port of exposure rather than sixty-five
-  thousand, and not zero.
+- **The agent dials only `:80` and `:443`, but that is not a limit on the ports it can
+  reach.** The nftables rules narrow what the *agent* may send to, not what the *proxy* opens
+  on its behalf, and the proxy UID is exempt from the redirect by design. A plain HTTP request
+  carries its own port in the authority, so `Host: allowlisted.example.com:22` sent on the
+  captured `:80` is named as `:22` and judged as `:22`. Port containment therefore comes from
+  egress policy, not from nftables, and the ruleset alone should never be read as pinning the
+  reachable port set.
+- **Egress policy does check the port, in `strict` only.** The strict gate requires the host
+  to be in `egress.allowedHosts` and the port in `egress.allowedPorts`; a non-allowlisted port
+  on an allowlisted host is denied, carrying `net:deny-egress-port-not-allowlisted` and
+  `det.net.egress.port_blocked`, with the port and the permitted set named in the reason.
+  `guarded` and `monitor` do not gate on it — the allowlist pair is a strict-mode control,
+  exactly as the host half is — so a perimeter running in `guarded` still reaches any port on
+  a host no rule denies. Pair the perimeter with `strict` if the port set matters.
+- **A captured connection that is neither TLS nor HTTP is refused, not understood.** On the
+  two captured ports there are two parsers and no third, so a database wire protocol, SSH, or
+  HTTP/2 with prior knowledge fails to name a destination and is denied. TLS is where the
+  port genuinely is pinned: SNI carries no port, so a captured TLS connection is always
+  opened on `transparent.tlsPort`, and a TLS stream deliberately sent to `:80` is attributed
+  to `443` of the host its SNI names. That asymmetry is the thing to remember — HTTP can name
+  a port, TLS cannot.
 - **Root and an nftables-capable kernel are required to install, and this is Linux only.**
   `install`, `rollback`, and `run` need root outright; `status` and `verify` need
   `CAP_NET_ADMIN` to read the table. `plan` is the only subcommand that needs nothing.
