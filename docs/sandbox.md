@@ -495,8 +495,9 @@ design. The proxy is on the same host, reached over loopback: `src/perimeter/spe
 and exempts the proxy uid so it reaches upstream directly. And the proxy resolves through NSS
 like everything else: `connectUpstream` in `src/proxy/transparent.ts` dials
 `netConnect(destination.port, destination.host, ...)`, where `destination.host` is the name
-recovered from SNI, and Node's `net.connect` resolves a hostname with `dns.lookup`, which is
-`getaddrinfo`, which reads `/etc/hosts`.
+recovered from SNI. `netConnect` is `net.connect`, aliased at the import, so grepping that file
+for `net.connect` finds nothing and the resolution is easy to miss. Node's `net.connect` resolves
+a hostname argument with `dns.lookup`, which is `getaddrinfo`, which reads `/etc/hosts`.
 
 So a host-wide entry pointing `example.com` at `192.0.2.1` is read by the proxy too, and the
 proxy's upstream connection goes to TEST-NET-1. The agent's fake address is discarded exactly as
