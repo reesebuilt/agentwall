@@ -287,6 +287,16 @@ Unprivileged, it refuses and points at `plan` rather than half-applying anything
 rejects the ruleset, nothing is applied — the transaction property again — and the `nft`
 error is printed verbatim.
 
+It hands the ruleset to `nft` as a file rather than on standard input: the bytes go to a
+`0600` file inside a private temporary directory, `nft -f` reads that path, and the directory
+is removed afterwards whether or not the load succeeded. That is worth knowing if you audit
+what the tool touches, and it is not a stylistic choice. `nft -f -` resolves to `/dev/stdin`
+and refuses anything that is not a regular file or a fifo, and Node does not give a child
+process a fifo for piped input, it gives it a Unix socket. Feeding `nft` on stdin from Node
+therefore failed with `Not a regular file: "/dev/stdin"` and installed nothing, on every
+host, every time. The `plan | sudo nft -f -` pipeline is unaffected, because a shell pipe
+really is a fifo.
+
 ### `status`
 
 ```bash
@@ -466,20 +476,93 @@ field that tells you which one you are reading.
 Read all of these. Several of them are holes, and they are not going to be described as
 anything else.
 
-- **The ruleset parses, but has not been loaded into a kernel by this project's tests.**
-  `nft` accepts the generated file as syntactically valid, and a test asserts that on every
-  run wherever `nft` is installed. That is the parser's verdict, not the kernel's: whether the
-  chain types, hook and priority pairs, and `inet`-family NAT support are accepted at load
-  time is only settled the first time you run `install` on a real host. The development
-  machine restricts unprivileged user namespaces, so no netns load could be performed there.
-  Run `plan`, read it, then `install` on a host you can afford to have refuse it, and treat
-  the first `verify` as the real test.
-- **DNS still leaves the host directly, and DNS is an exfiltration channel.** The agent
-  resolves a name before it connects, so port 53 has to be permitted for anything at all to
-  work. `--dns-resolver` narrows that to a single address on both transports, and omitting it
-  denies DNS entirely, but neither closes the channel: queries to the permitted resolver never
-  touch the proxy, are never policed, and a name is a place to put data. This is a known,
-  unclosed hole in the model. Point the agent at a resolver you control and log there.
+- **The ruleset loads into a real kernel, and the containment has been measured.** Verified on
+  Ubuntu kernel `6.8.0-136-generic` with nftables `1.0.9` by installing privileged on a
+  disposable VM and reading the table back with `nft list table inet agentwall`. The kernel
+  accepts every construct that was previously only assumed: `type nat hook output priority
+  dstnat` inside an `inet` table, `redirect to :PORT`, and `ip6 daddr` matches in an `inet`
+  chain. Containment was then measured against 29 egress probes run as the agent UID, each
+  compared with the same probe run before the ruleset existed, and each judged by two
+  independent oracles: skuid-scoped nftables counters in a separate observer table at output
+  priority `+200`, and `tcpdump` on the physical interface. Before installing, every probe
+  reached the network. After installing, only the ones described below did. Both oracles
+  agreed on all 29. This is one kernel and one nftables version, so treat the first `verify`
+  on your own host as the real test there, but the constructs themselves are no longer in
+  question.
+- **UDP is dropped in full, including QUIC.** Measured, because an operator reading "TCP is
+  redirected" could reasonably assume UDP is merely unproxied rather than blocked. It is
+  blocked: UDP to port 443, which is what HTTP/3 and QUIC use, and UDP to arbitrary ports are
+  both dropped by the kernel, as is ICMP. The consequence worth planning for is that an agent
+  behind this perimeter has no HTTP/3. A client that tries QUIC first has to fall back to TCP,
+  and one that cannot fall back simply fails.
+- **IPv6 is covered, and this was checked rather than assumed.** The table is `inet`, so the
+  rules bind both families, but "should" and "does" are different claims. Measured on a host
+  given a global IPv6 route: IPv6 TCP to `:443` is redirected to the proxy on `::1` exactly as
+  the v4 path is, and IPv6 TCP to a non-captured port and IPv6 UDP are both dropped. An
+  `inet`-family ruleset that silently missed v6 would be a real hole, and this one does not.
+- **DNS still leaves the host directly, and DNS is an exfiltration channel. This is
+  demonstrated, not theorised.** The agent resolves a name before it connects, so port 53 has
+  to be permitted for anything at all to work. `--dns-resolver` narrows that to a single
+  address on both transports, and omitting it denies DNS entirely, but neither closes the
+  channel. With `--dns-resolver 1.1.1.1` set, an attacker-chosen payload was carried off the
+  host inside a query name and a 142-byte answer came back, and a plain TCP connection to
+  `1.1.1.1:53` completed and carried arbitrary bytes in both directions. That is a working
+  bidirectional channel to an external host which never touches the proxy and never reaches
+  the audit chain. With no resolver named the channel closes completely: UDP to `:53` fails
+  with `EPERM` and TCP to `:53` is dropped. Read that as a real closure and also as a real
+  cost, because it closes by denying the agent name resolution outright, which for most agents
+  means denying it everything. `src/perimeter/spec.ts` says the same thing in the field
+  documentation for `dnsResolver`, and two entries down explains why the obvious way to get
+  the closure without the cost does not work. Naming a resolver is therefore opening a hole on
+  purpose. Point the agent at a resolver you control and log there.
+- **Naming a resolver does not by itself give the agent working DNS.** On any host using
+  `systemd-resolved`, `/etc/resolv.conf` points at the stub listener `127.0.0.53`, and that
+  address is neither the permitted resolver nor loopback the agent may reach. Measured: with
+  `--dns-resolver 1.1.1.1` installed, `getaddrinfo("example.com")` inside the agent UID is
+  dropped and `curl https://example.com/` fails at resolution rather than at connection. The
+  perimeter is working correctly; the resolver the agent's libc actually asks is simply not
+  the one that was permitted. Point the agent's `resolv.conf` at the same address you passed
+  to `--dns-resolver`, or the agent resolves nothing. Take that instruction literally on a
+  systemd host, because the obvious way to follow it does not work: `/etc/resolv.conf` is a
+  symlink to `../run/systemd/resolve/stub-resolv.conf`, which `systemd-resolved` owns and
+  rewrites, so editing through the link is reverted without warning. Replace the symlink with
+  a real file. There is no no-resolver closure that works host-wide; see two entries down for
+  why, and prefer a resolver you control and log.
+- **The address the agent dials is discarded.** The redirect rewrites the destination before a
+  single byte is sent, and the proxy recovers the real destination from SNI or the `Host`
+  header, so the address the agent resolved is never used for anything. Measured with no
+  resolver permitted: an agent pointed at `192.0.2.1` for `example.com`, an address in
+  `TEST-NET-1` that routes nowhere, fetched the real `example.com` and got `200`, and the
+  ledger recorded `example.com:443` with 5344 bytes down. The same trick against a
+  non-allowlisted host was denied and recorded. Read the security consequence: policy is
+  evaluated against the hostname recovered from the stream and never against the address the
+  agent dialled, so any DNS pinning or IP allowlisting you believe you have in front of this
+  is decorative.
+- **That does not add up to a way to close the DNS channel, and the obvious recipe is wrong.**
+  Since the dialled address is discarded, it is tempting to conclude that you can name no
+  resolver, give the agent a static `/etc/hosts` mapping every name to a placeholder, and have
+  containment with no port 53 path at all. An earlier version of this document recommended
+  exactly that. It does not work, and it was corrected only because a reviewer challenged the
+  reasoning rather than the measurement. `/etc/hosts` is host-wide and uid-agnostic, and the
+  proxy runs on the same host with no mount namespace between them, so the proxy's own
+  `getaddrinfo` reads the same placeholder. Measured: with `192.0.2.1 example.com` in
+  `/etc/hosts`, the proxy resolved `example.com` to `192.0.2.1`, its upstream connect went to
+  an address that routes nowhere, and the agent's fetch failed with `curl: (28) Connection
+  timed out` and produced no ledger record at all. The measurement behind the previous entry
+  used `curl --resolve`, which is scoped to that one process, and the difference between those
+  two results is precisely the scope.
+
+  So the constraint, stated honestly: the agent needs *an* address and the proxy needs the
+  *correct* address for the same name, and one host-wide resolution path cannot serve both.
+  A per-client override such as `curl --resolve` genuinely works and is measured above, but it
+  is per-client rather than a posture, and it does nothing for an agent that resolves through
+  a library you do not control. Giving the agent its own `/etc/hosts` through a mount namespace
+  is the plausible general fix, and it is worth noting that a mount namespace would not break
+  containment the way a network namespace does, because nftables tables are per-network-namespace
+  and not per-mount-namespace. That is unimplemented and unmeasured here, so treat it as a
+  direction and not as advice. Until it exists there is no general closure for the DNS channel:
+  name a resolver you control and log there, and read the exfiltration entry above as a
+  standing property of any deployment where the agent resolves names for itself.
 - **ECH or ESNI hides the SNI, so such a client is refused rather than inspected.** The
   destination is unnameable, the refusal is structural, and the connection dies. That fails
   closed, which is correct, but the honest consequence is that it breaks that client rather
@@ -518,11 +601,28 @@ anything else.
   holds only while the agent is not root and cannot become root. `plan` refuses to build a
   perimeter around UID 0 for that reason, and refuses to exempt UID 0 because that would
   exempt every root process on the host rather than the proxy.
+- **A user namespace does not defeat it, but a network namespace does.** These are different
+  answers and both were measured. `meta skuid` matches the kernel's own uid for the socket,
+  not the uid a process sees, so an agent that becomes root inside a user namespace is still
+  contained: with Ubuntu's `kernel.apparmor_restrict_unprivileged_userns` lifted to `0`,
+  `unshare -Ur` reports uid 0 inside the namespace and its traffic is still redirected on
+  `:443` and still dropped on other ports. A network namespace is the opposite. nftables
+  tables are per-namespace, so the `inet agentwall` table does not exist inside a new one and
+  none of this applies there. `unshare -Urn -- nft list tables` shows no agentwall table while
+  the host namespace has one. What saves it on a stock host is that the new namespace has only
+  a down `lo` and no route, so `connect()` returns `ENETUNREACH` and it is self-denial rather
+  than escape. It becomes a real escape the moment the agent can reach a userspace
+  connectivity helper such as `slirp4netns`, `pasta`, or `passt`, or a container runtime
+  socket it can write. Keep those off the host, or off the agent UID, or deny `unshare(2)`,
+  `setns(2)`, and `clone(CLONE_NEWUSER)` with seccomp.
 - **`--allow-loopback` lets the agent reach local services, which this model does not
   protect.** It is off by default and it is a deliberate hole when you open it: loopback is
   exempted from both the redirect and the drop, so those connections are neither policed nor
   recorded. A local service can itself be a route off the host, and nothing here inspects what
-  the agent asks it to do.
+  the agent asks it to do. Left off, the denial is real and was measured: the agent could not
+  reach `127.0.0.1:22`, could not reach the `systemd-resolved` stub on `127.0.0.53`, and could
+  not reach AgentWall's own control API on `127.0.0.1:3015`. The only loopback destination it
+  reached was the proxy port itself, which is the one the rules name.
 - **Transparent-mode records are unattributed.** The `client` on every record from this path
   is `pid: null, comm: null`, and the audit event carries `agentId: "unattributed"` with `pid`
   and `comm` of `"unknown"`. The `/proc` attribution the forward proxy performs is a

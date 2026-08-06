@@ -41,6 +41,18 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
   endpoint no client calls. `PolicyEvaluationResponse` no longer carries the field.
 
 ### Fixed
+- `agentwall perimeter install` installs a perimeter. It never did. It handed the ruleset to
+  `nft` on standard input as `spawnSync("nft", ["-f", "-"], { input: ruleset })`, and Node does
+  not give a child process a pipe for `input`: libuv backs child stdio with a Unix domain
+  socket. `nft -f -` resolves to `/dev/stdin`, stats it, accepts neither a socket nor anything
+  that is not a regular file or a fifo, and refuses the whole transaction with
+  `Not a regular file: "/dev/stdin"`. Every invocation on every host exited 1 and created no
+  table. The documented `plan | sudo nft -f -` pipeline was never affected, because a shell pipe
+  really is a fifo, and that is why this survived: the tests either asserted on the rendered
+  string or checked a file they wrote themselves with `nft --check --file`, so nothing exercised
+  the path an operator runs as root. The ruleset now goes to a `0600` file in a private
+  temporary directory which is removed afterwards, and `tests/perimeter-nft.test.ts` asserts the
+  argument handed to `nft` is a readable regular file rather than a bare dash.
 - Audit records lost to a failing sink no longer read as tampering. The chain state advanced before
   the sinks ran and the sink error was swallowed, so a record that never reached disk still moved
   the chain on, and the next record carried the index jump and broken link of a DELETED record.
