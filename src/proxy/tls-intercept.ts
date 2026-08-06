@@ -3,7 +3,7 @@ import { TLSSocket, connect as tlsConnect, createServer as createTlsServer, type
 import { createServer as createHttpServer, type IncomingMessage, type ServerResponse } from "http";
 import { request as httpsRequest } from "https";
 import type { Writable } from "stream";
-import { brotliDecompressSync, gunzipSync, inflateSync } from "zlib";
+import { brotliDecompressSync, constants, gunzipSync, inflateSync } from "zlib";
 import { normalizeHostname } from "../planes/network/ssrf";
 import { createCertMinter, inspectCa, probeOpenssl, resolveCaPaths, sanFor, type CertMinter, type MintStats } from "./mitm-ca";
 import type { BodyVisibility, ProxyBody, ProxyDecideResult, ProxyEvent, ProxyRecord, ProxyVerdict } from "./forward-proxy";
@@ -791,12 +791,14 @@ export interface ReadBody {
 /**
  * Buffer a bounded prefix of a message body and produce text a scanner can read.
  *
- * Four outcomes, and the record says which. `intercepted` means the whole body was read and what
- * was scanned is what was sent. `partial` means the cap or the stall timer won, so a clean scan
- * covers a prefix and the record says so. `stream` means the body was never buffered on purpose,
- * because buffering an event stream converts it into a hang. And a body whose content-encoding
- * could not be decoded comes back with a note and no text, recorded as a stated limit rather than
- * as a clean read.
+ * Four outcomes and the record says which. `intercepted` is the whole body. `partial` means the cap
+ * or the stall timer won, so a prefix was scanned and the record says so, and that INCLUDES a
+ * compressed body past the cap, which decodes to a readable prefix rather than to nothing: see the
+ * flush note on GZIP_OPTIONS for why that took a measurement. `stream` means the body was never
+ * buffered on purpose, because buffering an event stream converts it into a hang. `unread` means
+ * nothing was readable at all, an encoding this cannot decode or a corrupt one, recorded as a
+ * stated limit and never as a clean read nor as a partial one, because claiming a prefix that does
+ * not exist is its own lie.
  *
  * In none of those outcomes is a byte of traffic lost: the unread remainder is handed back for
  * the caller to pipe. Inspection is bounded; delivery is not.
@@ -837,8 +839,10 @@ async function readBody(
 
   const drained = await drain(message);
   const encoding = String(message.headers["content-encoding"] ?? "");
-  const decoded = decodeForInspection(drained.prefix, encoding);
-  const partial = drained.rest !== null;
+  // Every way the read stopped early counts as a truncated input, not only the cap: a stall, an
+  // abort and a socket error all leave a prefix, and the decoder cannot tell from the bytes alone.
+  const inputTruncated = drained.rest !== null || drained.note !== null;
+  const decoded = decodeForInspection(drained.prefix, encoding, inputTruncated);
 
   return {
     prefix: drained.prefix,
@@ -846,15 +850,19 @@ async function readBody(
     scanned: {
       direction,
       text: decoded.text,
-      truncated: partial || !decoded.complete,
+      truncated: decoded.coverage !== "whole",
       bytes: drained.prefix.length,
       ...(encoding.trim() === "" ? {} : { encoding: encoding.trim() }),
-      // An encoding this could not decode is marked, not silently handed over as empty text, for
-      // the same reason as the stream case above.
-      ...(decoded.complete ? {} : { unscannable: "encoding" as const }),
+      // Marked ONLY when nothing was readable. A decodable prefix of a compressed body is a real
+      // scan of real content, and marking it unscannable would discard a finding that was actually
+      // made. Wrong in either direction is a lie: `unscannable` on a prefix hides evidence, and its
+      // absence on a `none` invents evidence.
+      ...(decoded.coverage === "none" ? { unscannable: "encoding" as const } : {}),
       ...withStatus,
     },
-    visibility: partial || !decoded.complete ? "partial" : "intercepted",
+    // `unread` rather than `partial` when nothing decoded, because `partial` claims a prefix WAS
+    // read. Nothing was.
+    visibility: decoded.coverage === "whole" ? "intercepted" : decoded.coverage === "prefix" ? "partial" : "unread",
     note: decoded.note ?? drained.note,
   };
 }
@@ -949,36 +957,64 @@ function drain(message: IncomingMessage): Promise<Drained> {
   return settled.promise;
 }
 
+/** How much of a body the scanner actually got to read. */
+export type BodyCoverage = "whole" | "prefix" | "none";
+
 export interface DecodedBody {
   text: string;
-  /** False when the bytes could not be turned into scannable text. Never reported as clean. */
-  complete: boolean;
+  coverage: BodyCoverage;
+  /** Why nothing was readable, when nothing was. Never set for a `prefix`. */
   note: string | null;
 }
 
 /**
+ * zlib options shared by every decoder: a bounded output, and a flush that tolerates a cut stream.
+ *
+ * `maxOutputLength` bounds a compression bomb, and it has to be zlib's own bound rather than a
+ * check afterwards, because by the time there is a buffer to measure the allocation has happened.
+ *
+ * `finishFlush` is the part that took a measurement to get right, and having it wrong made this
+ * whole feature quietly useless for most of the traffic it exists to read. A body past the
+ * inspection cap arrives here as a PREFIX of a compressed stream, and under zlib's default
+ * `Z_FINISH` a prefix throws `Z_BUF_ERROR`. So a 300 KiB gzipped response, which is exactly the
+ * poisoned-tool-result shape the response pass was built for, decoded to nothing and was scanned
+ * not in part but not at all. Measured on this box: 262144 bytes of a truncated gzip stream throw
+ * under `Z_FINISH`, and yield 348001 readable bytes under `Z_SYNC_FLUSH` with the injected
+ * instruction present in them.
+ *
+ * What the flush does NOT weaken, also measured, because a flush that swallowed real corruption
+ * would have traded one silent failure for another: a corrupt header still throws `Z_DATA_ERROR`,
+ * and a bomb still trips the bound with `ERR_BUFFER_TOO_LARGE`.
+ */
+const GZIP_OPTIONS = { maxOutputLength: MAX_DECOMPRESSED_BYTES, finishFlush: constants.Z_SYNC_FLUSH };
+const BROTLI_OPTIONS = { maxOutputLength: MAX_DECOMPRESSED_BYTES, finishFlush: constants.BROTLI_OPERATION_FLUSH };
+
+/**
  * Turn body bytes into text a scanner can read, decompressing when the encoding says to.
  *
- * Bounded with `maxOutputLength` rather than by a check afterwards: a compression bomb has to be
- * refused by the decompressor, because by the time there is a buffer to measure the allocation
- * has already happened. An encoding zlib does not implement, and a body that trips the bound,
- * both return `complete: false` with a reason, and the caller records that as a stated limit.
- * Neither is ever reported as a clean scan.
+ * `inputTruncated` is the caller's statement that `raw` is a prefix rather than a whole body, and it
+ * has to be a parameter because it cannot be recovered here. With the flush above a cut compressed
+ * stream decodes successfully, so a throw no longer separates "truncated" from "whole": only the
+ * reader that stopped early knows, and it must say so or a prefix gets recorded as a complete scan.
+ *
+ * Three outcomes and the record carries which. `whole` is the entire body. `prefix` is a readable
+ * beginning of it, which is a real scan of real content and must NOT be marked unscannable. `none`
+ * is nothing at all, which is never reported as clean and never as partial either.
  */
-export function decodeForInspection(raw: Buffer, encoding: string): DecodedBody {
-  if (raw.length === 0) return { text: "", complete: true, note: null };
+export function decodeForInspection(raw: Buffer, encoding: string, inputTruncated = false): DecodedBody {
+  const onSuccess: BodyCoverage = inputTruncated ? "prefix" : "whole";
+  if (raw.length === 0) return { text: "", coverage: onSuccess, note: null };
   const name = (encoding.split(",")[0] ?? "").trim().toLowerCase();
-  if (name === "" || name === "identity") return { text: raw.toString("utf8"), complete: true, note: null };
+  if (name === "" || name === "identity") return { text: raw.toString("utf8"), coverage: onSuccess, note: null };
 
-  const limit = { maxOutputLength: MAX_DECOMPRESSED_BYTES };
   try {
-    if (name === "gzip" || name === "x-gzip") return { text: gunzipSync(raw, limit).toString("utf8"), complete: true, note: null };
-    if (name === "deflate") return { text: inflateSync(raw, limit).toString("utf8"), complete: true, note: null };
-    if (name === "br") return { text: brotliDecompressSync(raw, limit).toString("utf8"), complete: true, note: null };
+    if (name === "gzip" || name === "x-gzip") return { text: gunzipSync(raw, GZIP_OPTIONS).toString("utf8"), coverage: onSuccess, note: null };
+    if (name === "deflate") return { text: inflateSync(raw, GZIP_OPTIONS).toString("utf8"), coverage: onSuccess, note: null };
+    if (name === "br") return { text: brotliDecompressSync(raw, BROTLI_OPTIONS).toString("utf8"), coverage: onSuccess, note: null };
   } catch (err) {
-    return { text: "", complete: false, note: `content-encoding ${name} could not be decoded, so this body was not scanned: ${(err as Error).message}` };
+    return { text: "", coverage: "none", note: `content-encoding ${name} could not be decoded, so this body was not scanned at all: ${(err as Error).message}` };
   }
-  return { text: "", complete: false, note: `content-encoding ${name} is not one this can decode, so this body was not scanned` };
+  return { text: "", coverage: "none", note: `content-encoding ${name} is not one this can decode, so this body was not scanned at all` };
 }
 
 /**

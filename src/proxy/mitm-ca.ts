@@ -324,17 +324,37 @@ function isIpv4(name: string): boolean {
 /**
  * The subjectAltName a name needs, or null when this name may not be minted for at all.
  *
- * This is the ONLY gate between a hostname an untrusted client composed and an `openssl` argv
- * array, and it is a gate rather than an escape because there is nothing to escape into: the
- * charset allowlist in `isPlausibleHostname` admits letters, digits, hyphen and underscore
- * per label and nothing else. No quote, no semicolon, no backtick, no slash, no dot-dot, no
- * NUL, no CR. Combined with `shell: false` and an argv array there is no shell to inject into
+ * This is the ONE gate in front of all THREE places a hostname escapes into something that
+ * interprets it, and it is deliberately a single gate rather than three: `contextFor` calls this
+ * before `mintLeaf`, and `mintLeaf` is what puts the name in an `openssl` argv AND the SAN in an
+ * `-extfile` config stanza, and the cache is only ever written after both succeed. Three call sites,
+ * one refusal, so they cannot drift apart.
+ *
+ * It is a gate rather than an escape because there is nothing to escape into: the charset allowlist
+ * in `isPlausibleHostname` admits letters, digits, hyphen and underscore per label and nothing
+ * else, with 253 characters total and 63 per label. No quote, no semicolon, no backtick, no slash,
+ * no dot-dot, no NUL, no newline, no `=`, no `[` and no comment character. Combined with
+ * `shell: false` and an argv array there is no shell to inject into, no config directive to append,
  * and no path component to traverse with.
  *
- * It matters more here than it looks. `parseHostPort` in forward-proxy.ts does no validation:
- * it splits the CONNECT authority on the last colon and hands back whatever remains. That is
- * harmless while the string only reaches a connect call and an allowlist, and it stops being
- * harmless the moment it reaches a subprocess argument.
+ * `parseHostPort` in forward-proxy.ts does no validation at all: it splits the CONNECT authority on
+ * the last colon and hands back whatever remains. That is harmless while the string only reaches a
+ * connect call and an allowlist, and it stops being harmless the moment it reaches a subprocess
+ * argument or a config file. What actually arrives has been MEASURED by ForwardProxyTests, commit
+ * 8561097, and two of the results are worth having in writing here because intuition gets them
+ * wrong:
+ *
+ *   - A SLASH is not rejected by Node's parser. `example.internal/path:443` arrives as the host
+ *     `example.internal/path` verbatim, and nothing decodes the authority, so percent-encoding is
+ *     not a way back in either. That is exactly the shape that becomes a traversal in anything
+ *     building a filename from a hostname, and it is why this gate is in front of the cache too.
+ *   - A bare LF is ACCEPTED, not refused. It terminates the request line, the authority truncates
+ *     at it, and the remainder parses as a valid header, so a decision is taken on the shortened
+ *     host: `CONNECT exam\nple.internal:443` decides on `exam`. A bare CR is refused, as are NUL,
+ *     space, tab and backslash. So no newline reaches a name this ever sees, but it holds by
+ *     TRUNCATION rather than by refusal, which is a weaker mechanism than it first appears and is
+ *     why the charset allowlist below is load-bearing rather than belt-and-braces. An earlier
+ *     version of this comment claimed the parser refused both; it does not.
  *
  * IPv4 gets an IP SAN because a DNS SAN does not verify for a connection made to a literal
  * address, and an agent calling an IP-addressed endpoint is ordinary traffic. IPv6 is refused

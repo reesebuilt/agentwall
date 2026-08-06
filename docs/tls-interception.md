@@ -250,7 +250,8 @@ records honestly were.
 | `bypassed` | Deliberately opaque, by operator choice. | The host is on `interception.bypassHosts`. |
 | `plaintext` | A whole body, read because it was never encrypted. | The unencrypted http path, where there was never anything to decrypt. |
 | `intercepted` | A whole https body, read because TLS was terminated. | The body was buffered to its end and decoded. |
-| `partial` | A prefix was scanned; the remainder was forwarded unread. | The 256 KiB inspection cap or the 1 second stall timer won, or the content encoding could not be decoded. |
+| `partial` | A prefix was scanned; the remainder was forwarded unread. | The 256 KiB inspection cap or the 1 second stall timer won. A compressed body past the cap counts here: the truncated stream is decompressed to a readable prefix rather than to nothing. |
+| `unread` | Nothing in the body was read at all. | The content encoding is not one this can decode (`zstd`, say), or the compressed body was corrupt, or the body tripped the 4 MiB decompression bound. Distinct from `partial` on purpose: claiming a prefix that does not exist is its own lie. |
 | `stream` | Never buffered, on purpose. | The content type is one of `text/event-stream`, `application/x-ndjson`, `application/grpc`. |
 
 Two properties of the field that make it usable as evidence:
@@ -263,9 +264,19 @@ Two properties of the field that make it usable as evidence:
   `metadata.interceptBodyLimit`. A record never says "scanned, nothing found" about bytes nobody
   decoded.
 
-`partial` and `stream` bound **inspection**, never delivery. When the cap is hit mid-chunk the
-remainder is pushed back and piped on, so the prefix plus the remainder is byte-identical to what
-arrived. A body larger than the cap is scanned in part and delivered in full.
+`partial`, `stream` and `unread` bound **inspection**, never delivery. When the cap is hit mid-chunk
+the remainder is pushed back and piped on, so the prefix plus the remainder is byte-identical to
+what arrived. A body larger than the cap is scanned in part and delivered in full.
+
+That holds for compressed bodies too, and it took a measurement to get right rather than an
+argument. A gzip body past the cap arrives at the decoder as a truncated stream, and under zlib's
+default `Z_FINISH` a truncated stream throws `Z_BUF_ERROR`: the body would have been scanned not in
+part but not at all, which is the failure this whole feature exists to prevent, arriving by the one
+route nobody looks at. Since most https responses are compressed, that would have been most
+traffic. The decoders pass `Z_SYNC_FLUSH` (`BROTLI_OPERATION_FLUSH` for brotli), which returns the
+decodable prefix instead. Measured: 262144 bytes of a truncated gzip stream throw under the default
+and yield 348001 readable bytes under the flush. The flush does not weaken the other two guards,
+also measured: a corrupt header still throws `Z_DATA_ERROR` and a bomb still trips the 4 MiB bound.
 
 ## Refusing rather than degrading
 
@@ -314,7 +325,13 @@ Interception narrows the blind spot. It does not close it, and the list below is
   Those connections tunnel and their records say `tunneled` with the reason.
 - **Bodies past the 256 KiB inspection cap**, and bodies that go quiet for more than 1 second.
   Recorded `partial`, the prefix is scanned, and the unread remainder is forwarded **unread but not
-  truncated**: the destination and the client both receive every byte that was sent.
+  truncated**: the destination and the client both receive every byte that was sent. This applies to
+  compressed bodies as well, which are decompressed to a readable prefix rather than failing to
+  decode; see the note on `partial` above.
+- **Bodies whose content encoding cannot be decoded at all**, which is anything outside gzip,
+  deflate and brotli, plus a corrupt compressed body and one that trips the 4 MiB decompression
+  bound. These are scanned **not at all, not in part**, and are recorded `unread` with the reason,
+  never `partial` and never clean.
 - **Streaming content types.** `text/event-stream`, `application/x-ndjson`, and
   `application/grpc` are never buffered, because buffering a stream converts it into a hang. They
   are forwarded unread and recorded `stream`, which is an admission rather than a pass.

@@ -24,7 +24,7 @@ import { gzipSync } from "zlib";
 import { mkdtempSync, readFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { createHash } from "crypto";
+import { createHash, randomBytes } from "crypto";
 import { createForwardProxy, type ProxyEvent, type ProxyDecideResult, type ProxyRecord } from "../../src/proxy/forward-proxy";
 import { resolveInterceptor } from "../../src/proxy/tls-intercept";
 import { scanText } from "../../src/planes/identity/dlp";
@@ -42,6 +42,8 @@ interface Observation {
   port: number;
   /** Bytes the client actually sent as a body, to compare against what the upstream received. */
   requestBodyBytes: number;
+  /** Bytes of response body the client received, to prove a capped scan still delivers whole. */
+  responseBodyBytes: number;
   /** The certificate the CLIENT was shown. Different fingerprints prove interception happened. */
   leafFingerprint: string | null;
   clientAuthorized: boolean | null;
@@ -155,6 +157,16 @@ async function main(): Promise<void> {
         res.end("data: [DONE]\n\n");
         return;
       }
+      if (String(req.headers["x-test-biggzip"] ?? "") === "1") {
+        // A gzip STREAM larger than the inspection cap. Incompressible filler is the point: a
+        // compressible payload would gzip to under the cap and never exercise the truncated-stream
+        // decode, which is how this gap survived the first round of tests.
+        const marker = `{"tool_result":"${INJECTION_IN_RESPONSE}","token":"${SECRET_IN_RESPONSE}","filler":"`;
+        const packed = gzipSync(Buffer.from(marker + randomBytes(400 * 1024).toString("base64") + '"}', "utf8"));
+        res.writeHead(200, { "content-type": "application/json", "content-encoding": "gzip", "content-length": String(packed.length) });
+        res.end(packed);
+        return;
+      }
       if (String(req.headers["x-test-gzip"] ?? "") === "1") {
         const packed = gzipSync(Buffer.from(payload, "utf8"));
         res.writeHead(200, { "content-type": "application/json", "content-encoding": "gzip", "content-length": String(packed.length) });
@@ -216,7 +228,12 @@ async function main(): Promise<void> {
 
   const caCertPath = join(dir, "ca.crt");
 
-  async function observe(label: string, host: string, opts: { gzip?: boolean; sse?: boolean; payload?: string }, port: number): Promise<Observation> {
+  async function observe(
+    label: string,
+    host: string,
+    opts: { gzip?: boolean; bigGzip?: boolean; sse?: boolean; payload?: string },
+    port: number
+  ): Promise<Observation> {
     const before = records.length;
     const seamBefore = seam.length;
     const seen = { fingerprint: null as string | null, authorized: null as boolean | null };
@@ -247,11 +264,19 @@ async function main(): Promise<void> {
                 `POST /v1/telemetry?run=1 HTTP/1.1\r\nHost: ${host}\r\n` +
                   (opts.gzip ? "x-test-gzip: 1\r\n" : "") +
                   (opts.sse ? "x-test-sse: 1\r\n" : "") +
+                  (opts.bigGzip ? "x-test-biggzip: 1\r\n" : "") +
                   `content-type: application/json\r\ncontent-length: ${Buffer.byteLength(payload)}\r\nconnection: close\r\n\r\n${payload}`
               );
-              let out = "";
-              tls.on("data", (d: Buffer) => (out += d.toString("utf8")));
-              tls.on("end", () => settle(out.slice(out.indexOf("\r\n\r\n") + 4)));
+              // Buffers, then latin1, never utf8. A gzip response accumulated as utf8 has every
+              // byte over 0x7f replaced with U+FFFD, so both the byte count and any marker check
+              // would be measuring a corrupted copy of what actually arrived.
+              const chunks: Buffer[] = [];
+              tls.on("data", (d: Buffer) => chunks.push(d));
+              tls.on("end", () => {
+                const whole = Buffer.concat(chunks);
+                const gap = whole.indexOf("\r\n\r\n", 0, "latin1");
+                settle((gap < 0 ? whole : whole.subarray(gap + 4)).toString("latin1"));
+              });
             }
           );
           tls.on("error", (err: Error) => fail(err));
@@ -268,6 +293,7 @@ async function main(): Promise<void> {
       host,
       port: upstreamPort,
       requestBodyBytes: sentBytes.count,
+      responseBodyBytes: Buffer.byteLength(responseBody, "latin1"),
       leafFingerprint: seen.fingerprint,
       clientAuthorized: seen.authorized,
       responseBody,
@@ -322,7 +348,10 @@ async function main(): Promise<void> {
   const bigPayload = `{"exfil":"${SECRET_IN_REQUEST}","filler":"${"x".repeat(600 * 1024)}","tail":"END_MARKER"}`;
   observations.push(await observe("intercepted-over-cap", "localhost", { payload: bigPayload }, mitmPort));
 
-  // 4. An event stream. Must arrive intact and be recorded as never inspected.
+  // 4. A gzip response bigger than the inspection cap: the shape most real https responses take.
+  observations.push(await observe("intercepted-gzip-over-cap", "localhost", { bigGzip: true }, mitmPort));
+
+  // 5. An event stream. Must arrive intact and be recorded as never inspected.
   observations.push(await observe("intercepted-event-stream", "localhost", { sse: true }, mitmPort));
 
   // 5. BYPASS. Same proxy, same instant, a host on the bypass list. Must be untouched.
