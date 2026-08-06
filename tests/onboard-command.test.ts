@@ -10,6 +10,7 @@ import {
   proxyUrlFor,
   renderEnvLines,
   renderNoProxyNote,
+  renderPostureLines,
   renderInterceptionLines,
   runOnboard,
   withAgent,
@@ -349,6 +350,42 @@ describe("refusals", () => {
   it("refuses a config whose top level is not a mapping", () => {
     writeFileSync(configPath, yaml.dump(["not", "a", "mapping"]));
     expect(() => runOnboard(baseRequest())).toThrow(/not a YAML mapping/);
+  });
+});
+
+describe("the reported posture is read from the config, not assumed", () => {
+  it("says recorded-not-blocked only when that is actually true", () => {
+    const lines = renderPostureLines({ egress: { defaultDeny: false } }).join(" ");
+    expect(lines).toMatch(/RECORDED, not/);
+    expect(lines).not.toMatch(/WARNING/);
+  });
+
+  it("treats a config with no enforcement block as monitor, which is how the loader reads it", () => {
+    expect(renderPostureLines({}).join(" ")).toMatch(/RECORDED, not/);
+  });
+
+  it("warns instead of reassuring when egress is default-deny", () => {
+    // `agentwall init --mode strict` writes egress.defaultDeny true and no enforcement block.
+    // Printing "monitor, nothing will start failing" over that config would be a reassuring
+    // falsehood from the one command whose whole purpose is refusing to produce those.
+    const lines = renderPostureLines({ egress: { defaultDeny: true } }).join(" ");
+    expect(lines).toMatch(/DEFAULT-DENY/);
+    expect(lines).toMatch(/WARNING/);
+    expect(lines).not.toMatch(/Nothing it does today/);
+  });
+
+  it("warns when the enforcement mode itself is enforcing", () => {
+    const lines = renderPostureLines({ enforcement: { mode: "strict" } }).join(" ");
+    expect(lines).toMatch(/strict/);
+    expect(lines).toMatch(/ENFORCES/);
+  });
+
+  it("carries the real posture through onboarding into the result", () => {
+    // End to end rather than unit-only: proves runOnboard reads the document it just wrote
+    // rather than the mode it would like to claim.
+    writeFileSync(configPath, yaml.dump({ port: 3000, egress: { defaultDeny: true, allowedHosts: [], allowedPorts: [443] } }));
+    const result = runOnboard(baseRequest());
+    expect(result.postureLines.join(" ")).toMatch(/WARNING/);
   });
 });
 

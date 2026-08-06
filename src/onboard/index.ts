@@ -100,6 +100,11 @@ export interface OnboardResult {
   envLines: readonly string[];
   /** The interception lines, kept separate because interception is opt-in and off by default. */
   interceptionLines: readonly string[];
+  /**
+   * What the config ACTUALLY enforces, read back rather than assumed. Onboarding does not set
+   * the mode, so claiming one would be a guess printed as a fact.
+   */
+  postureLines: readonly string[];
   replacedExisting: boolean;
 }
 
@@ -232,6 +237,50 @@ export function renderInterceptionLines(profile: AgentProfile, caPath: string): 
 }
 
 /**
+ * Report the posture the config ACTUALLY has, rather than the one onboarding wishes it had.
+ *
+ * `onboard` declares an agent; it does not set the enforcement mode, and it deliberately does
+ * not change one it finds. So the report reads the document back. An operator who ran
+ * `init --mode strict` and was then told "monitor, nothing will start failing because you ran
+ * this command" would have been handed a reassuring falsehood by the one command in this
+ * repository whose entire purpose is refusing to do that.
+ *
+ * Both keys matter and they are independent: `enforcement.mode` gates the runtime, and
+ * `egress.defaultDeny` decides whether a host outside the allowlist is refused.
+ */
+export function renderPostureLines(document: Record<string, unknown>): string[] {
+  const enforcement = document["enforcement"];
+  let mode = "monitor";
+  if (enforcement && typeof enforcement === "object" && "mode" in enforcement) {
+    const raw = enforcement.mode;
+    if (typeof raw === "string") mode = raw;
+  }
+
+  const egress = document["egress"];
+  let defaultDeny = false;
+  if (egress && typeof egress === "object" && "defaultDeny" in egress) {
+    defaultDeny = egress.defaultDeny === true;
+  }
+
+  if (mode === "monitor" && !defaultDeny) {
+    return [
+      "Mode:       monitor, and egress is not default-deny. This agent is RECORDED, not",
+      "            blocked. Nothing it does today starts failing because you ran this command.",
+    ];
+  }
+
+  // Enforcing. Say what will actually happen, and name the allowlist as the thing to fix,
+  // because the first symptom otherwise is the agent failing for reasons nobody connects
+  // back to an onboarding step that printed a cheerful summary.
+  return [
+    `Mode:       ${mode}${defaultDeny ? ", egress is DEFAULT-DENY" : ""}. This config ENFORCES.`,
+    "            WARNING: unlike the monitor default, this agent can be blocked immediately.",
+    "            Anything outside the allowlist below is refused as soon as AgentWall reloads.",
+    "            Widen the allowlist first, or run in monitor until verify-capture passes.",
+  ];
+}
+
+/**
  * Load the config file as a plain object.
  *
  * Deliberately NOT loadConfig(): that applies defaults, resolves env credentials and validates
@@ -336,7 +385,13 @@ export function runOnboard(request: OnboardRequest): OnboardResult {
   fs.writeFileSync(request.configPath, yaml.dump(updated, { noRefs: true, lineWidth: 120 }));
 
   const proxyUrl = proxyUrlFor(credential.secret, request.proxyHost, request.proxyPort);
-  const caPath = path.join(process.env.HOME ?? "~", ".agentwall", "ca", "agentwall-ca.crt");
+  const caPath = path.join(process.env.HOME ?? "/root", ".agentwall", "ca", "agentwall-ca.crt");
+
+  // Read the posture back out of the document rather than asserting it. `onboard` writes an
+  // agent, not a mode, and an operator who ran `init --mode strict` would otherwise be told
+  // "monitor, nothing will start failing" by a command that had not looked. That is the same
+  // class of untrue-but-reassuring output this whole command refuses to produce.
+  const postureLines = renderPostureLines(updated);
 
   return {
     profile,
@@ -348,6 +403,7 @@ export function runOnboard(request: OnboardRequest): OnboardResult {
     allowedHosts,
     envLines: renderEnvLines(profile, proxyUrl),
     interceptionLines: renderInterceptionLines(profile, caPath),
+    postureLines,
     replacedExisting,
   };
 }
@@ -394,8 +450,7 @@ export function renderReport(result: OnboardResult, request: OnboardRequest): st
   out.push("CONFIG");
   out.push(`  Written:    ${result.configPath}`);
   out.push(`  Backup:     ${result.backupPath} (the YAML round trip does not preserve comments)`);
-  out.push(`  Mode:       monitor. This agent is RECORDED, not blocked. Nothing it does today will`);
-  out.push(`              start failing because you ran this command.`);
+  for (const line of result.postureLines) out.push(`  ${line}`);
   out.push(
     `  Allowlist:  ${result.allowedHosts.length > 0 ? result.allowedHosts.join(", ") : "none set, the process-wide allowlist judges this agent"}`
   );
