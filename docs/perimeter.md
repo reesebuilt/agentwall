@@ -356,11 +356,12 @@ Not contained:
     network stack. Those are other planes' problem.
   - what is inside a TLS session. The proxy does not terminate TLS; it decides from the
     destination the stream names, and denies a stream that names none.
-  - ports. The kernel captures :80 and :443 and drops the rest, but the proxy connects on
-    the agent's behalf to whatever the stream names, and an HTTP request may name its own
-    port via `Host: host:PORT`. Nothing is misrouted — the verdict is evaluated against
-    exactly the port that gets opened — but this ruleset makes no port unreachable. Port
-    containment comes from egress policy, so a port-blind allowlist allows every port.
+  - ports, by itself. The kernel captures :80 and :443 and drops the rest, but the proxy
+    connects on the agent's behalf to whatever the stream names, and an HTTP request may
+    name its own port via `Host: host:PORT`. Nothing is misrouted — the verdict is
+    evaluated against exactly the port that gets opened — but this ruleset makes no port
+    unreachable. Port containment comes from egress policy: `strict` requires the port to
+    be in `egress.allowedPorts`, and `guarded` and `monitor` do not gate on it at all.
   - the port of a TLS stream sent to :80. The kernel matches ports, not protocols, so such
     a stream is still attributed to 443 of the host its SNI names.
 ```
