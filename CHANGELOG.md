@@ -14,12 +14,20 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
   undeclared egress recorded since the last run, because rising undeclared traffic is what an
   escaping agent and a broken identity binding both look like. An agent declared but never seen
   renders as `DECLARED, NEVER SEEN` rather than a row of zeros: "never started" and "seen four
-  minutes ago and idle" are different states, and a counter table shows them identically. Doctor
-  exits non-zero when undeclared egress actually reached the network since its bookmark; an
-  attempt enforcement refused is reported and does not fail the run. Everything comes off the
-  chain and the config, with no background collector and no call to the running service, because
-  the moment you most want this answer is the moment that process is suspect. `--audit` selects
-  the chain and `--json` prints the whole report.
+  minutes ago and idle" are different states, and a counter table shows them identically.
+  Everything comes off the chain and the config, with no background collector and no call to
+  the running service, because the moment you most want this answer is the moment that process
+  is suspect. `--audit` selects the chain and `--json` prints the whole report.
+- Three verdicts from `agentwall doctor`, not two: 0 clear, 1 failed, 2 INCONCLUSIVE. Undeclared
+  egress that reached the network is only called an escape when the record itself says
+  `fleet.unmatched: deny` was in force under an enforcing mode, which is the combination
+  `src/runtime/enforcement.ts` refuses before opening an upstream socket. Under `unmatched:
+  global` (the default) or `enforcement.mode: monitor` (where every adoption starts), the same
+  traffic is what the configuration prescribes, so doctor reports INCONCLUSIVE and names the
+  setting to change rather than accusing an operator of a breach their own defaults arranged.
+  A refused attempt never fails a run. Egress records now carry `fleetUnmatched` so the verdict
+  is read from the record rather than from a config file that may have been edited since;
+  records predating the field are judged by the current config and the report says so.
 - `strongestBindingTier` and `weakestBindingTier` on the fleet registry, derived from the same
   rule the resolver indexes by. A declaration naming both a credential and a comm is reported at
   its comm strength: `resolve()` falls through to comm when no credential is presented, so any

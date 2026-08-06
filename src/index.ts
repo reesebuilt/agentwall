@@ -186,6 +186,14 @@ async function main() {
       agentMatchedOn: verdict.agent.matchedOn,
       agentDeclared: verdict.agent.declared ? "true" : "false",
       egressAllowlistSource: verdict.agent.allowlistSource,
+      // The posture in force when this connection was judged, so a reader a week later can
+      // tell whether an undeclared connection that got out was an escape or the configured
+      // behaviour. Under "global" the global allowlist is SUPPOSED to judge undeclared
+      // traffic and let matching hosts through; under "deny" the same record means
+      // something reached the network that policy said to refuse. Without this the two are
+      // indistinguishable in the chain, and a reader has to guess from a config file that
+      // may have been edited since.
+      fleetUnmatched: fleet?.unmatched ?? "global",
     };
     if (verdict.budget) {
       fields["budgetWindowSeconds"] = String(verdict.budget.windowSeconds);

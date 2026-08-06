@@ -186,39 +186,51 @@ The section above answers "what happened". `agentwall doctor` answers the harder
 agent claims?** Configuration proves capture once. This checks it on every run, which is what
 catches an agent that starts escaping next Tuesday because somebody edited its launch script.
 
+Real output, from a chain a server wrote (`fleet.unmatched: global`, three declared agents,
+one of which has never started):
+
 ```
 Capture
    chain            /var/lib/agentwall/audit.jsonl
-   egress records   412 read
-   since last run   chain index 1108, 6m ago
+   config           /etc/agentwall/agentwall.config.yaml
+   egress records   6 read
+   since last run   chain index 2, 6m ago
 
-❌ 3 undeclared egress records since the last run: 2 reached the network, 1 was refused.
+⚠️  3 undeclared egress records since the last run: 2 reached the network, 1 was refused.
    identity      aw-rogue 3
    destinations  open.example.test 2, closed.example.test 1
    bytes         4.0 KB
-   first / last  1m ago / 12s ago
-   This is either an agent nobody declared, or a declared agent whose identity binding broke. Both
-   look exactly like this. Compare the identities above against fleet.agents in your config.
+   first / last  1m ago / 13s ago
+
+   INCONCLUSIVE: 2 of those were allowed out by the configuration itself.
+   fleet.unmatched: global (the global allowlist judges undeclared traffic, by design)
+   That is not an escape, and it is not proof of innocence either: an undeclared agent talking
+   to an allowlisted host produces exactly this record, and so does an ordinary unlisted
+   process. Set `fleet.unmatched: deny` to make the next run able to answer.
 
    agent               binding      last seen      window          requests      bytes
-   claude-code         comm         2s ago         600s budget     2 / 5         4.0 KB / 32.0 KB
-   codex               comm         2s ago         1s budget       0 / 5         0 B / -
+   claude-code         comm         4s ago         600s budget     2 / 5         8.0 KB / 32.0 KB
+   codex               comm         3s ago         1s budget       0 / 5         0 B / -
    hermes              uid          DECLARED, NEVER SEEN
 
-⚠️  declared but never seen: hermes. Either it has not run yet, or it is running and its
-   traffic is not reaching this proxy, which is the same picture as an agent that escaped.
+⚠️  declared but never seen: hermes. This says nothing about why on its own.
+   It has not started yet, or it is running and its traffic never reaches this proxy: no
+   HTTPS_PROXY on the agent, a NO_PROXY entry covering where it goes, or a different chain
+   than the one above. An escaped agent and a misrouted one look identical from here, which
+   is why this is a prompt to go and check rather than a verdict.
 
 ⚠️  weakest binding in use: comm (claude-code, codex)
    A name the process chose for itself. Anything on this host can claim it, including
-   whatever you are trying to catch. Bind by credential (Proxy-Authorization) or uid.
+   whatever you are trying to catch. Bind by uid, or by credential if the agent can be
+   made to send Proxy-Authorization.
 ```
 
 Four things it can tell you that nothing else could:
 
-1. **Undeclared egress since the last run**, as the loudest line rather than a footnote.
-   Rising undeclared traffic is the signal that something is escaping or that an agent's
-   identity binding broke, and those two look identical from here, which is why the text says
-   so instead of guessing.
+1. **Undeclared egress since the last run**, as the loudest block rather than a footnote, and
+   split three ways: refused (the wall worked), permitted by the configuration itself
+   (inconclusive), and reached the network under a posture that said to refuse it (an escape).
+   Only the third is a failure. See the verdicts below.
 2. **Declared but never seen**, rendered differently from a zero. An agent that was seen four
    minutes ago and did nothing since is idle. An agent that has never appeared at all is
    either not started or not routed through the proxy. Both would be a row of zeros in a
@@ -231,22 +243,47 @@ Four things it can tell you that nothing else could:
    credential and a comm is reported at its comm strength: `resolve()` falls through to comm
    when no credential is presented, so the credential is a bonus rather than a requirement.
 
+### Three verdicts, and why there are three
+
+| exit | verdict | what it means |
+| --- | --- | --- |
+| 0 | clear | Nothing undeclared reached the network since the bookmark, or an install check is the only thing outstanding. |
+| 1 | failed | An install check failed, or undeclared egress reached the network while the record says `fleet.unmatched: deny` under an enforcing mode. |
+| 2 | inconclusive | The question was asked and cannot be answered from the evidence. |
+
+A two-valued check has to pick a side when the evidence supports neither, and the false-escape
+side is the expensive one: accuse an operator of a breach their own configuration prescribes
+and the check gets switched off. `fleet.unmatched: global` is the DEFAULT and is what the
+perimeter section above tells you to run; under it, undeclared traffic reaching an allowlisted
+host is exactly what the configuration asks for. `enforcement.mode: monitor` gates nothing, on
+purpose, and is where every adoption starts. Both produce allowed undeclared egress that is
+indistinguishable from an escape, so both report INCONCLUSIVE and name the setting to change.
+
+The verdict is read from the record, not from the config file. Each egress record carries the
+`fleetUnmatched` posture and the `enforcementMode` in force when the connection was judged, so
+tightening the config today does not retroactively convict yesterday's traffic. Records written
+before that field existed are judged against the current config, and the report says so.
+
+Under `fleet.unmatched: deny` with an enforcing mode, an allowed undeclared record should not
+be producible at all: `src/runtime/enforcement.ts` refuses that combination before opening an
+upstream socket. That is why it is the one case that exits 1.
+
 ### How "since the last run" works
 
 Doctor keeps a bookmark, `capture-watermark.json`, beside the audit file, holding the highest
 chain index it has already accounted for. Each run counts undeclared records past that index
 and then advances it. Consequences worth knowing:
 
-- The **first** run has no bookmark, so it reports the whole chain as a baseline and does not
-  fail. A cron seeds on its first firing and alarms from the second.
-- Doctor **exits non-zero** only when undeclared egress actually reached the network since the
-  bookmark. An attempt enforcement refused is printed and does not fail the run: a check that
-  goes red when the wall works is a check operators turn off.
+- The **first** run has no bookmark, so it reports the whole chain as a baseline and returns
+  0. A cron seeds on its first firing and judges from the second.
+- An attempt enforcement **refused** is printed and never fails the run. A check that goes red
+  when the wall works is a check operators turn off.
 - A bookmark **ahead** of the chain (the file was rotated away, replaced, or restarted at
   index zero) is discarded with a note, and everything readable is counted as new. Trusting it
   would report zero new records forever over a chain full of them.
-- If the bookmark **cannot be written**, that is a hard failure with its own line, because
-  every later run would otherwise report a clean nothing whatever happened.
+- If the bookmark **cannot be written**, the run is INCONCLUSIVE with its own line. Without it
+  every later run re-reads the whole chain as if it were new, so a fresh escape cannot be told
+  apart from history.
 
 It reads the chain and the config, and asks the running service nothing. The moment you most
 want to know whether an agent is escaping is the moment the serving process is suspect, and a

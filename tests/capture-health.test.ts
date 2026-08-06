@@ -37,6 +37,10 @@ interface EgressLine {
   bytesUp?: number;
   bytesDown?: number;
   decision?: "allow" | "deny";
+  /** The posture the record states was in force. Omit to model a pre-posture record. */
+  unmatched?: "global" | "deny";
+  /** The mode the record states was in force. Defaults to an enforcing one. */
+  mode?: "monitor" | "guarded" | "strict";
   atMs: number;
 }
 
@@ -69,8 +73,9 @@ function writeChain(lines: EgressLine[], extras: Omit<AuditEvent, "integrity">[]
       bytesUp: String(line.bytesUp ?? 0),
       bytesDown: String(line.bytesDown ?? 0),
       agentMatchedOn: line.matchedOn ?? "comm",
-      enforcementMode: "strict",
+      enforcementMode: line.mode ?? "strict",
     };
+    if (line.unmatched !== undefined) metadata.fleetUnmatched = line.unmatched;
     if (line.declared !== undefined) metadata.agentDeclared = line.declared ? "true" : "false";
 
     append({
@@ -116,7 +121,7 @@ describe("capture health, read from the chain", () => {
       { agentId: "beta", declared: true, matchedOn: "uid", atMs: now - MINUTE, bytesUp: 500, bytesDown: 4500 },
     ]);
 
-    const health = readCaptureHealth({ auditPath }, { agents, since: null, now });
+    const health = readCaptureHealth({ auditPath }, { agents, unmatched: "deny", since: null, now });
 
     const alpha = health.agents.find((row) => row.agentId === "alpha");
     expect(alpha?.requests).toBe(2);
@@ -153,7 +158,7 @@ describe("capture health, read from the chain", () => {
       { agentId: "alpha", declared: true, atMs: now - 5 * MINUTE, bytesDown: 9999 },
     ]);
 
-    const health = readCaptureHealth({ auditPath }, { agents, since: null, now });
+    const health = readCaptureHealth({ auditPath }, { agents, unmatched: "deny", since: null, now });
     const alpha = health.agents[0];
 
     // Zero in the window, but SEEN. An agent that stopped five minutes ago and an agent
@@ -174,7 +179,7 @@ describe("capture health, read from the chain", () => {
     });
 
     const auditPath = writeChain([{ agentId: "alpha", declared: true, atMs: now - MINUTE }]);
-    const health = readCaptureHealth({ auditPath }, { agents, since: null, now });
+    const health = readCaptureHealth({ auditPath }, { agents, unmatched: "deny", since: null, now });
 
     const ghost = health.agents.find((row) => row.agentId === "ghost");
     expect(ghost?.lastSeen).toBeNull();
@@ -211,7 +216,7 @@ describe("capture health, read from the chain", () => {
       },
     ]);
 
-    const health = readCaptureHealth({ auditPath }, { agents, since: null, now });
+    const health = readCaptureHealth({ auditPath }, { agents, unmatched: "deny", since: null, now });
 
     expect(health.undeclared.total).toBe(3);
     expect(health.undeclared.sinceLastRun).toBe(3);
@@ -244,7 +249,7 @@ describe("capture health, read from the chain", () => {
       { agentId: "wget", declared: false, atMs: now - 5 * MINUTE },
     ]);
 
-    const first = readCaptureHealth({ auditPath }, { agents, since: null, now });
+    const first = readCaptureHealth({ auditPath }, { agents, unmatched: "deny", since: null, now });
     expect(first.undeclared.total).toBe(3);
     expect(first.undeclared.sinceLastRun).toBe(3);
     expect(first.watermark?.chainIndex).toBe(3);
@@ -252,14 +257,14 @@ describe("capture health, read from the chain", () => {
     // The bookmark from a run that had already seen the first three records. Only the
     // fourth is new, which is the whole point: an operator wants "what changed", not a
     // total that grows forever and stops meaning anything.
-    const second = readCaptureHealth({ auditPath }, { agents, since: { chainIndex: 2, at: "x" }, now });
+    const second = readCaptureHealth({ auditPath }, { agents, unmatched: "deny", since: { chainIndex: 2, at: "x" }, now });
     expect(second.undeclared.total).toBe(3);
     expect(second.undeclared.sinceLastRun).toBe(1);
     expect(second.undeclared.byIdentity).toEqual([{ id: "wget", count: 1 }]);
 
     // And once caught up, nothing is new. A section that kept re-reporting the same records
     // would be indistinguishable from an escape that never stops.
-    const third = readCaptureHealth({ auditPath }, { agents, since: { chainIndex: 3, at: "x" }, now });
+    const third = readCaptureHealth({ auditPath }, { agents, unmatched: "deny", since: { chainIndex: 3, at: "x" }, now });
     expect(third.undeclared.sinceLastRun).toBe(0);
     expect(third.undeclared.total).toBe(3);
   });
@@ -271,7 +276,7 @@ describe("capture health, read from the chain", () => {
     // The chain was replaced, restarted, or rotated away under a bookmark that outlived it.
     // Trusting the bookmark here means every future run reports zero new undeclared records
     // over a chain full of them.
-    const health = readCaptureHealth({ auditPath }, { agents, since: { chainIndex: 900, at: "x" }, now });
+    const health = readCaptureHealth({ auditPath }, { agents, unmatched: "deny", since: { chainIndex: 900, at: "x" }, now });
 
     expect(health.watermarkReset).toContain("900");
     expect(health.since).toBeNull();
@@ -288,7 +293,7 @@ describe("capture health, read from the chain", () => {
       ],
     });
 
-    const health = readCaptureHealth({ auditPath: writeChain([]) }, { agents, since: null, now });
+    const health = readCaptureHealth({ auditPath: writeChain([]) }, { agents, unmatched: "deny", since: null, now });
 
     expect(health.weakestBinding).toEqual({ tier: "comm", agentIds: ["byname"] });
     expect(health.agents.map((row) => row.weakestTier)).toEqual(["credential", "uid", "comm"]);
@@ -306,7 +311,7 @@ describe("capture health, read from the chain", () => {
 
     expect(weakestBindingTier(agents[0])).toBe("comm");
 
-    const health = readCaptureHealth({ auditPath: writeChain([]) }, { agents, since: null, now });
+    const health = readCaptureHealth({ auditPath: writeChain([]) }, { agents, unmatched: "deny", since: null, now });
     expect(health.agents[0].strongestTier).toBe("credential");
     expect(health.agents[0].weakestTier).toBe("comm");
     expect(health.weakestBinding).toEqual({ tier: "comm", agentIds: ["mixed"] });
@@ -321,7 +326,7 @@ describe("capture health, read from the chain", () => {
       { agentId: "node", declared: false, atMs: now - MINUTE },
     ]);
 
-    const health = readCaptureHealth({ auditPath }, { agents: [], since: null, now });
+    const health = readCaptureHealth({ auditPath }, { agents: [], unmatched: "global", since: null, now });
 
     expect(health.fleetDeclared).toBe(false);
     expect(health.undeclared.total).toBe(0);
@@ -336,7 +341,7 @@ describe("capture health, read from the chain", () => {
       { agentId: "curl", declared: false, atMs: now - MINUTE },
     ]);
 
-    const health = readCaptureHealth({ auditPath }, { agents, since: null, now });
+    const health = readCaptureHealth({ auditPath }, { agents, unmatched: "deny", since: null, now });
 
     expect(health.undeclared.total).toBe(2);
     expect(health.undeclared.predatingAttribution).toBe(1);
@@ -349,7 +354,7 @@ describe("capture health, read from the chain", () => {
     // land in is the row it is impersonating.
     const auditPath = writeChain([{ agentId: "alpha", declared: false, atMs: now - MINUTE }]);
 
-    const health = readCaptureHealth({ auditPath }, { agents, since: null, now });
+    const health = readCaptureHealth({ auditPath }, { agents, unmatched: "deny", since: null, now });
 
     expect(health.agents[0].lastSeen).toBeNull();
     expect(health.notes.join(" ")).toContain("claiming that name");
@@ -376,7 +381,7 @@ describe("capture health, read from the chain", () => {
       ],
     );
 
-    const health = readCaptureHealth({ auditPath }, { agents, since: null, now });
+    const health = readCaptureHealth({ auditPath }, { agents, unmatched: "deny", since: null, now });
 
     expect(health.egressRecords).toBe(1);
     // The bookmark covers the tool record too. A bookmark that only tracked egress would
@@ -388,7 +393,7 @@ describe("capture health, read from the chain", () => {
     const dir = mkdtempSync(join(tmpdir(), "agentwall-capture-"));
     dirs.push(dir);
 
-    const health = readCaptureHealth({ auditPath: join(dir, "audit.jsonl") }, { agents: [], since: null, now });
+    const health = readCaptureHealth({ auditPath: join(dir, "audit.jsonl") }, { agents: [], unmatched: "global", since: null, now });
 
     expect(health.chainPresent).toBe(false);
     expect(health.watermark).toBeNull();
@@ -434,10 +439,99 @@ describe("capture health, read from the chain", () => {
       })),
     );
 
-    const health = readCaptureHealth({ auditPath }, { agents, since: null, now });
+    const health = readCaptureHealth({ auditPath }, { agents, unmatched: "deny", since: null, now });
 
     expect(health.truncated).toBe(false);
     expect(health.undeclared.sinceLastRun).toBe(1);
     expect(health.agents[0].lastSeen).not.toBeNull();
+  });
+
+  it("calls it an escape only when the record says policy told the wall to refuse it", () => {
+    // fleet.unmatched: deny under an enforcing mode, and it reached the network anyway.
+    // src/runtime/enforcement.ts refuses exactly that before opening an upstream socket, so
+    // a record in this shape means something did not pass the gate.
+    const agents = fleet({ unmatched: "deny", agents: [{ id: "alpha", match: { comm: ["aw-alpha"] } }] });
+    const auditPath = writeChain([
+      { agentId: "curl", declared: false, unmatched: "deny", mode: "strict", atMs: now - 2 * MINUTE },
+      { agentId: "curl", declared: false, unmatched: "deny", mode: "guarded", atMs: now - MINUTE },
+    ]);
+
+    const health = readCaptureHealth({ auditPath }, { agents, unmatched: "deny", since: null, now });
+
+    expect(health.undeclared.allowedSinceLastRun).toBe(2);
+    expect(health.undeclared.escapedSinceLastRun).toBe(2);
+    expect(health.undeclared.permittedByConfigSinceLastRun).toEqual([]);
+  });
+
+  it("refuses to call configured behaviour an escape, even when the config has since tightened", () => {
+    // The discriminating half of the pair above. Identical records except for the posture
+    // the RECORD carries, and the caller's current posture is deliberately the opposite of
+    // it. `unmatched: global` is the default and is what docs/fleet.md tells perimeter users
+    // to run: undeclared traffic reaching an allowlisted host is precisely what it
+    // prescribes. An implementation that judged by the caller's config instead would report
+    // an escape here and accuse an operator of a breach that yesterday's own default
+    // arranged, which is the whole failure this split exists to prevent.
+    const agents = fleet({ unmatched: "deny", agents: [{ id: "alpha", match: { comm: ["aw-alpha"] } }] });
+    const auditPath = writeChain([
+      { agentId: "curl", declared: false, unmatched: "global", mode: "strict", atMs: now - MINUTE },
+    ]);
+
+    const health = readCaptureHealth({ auditPath }, { agents, unmatched: "deny", since: null, now });
+
+    expect(health.undeclared.allowedSinceLastRun).toBe(1);
+    expect(health.undeclared.escapedSinceLastRun).toBe(0);
+    // The reason string is what the operator reads and acts on, so it is asserted, not just
+    // its presence: it has to name the setting.
+    expect(health.undeclared.permittedByConfigSinceLastRun).toEqual([
+      { reason: expect.stringContaining("fleet.unmatched: global"), count: 1 },
+    ]);
+  });
+
+  it("refuses to call configured behaviour an escape in monitor mode", () => {
+    // Monitor returns allow before the undeclared gate is reached, by design and on purpose.
+    // An adopter running monitor for a week to size their allowlist must not get a red
+    // doctor every day for using the mode the docs tell them to start with.
+    const agents = fleet({ unmatched: "deny", agents: [{ id: "alpha", match: { comm: ["aw-alpha"] } }] });
+    const auditPath = writeChain([
+      { agentId: "curl", declared: false, unmatched: "deny", mode: "monitor", atMs: now - MINUTE },
+    ]);
+
+    const health = readCaptureHealth({ auditPath }, { agents, unmatched: "deny", since: null, now });
+
+    expect(health.undeclared.escapedSinceLastRun).toBe(0);
+    expect(health.undeclared.permittedByConfigSinceLastRun).toEqual([
+      { reason: expect.stringContaining("enforcement.mode: monitor"), count: 1 },
+    ]);
+  });
+
+  it("never counts a refused connection as an escape, whatever the posture", () => {
+    const agents = fleet({ unmatched: "deny", agents: [{ id: "alpha", match: { comm: ["aw-alpha"] } }] });
+    const auditPath = writeChain([
+      { agentId: "curl", declared: false, unmatched: "deny", mode: "strict", decision: "deny", atMs: now - MINUTE },
+    ]);
+
+    const health = readCaptureHealth({ auditPath }, { agents, unmatched: "deny", since: null, now });
+
+    expect(health.undeclared.deniedSinceLastRun).toBe(1);
+    expect(health.undeclared.allowedSinceLastRun).toBe(0);
+    expect(health.undeclared.escapedSinceLastRun).toBe(0);
+  });
+
+  it("judges a record that predates the posture marker by the current config, and says so", () => {
+    const agents = fleet({ unmatched: "global", agents: [{ id: "alpha", match: { comm: ["aw-alpha"] } }] });
+    // No fleetUnmatched on the record: an older build wrote it. The caller's posture is the
+    // only thing left to judge by, and the report has to admit that rather than presenting
+    // the answer as though the record supplied it.
+    const auditPath = writeChain([{ agentId: "curl", declared: false, mode: "strict", atMs: now - MINUTE }]);
+
+    const health = readCaptureHealth({ auditPath }, { agents, unmatched: "global", since: null, now });
+
+    expect(health.undeclared.escapedSinceLastRun).toBe(0);
+    expect(health.notes.join(" ")).toContain("do not state the fleet posture in force");
+
+    // Same record, a caller whose config now says deny: it converts to an escape, which is
+    // exactly why the note above has to be there.
+    const tightened = readCaptureHealth({ auditPath }, { agents, unmatched: "deny", since: null, now });
+    expect(tightened.undeclared.escapedSinceLastRun).toBe(1);
   });
 });

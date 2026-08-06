@@ -3,7 +3,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import { spawnSync } from "child_process";
-import { loadConfig } from "./config";
+import { loadConfig, resolveConfigSource } from "./config";
 import { defaultConfig, OnboardingMode, writeStarterFiles } from "./onboarding";
 import { runAnchorPass, runVerify, resolvePaths } from "./audit/anchor-service";
 import { runMcpWrap, runMcpHttpWrap } from "./mcp/wrap";
@@ -141,9 +141,13 @@ Doctor options:
   --audit <path>                      Chain to read capture from (default: $AGENTWALL_AUDIT_FILE)
   --json                              Print raw JSON
 
-  Doctor advances a bookmark (capture-watermark.json, beside the chain) on every run, so
-  "undeclared egress since the last run" means what it says. It exits non-zero when
-  undeclared egress reached the network since that bookmark.
+  Doctor writes a bookmark (capture-watermark.json, beside the chain) whenever it reads at
+  least one record, so "undeclared egress since the last run" means what it says.
+
+  Exit codes: 0 clear, 1 a check failed or traffic reached the network that policy said to
+  refuse, 2 inconclusive. 2 means the question was asked and could not be answered, most
+  often because the configuration itself permits undeclared egress; the output names the
+  setting to change so the next run can answer.
 
 Status options:
   --json                              Print raw JSON
@@ -296,18 +300,96 @@ function readCaptureWatermark(file: string): CaptureWatermark | null {
   return { chainIndex: parsed.chainIndex, at: parsed.at };
 }
 
+/**
+ * What the capture section concluded.
+ *
+ * INCONCLUSIVE is a first-class outcome, not a soft failure. A check that can only say
+ * "clean" or "escape" has to pick one when the evidence supports neither, and both wrong
+ * answers are expensive: a false clean hides the thing the tool exists to catch, and a false
+ * escape accuses an operator of a breach their own configuration prescribes. The second is
+ * the one that gets a check switched off.
+ */
+type CaptureVerdict = "clear" | "inconclusive" | "escape";
+
 interface DoctorCapture {
   /** Null when there was no chain to read. */
   health: CaptureHealth | null;
-  /** Why there was not, in the words the operator needs. */
+  /** The config file every fleet claim below is about. Null when built-in defaults were used. */
+  configSource: string | null;
+  /** Why there was no chain, in the words the operator needs. */
   unavailable: string | null;
-  /** The fleet declaration did not load, so no agent can be reported against it. */
-  fleetError: string | null;
+  /**
+   * The fleet declaration did not load here. `environmental` marks the case where the cause
+   * is doctor's OWN environment rather than the file: an `env:VAR` credential the service
+   * may well have and this shell does not. Convicting a working config on that basis is the
+   * false alarm this flag exists to prevent.
+   */
+  fleetError: { message: string; environmental: boolean } | null;
   watermarkPath: string | null;
-  /** The bookmark could not be advanced, which breaks "since the last run" permanently. */
+  /** The bookmark could not be advanced, so "since the last run" cannot be trusted again. */
   watermarkError: string | null;
-  /** Undeclared egress reached the network since the last run. The failure condition. */
-  alarm: boolean;
+  verdict: CaptureVerdict;
+  /** The one-line reason for that verdict, for whatever reads the JSON. */
+  verdictReason: string;
+}
+
+/**
+ * Load the declared fleet the way the server does, and say whether a failure is the file's
+ * fault or this shell's.
+ *
+ * The distinction is not cosmetic. `env:VAR` credentials are resolved at load from the
+ * process environment, so doctor run from an operator's shell can fail on a declaration a
+ * service started by systemd loads perfectly. Reporting that as a broken fleet would send
+ * someone to fix a file that is correct.
+ */
+function loadDoctorFleet(flags: CliFlags): {
+  agents: readonly RegisteredAgent[];
+  unmatched: "global" | "deny";
+  error: { message: string; environmental: boolean } | null;
+} {
+  let config;
+  try {
+    config = loadCliConfig(flags);
+  } catch (error) {
+    return {
+      agents: [],
+      unmatched: "global",
+      error: { message: error instanceof Error ? error.message : String(error), environmental: false },
+    };
+  }
+
+  const fleet = config.fleet;
+  if (!fleet || fleet.agents.length === 0) return { agents: [], unmatched: fleet?.unmatched ?? "global", error: null };
+
+  // Checked BEFORE constructing the registry, because the registry throws on the first
+  // missing variable and the operator wants all of them named at once.
+  const missing: string[] = [];
+  for (const agent of fleet.agents) {
+    const credential = agent.match.credential;
+    if (credential === undefined || !credential.startsWith("env:")) continue;
+    const name = credential.slice("env:".length).trim();
+    if (name.length > 0 && !process.env[name]) missing.push(`$${name} (agent "${agent.id}")`);
+  }
+  if (missing.length > 0) {
+    return {
+      agents: [],
+      unmatched: fleet.unmatched,
+      error: {
+        message: `${missing.join(", ")} unset in this shell, and the declaration reads a credential from it`,
+        environmental: true,
+      },
+    };
+  }
+
+  try {
+    return { agents: new AgentRegistry(fleet).list(), unmatched: fleet.unmatched, error: null };
+  } catch (error) {
+    return {
+      agents: [],
+      unmatched: fleet.unmatched,
+      error: { message: error instanceof Error ? error.message : String(error), environmental: false },
+    };
+  }
 }
 
 /**
@@ -315,33 +397,36 @@ interface DoctorCapture {
  *
  * Offline on purpose. The moment you most want to know whether an agent is escaping is the
  * moment the serving process is suspect, and a check that has to ask that process is a check
- * that goes quiet exactly then. Everything here comes off the chain and the config.
+ * that goes quiet exactly then. Everything here comes off the chain and the config, and
+ * every claim it prints is scoped to the file it actually read: doctor cannot see another
+ * process's environment and must not describe one.
  */
 function collectDoctorCapture(flags: CliFlags): DoctorCapture {
-  const empty = { health: null, fleetError: null, watermarkPath: null, watermarkError: null, alarm: false };
+  const configSource = resolveConfigSource(typeof flags.config === "string" ? flags.config : undefined);
+  const base = {
+    health: null,
+    unavailable: null,
+    configSource,
+    fleetError: null,
+    watermarkPath: null,
+    watermarkError: null,
+    verdict: "clear" as CaptureVerdict,
+    verdictReason: "",
+  };
+
   const auditPath = typeof flags.audit === "string" ? flags.audit : process.env.AGENTWALL_AUDIT_FILE;
   if (!auditPath) {
     return {
-      ...empty,
+      ...base,
+      verdictReason: "no chain was named, so capture was not assessed",
       unavailable:
-        "no audit file is configured, so there is no record of who reached what. " +
-        "Set AGENTWALL_AUDIT_FILE, or pass --audit <path>.",
+        "doctor was not told which chain to read. Set AGENTWALL_AUDIT_FILE, or pass --audit <path>. " +
+        "If the service was started with AGENTWALL_AUDIT_FILE set in its own environment, that is the " +
+        "file to point at: doctor cannot see another process's environment.",
     };
   }
 
-  // The declared fleet, resolved exactly as the server resolves it, credentials and all. A
-  // declaration that will not load is its own finding: the server would refuse to boot on
-  // it, and until it does every agent on this host is falling back to the global allowlist.
-  let agents: readonly RegisteredAgent[] = [];
-  let fleetError: string | null = null;
-  try {
-    const config = loadCliConfig(flags);
-    if (config.fleet && config.fleet.agents.length > 0) {
-      agents = new AgentRegistry(config.fleet).list();
-    }
-  } catch (error) {
-    fleetError = error instanceof Error ? error.message : String(error);
-  }
+  const fleet = loadDoctorFleet(flags);
 
   // Beside the chain, because that is what it bookmarks: move the chain and the bookmark
   // travels, delete the chain and the bookmark goes with it. The name deliberately does not
@@ -351,29 +436,33 @@ function collectDoctorCapture(flags: CliFlags): DoctorCapture {
 
   let health: CaptureHealth;
   try {
-    health = readCaptureHealth({ auditPath }, { agents, since });
+    health = readCaptureHealth({ auditPath }, { agents: fleet.agents, unmatched: fleet.unmatched, since });
   } catch (error) {
     return {
-      ...empty,
-      fleetError,
+      ...base,
+      fleetError: fleet.error,
       watermarkPath,
+      verdict: "inconclusive",
+      verdictReason: "the chain could not be read",
       unavailable: `${auditPath} could not be read: ${error instanceof Error ? error.message : String(error)}`,
     };
   }
 
   if (!health.chainPresent) {
     return {
-      ...empty,
+      ...base,
       health,
-      fleetError,
+      fleetError: fleet.error,
       watermarkPath,
-      unavailable: `no chain exists at ${auditPath} yet. Nothing has been recorded, so nothing can be checked.`,
+      verdictReason: "nothing has been written to the named chain",
+      unavailable:
+        `nothing has been written to ${auditPath}. If the service is recording somewhere else, ` +
+        "point --audit at that file.",
     };
   }
 
   // Advancing the bookmark is what makes the next run's alarm mean anything, so failing to
-  // write it is a failure and not a footnote. A bookmark that never advances reports zero
-  // new undeclared records forever, which is a green light with nothing behind it.
+  // write it leaves every later run unable to tell new from old.
   let watermarkError: string | null = null;
   if (health.watermark !== null) {
     try {
@@ -383,17 +472,33 @@ function collectDoctorCapture(flags: CliFlags): DoctorCapture {
     }
   }
 
-  return {
-    health,
-    unavailable: null,
-    fleetError,
-    watermarkPath,
-    watermarkError,
-    // Only egress that actually REACHED the network fails the run. An undeclared attempt
-    // that enforcement refused is the wall doing its job, and a check that goes red when
-    // the wall works is a check an operator learns to ignore.
-    alarm: health.since !== null && health.undeclared.allowedSinceLastRun > 0,
-  };
+  const undeclared = health.undeclared;
+  // Only counted against a previous run. On the first run there is no "since", so the whole
+  // chain is reported as a baseline and nothing is alarmed: a cron seeds on its first firing
+  // and judges from the second.
+  const comparable = health.since !== null;
+  let verdict: CaptureVerdict = "clear";
+  let verdictReason = "no undeclared egress reached the network since the last run";
+
+  if (comparable && undeclared.escapedSinceLastRun > 0) {
+    verdict = "escape";
+    verdictReason =
+      `${undeclared.escapedSinceLastRun} undeclared connection(s) reached the network under a posture ` +
+      "that refuses undeclared egress";
+  } else if (comparable && undeclared.permittedByConfigSinceLastRun.length > 0) {
+    verdict = "inconclusive";
+    verdictReason =
+      "undeclared egress reached the network and the configuration in force permitted it, so an escape " +
+      "and the configured behaviour cannot be told apart";
+  } else if (watermarkError !== null) {
+    verdict = "inconclusive";
+    verdictReason = "the bookmark could not be advanced, so no future run can tell new records from old";
+  } else if (fleet.error?.environmental === true) {
+    verdict = "inconclusive";
+    verdictReason = "the fleet declaration could not be loaded in this shell, so no agent was assessed";
+  }
+
+  return { ...base, health, fleetError: fleet.error, watermarkPath, watermarkError, verdict, verdictReason };
 }
 
 function formatByteCount(value: number): string {
@@ -424,7 +529,8 @@ const TIER_ADVICE: Record<AgentMatchSignal, string[]> = {
   ],
   comm: [
     "A name the process chose for itself. Anything on this host can claim it, including",
-    "whatever you are trying to catch. Bind by credential (Proxy-Authorization) or uid.",
+    "whatever you are trying to catch. Bind by uid, or by credential if the agent can be",
+    "made to send Proxy-Authorization.",
   ],
   none: ["Nothing bound this at all."],
 };
@@ -433,11 +539,24 @@ const TIER_ADVICE: Record<AgentMatchSignal, string[]> = {
 function renderCaptureSection(capture: DoctorCapture): { lines: string[]; failures: number } {
   const lines: string[] = ["", "Capture"];
   let failures = 0;
+  const from = capture.configSource ?? "built-in defaults";
 
   if (capture.fleetError !== null) {
-    failures += 1;
-    lines.push(`❌ the fleet declaration did not load: ${capture.fleetError}`);
-    lines.push("   Until it does, no agent on this host has an identity and the global allowlist judges everything.");
+    if (capture.fleetError.environmental) {
+      // NOT a failure, and not a claim about the service. An `env:VAR` credential is read
+      // from the environment of whoever loads the config, so a shell without the variable
+      // cannot distinguish a broken declaration from a perfectly good one it is not
+      // entitled to resolve. Convicting the file here sends someone to fix a correct file.
+      lines.push(`⚠️  the fleet declaration in ${from} could not be loaded in this shell.`);
+      lines.push(`   ${capture.fleetError.message}.`);
+      lines.push("   A service started with that variable set loads this file fine, so nothing here says it is");
+      lines.push("   broken. No agent was assessed. Re-run with the variable set to get an answer.");
+    } else {
+      failures += 1;
+      lines.push(`❌ the fleet declaration in ${from} did not load: ${capture.fleetError.message}`);
+      lines.push("   The fleet section is validated when a process loads this file, so a start against it fails");
+      lines.push("   the same way. No agent was assessed.");
+    }
   }
 
   const health = capture.health;
@@ -447,6 +566,7 @@ function renderCaptureSection(capture: DoctorCapture): { lines: string[]; failur
   }
 
   lines.push(`   chain            ${health.auditPath}`);
+  lines.push(`   config           ${from}`);
   lines.push(`   egress records   ${health.egressRecords} read${health.truncated ? " (capped, newest first)" : ""}`);
   lines.push(
     health.since === null
@@ -455,39 +575,46 @@ function renderCaptureSection(capture: DoctorCapture): { lines: string[]; failur
   );
 
   if (capture.watermarkError !== null) {
-    failures += 1;
     lines.push("");
-    lines.push(`❌ the capture bookmark at ${capture.watermarkPath} could not be written: ${capture.watermarkError}`);
-    lines.push("   Every future run will report zero new undeclared egress, whatever happens. Fix this first.");
+    lines.push(`⚠️  the capture bookmark at ${capture.watermarkPath} could not be written: ${capture.watermarkError}`);
+    // Precisely what happens, not a guess. With no bookmark, `since` stays null on every
+    // run, so each one re-reports the WHOLE chain as if it were new. The earlier wording
+    // here said it would report zero, which was the opposite of the truth.
+    lines.push("   Until it can be, every run re-reads the whole chain as if it were new, so a fresh escape");
+    lines.push("   cannot be told apart from history. That makes the verdict below inconclusive, not clean.");
+  }
+
+  if (health.egressRecords === 0) {
+    lines.push("");
+    lines.push("⚠️  this chain holds no egress records, so it can say nothing about capture either way. Either");
+    lines.push("   nothing has been proxied yet, or agents are not routed through the proxy: AGENTWALL_PROXY_PORT");
+    lines.push("   unset on the service, HTTPS_PROXY unset on the agent, or a NO_PROXY entry covering the");
+    lines.push("   destination will each produce exactly this, with no error anywhere.");
+    return { lines, failures };
   }
 
   const undeclared = health.undeclared;
   if (!health.fleetDeclared) {
     lines.push("");
-    lines.push(
-      "⚠️  no agents are declared, so nothing on this host can be attributed to one. Every record carries the",
-    );
-    lines.push(
-      "   process name as its identity and no traffic can be called undeclared, because there is nothing to",
-    );
-    lines.push("   declare against. Add a `fleet:` section to turn identity into something checkable.");
+    lines.push(`⚠️  ${from} declares no agents, so no traffic read here can be called undeclared: there is`);
+    lines.push("   nothing to declare it against. Each egress record carries the process name it was observed");
+    lines.push('   under as its identity, or "unattributed" where none could be recovered. Add a `fleet:`');
+    lines.push("   section to turn that into something checkable.");
     return { lines, failures };
   }
 
   if (undeclared.sinceLastRun > 0) {
     const scope = health.since === null ? "in the chain (no previous run to compare against)" : "since the last run";
-    const marker = capture.alarm ? "❌" : "⚠️ ";
-    if (capture.alarm) failures += 1;
+    const escaped = undeclared.escapedSinceLastRun > 0 && health.since !== null;
+    if (escaped) failures += 1;
     lines.push("");
     lines.push(
-      `${marker} ${undeclared.sinceLastRun} undeclared egress ` +
+      `${escaped ? "❌" : "⚠️ "} ${undeclared.sinceLastRun} undeclared egress ` +
         `${undeclared.sinceLastRun === 1 ? "record" : "records"} ${scope}: ` +
         `${undeclared.allowedSinceLastRun} reached the network, ` +
         `${undeclared.deniedSinceLastRun} ${undeclared.deniedSinceLastRun === 1 ? "was" : "were"} refused.`,
     );
-    lines.push(
-      `   identity      ${undeclared.byIdentity.map((row) => `${row.id} ${row.count}`).join(", ")}`,
-    );
+    lines.push(`   identity      ${undeclared.byIdentity.map((row) => `${row.id} ${row.count}`).join(", ")}`);
     lines.push(`   destinations  ${undeclared.topHosts.map((row) => `${row.host} ${row.count}`).join(", ")}`);
     lines.push(`   bytes         ${formatByteCount(undeclared.bytesSinceLastRun)}`);
     lines.push(`   first / last  ${formatRelative(undeclared.firstAt)} / ${formatRelative(undeclared.lastAt)}`);
@@ -496,10 +623,30 @@ function renderCaptureSection(capture: DoctorCapture): { lines: string[]; failur
         `   ${undeclared.predatingAttribution} of these predate agent attribution and were written by an older build.`,
       );
     }
-    lines.push(
-      "   This is either an agent nobody declared, or a declared agent whose identity binding broke. Both",
-    );
-    lines.push("   look exactly like this. Compare the identities above against fleet.agents in your config.");
+
+    if (escaped) {
+      lines.push("");
+      lines.push(
+        `   ESCAPE: ${undeclared.escapedSinceLastRun} of those reached the network while the record itself says`,
+      );
+      lines.push('   fleet.unmatched was "deny" under an enforcing mode. That combination is refused before an');
+      lines.push("   upstream socket is opened, so this is traffic that did not pass the gate. Either an agent");
+      lines.push("   nobody declared found another route, or a declared agent's identity binding broke and it");
+      lines.push("   was refused as a stranger. Compare the identities above against fleet.agents.");
+    }
+
+    for (const permitted of undeclared.permittedByConfigSinceLastRun) {
+      lines.push("");
+      lines.push(`   INCONCLUSIVE: ${permitted.count} of those were allowed out by the configuration itself.`);
+      lines.push(`   ${permitted.reason}`);
+      lines.push("   That is not an escape, and it is not proof of innocence either: an undeclared agent talking");
+      lines.push("   to an allowlisted host produces exactly this record, and so does an ordinary unlisted");
+      lines.push(
+        permitted.reason.startsWith("fleet.unmatched")
+          ? "   process. Set `fleet.unmatched: deny` to make the next run able to answer."
+          : "   process. Move to `enforcement.mode: guarded` to make the next run able to answer.",
+      );
+    }
   } else {
     lines.push(
       `   undeclared       none${health.since === null ? " in the chain" : " since the last run"}` +
@@ -540,10 +687,11 @@ function renderCaptureSection(capture: DoctorCapture): { lines: string[]; failur
 
   if (neverSeen.length > 0) {
     lines.push("");
-    lines.push(
-      `⚠️  declared but never seen: ${neverSeen.join(", ")}. Either it has not run yet, or it is running and its`,
-    );
-    lines.push("   traffic is not reaching this proxy, which is the same picture as an agent that escaped.");
+    lines.push(`⚠️  declared but never seen: ${neverSeen.join(", ")}. This says nothing about why on its own.`);
+    lines.push("   It has not started yet, or it is running and its traffic never reaches this proxy: no");
+    lines.push("   HTTPS_PROXY on the agent, a NO_PROXY entry covering where it goes, or a different chain");
+    lines.push("   than the one above. An escaped agent and a misrouted one look identical from here, which");
+    lines.push("   is why this is a prompt to go and check rather than a verdict.");
   }
 
   if (health.weakestBinding !== null) {
@@ -587,6 +735,18 @@ function commandDoctor(flags: CliFlags) {
   const capture = collectDoctorCapture(flags);
   const section = renderCaptureSection(capture);
   const installFailures = checks.filter((check) => !check.ok).length;
+  const failures = installFailures + section.failures;
+
+  /**
+   * 0 clear, 1 failed, 2 inconclusive.
+   *
+   * A definite failure outranks an inconclusive measurement, so an install check that failed
+   * still gives 1 even when capture could not be assessed: there is something to fix either
+   * way, and the more specific answer is the more useful one. 2 is reserved for "the
+   * question was asked and could not be answered", which a cron should treat as needing a
+   * human rather than as either an alarm or an all-clear.
+   */
+  const exitCode = failures > 0 ? 1 : capture.verdict === "inconclusive" ? 2 : 0;
 
   if (flags.json) {
     console.log(
@@ -594,20 +754,23 @@ function commandDoctor(flags: CliFlags) {
         {
           checks: checks.map((check) => ({ name: check.name, ok: check.ok, detail: check.detail })),
           capture: {
+            configSource: capture.configSource,
             unavailable: capture.unavailable,
             fleetError: capture.fleetError,
             watermarkPath: capture.watermarkPath,
             watermarkError: capture.watermarkError,
-            alarm: capture.alarm,
+            verdict: capture.verdict,
+            verdictReason: capture.verdictReason,
             health: capture.health,
           },
-          failures: installFailures + section.failures,
+          failures,
+          exitCode,
         },
         null,
         2,
       ),
     );
-    if (installFailures + section.failures > 0) process.exit(1);
+    if (exitCode !== 0) process.exit(exitCode);
     return;
   }
 
@@ -616,19 +779,21 @@ function commandDoctor(flags: CliFlags) {
   }
   for (const line of section.lines) console.log(line);
 
-  if (installFailures + section.failures > 0) {
-    console.log("");
-    console.log(`${installFailures} install check(s) and ${section.failures} capture check(s) failed.`);
+  if (exitCode === 0) return;
+
+  console.log("");
+  if (failures > 0) {
+    console.log(`${installFailures} install check(s) and ${section.failures} capture check(s) failed. (exit 1)`);
     // Only explained when it happened. A standing sentence about escaping agents printed
     // under a run that failed on a missing policy.yaml is how a warning stops being read.
     if (section.failures > 0) {
-      console.log(
-        "A capture failure means traffic is leaving this host that no declared agent claims, or that " +
-          "doctor cannot tell whether it is.",
-      );
+      console.log("A capture failure means traffic reached the network that policy said to refuse.");
     }
-    process.exit(1);
+  } else {
+    console.log(`INCONCLUSIVE (exit 2): ${capture.verdictReason}.`);
+    console.log("Not an all-clear and not an alarm. The remedy above turns the next run into one or the other.");
   }
+  process.exit(exitCode);
 }
 
 function loadCliConfig(flags: CliFlags) {

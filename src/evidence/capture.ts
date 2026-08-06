@@ -92,6 +92,27 @@ export interface UndeclaredCapture {
 	allowedSinceLastRun: number;
 	/** Of those, the ones enforcement refused. Containment working, not an escape. */
 	deniedSinceLastRun: number;
+	/**
+	 * Allowed undeclared egress that policy said to REFUSE and that got out anyway:
+	 * `fleet.unmatched: deny` under an enforcing mode. This is the only number that means
+	 * "something escaped", and through the forward proxy it should be unreachable, because
+	 * that combination is exactly what src/runtime/enforcement.ts refuses before opening an
+	 * upstream socket. Seeing it above zero means something reached the network without
+	 * passing that gate.
+	 */
+	escapedSinceLastRun: number;
+	/**
+	 * Allowed undeclared egress the configuration told AgentWall to allow, and the reason
+	 * why, most common first. `fleet.unmatched: global` hands undeclared traffic to the
+	 * global allowlist by design; `enforcement.mode: monitor` gates nothing by design.
+	 *
+	 * These are NOT escapes and must never be reported as one. They are also not proof of
+	 * innocence: an undeclared agent talking to an allowlisted host produces exactly this
+	 * record, and nothing here can tell the two apart. That is what makes the verdict
+	 * inconclusive rather than clean, and the remedy names the setting to change so the
+	 * next run can be conclusive.
+	 */
+	permittedByConfigSinceLastRun: { reason: string; count: number }[];
 	bytesSinceLastRun: number;
 	/** Oldest and newest of the records counted in `sinceLastRun`. */
 	firstAt: string | null;
@@ -146,6 +167,14 @@ interface EgressSighting {
 	host: string;
 	bytes: number;
 	denied: boolean;
+	/**
+	 * The fleet posture and the enforcement mode in force when this connection was judged,
+	 * as the record states them. Null when the record predates the field, in which case the
+	 * caller's current configuration is the only thing left to judge by, and the report says
+	 * it is doing that.
+	 */
+	unmatched: "global" | "deny" | null;
+	mode: string | null;
 }
 
 /**
@@ -210,6 +239,8 @@ function toSighting(parsed: unknown): EgressSighting | null {
 		host: typeof metadata.host === "string" ? metadata.host : "unknown",
 		bytes: asCount(metadata.bytesUp) + asCount(metadata.bytesDown),
 		denied: record?.decision === "deny",
+		unmatched: metadata.fleetUnmatched === "deny" ? "deny" : metadata.fleetUnmatched === "global" ? "global" : null,
+		mode: typeof metadata.enforcementMode === "string" ? metadata.enforcementMode : null,
 	};
 }
 
@@ -326,11 +357,21 @@ function readSightings(r: ResolvedPaths): {
 export interface CaptureReadOptions {
 	/** The declared fleet. Empty means no fleet is declared, which is a different report. */
 	agents: readonly RegisteredAgent[];
+	/**
+	 * The posture the CALLER's configuration declares now, used only for records written
+	 * before the posture was stamped into the chain. Records that carry their own are judged
+	 * by that, so an operator who tightened the config yesterday still sees yesterday's
+	 * traffic judged by yesterday's rules rather than convicted by today's.
+	 */
+	unmatched: "global" | "deny";
 	/** The previous run's bookmark. */
 	since: CaptureWatermark | null;
 	/** Injected so a test can pin the window without sleeping. */
 	now?: number;
 }
+
+/** Enforcement modes that actually gate. `monitor` evaluates fully and refuses nothing. */
+const ENFORCING_MODES: Record<string, true> = { guarded: true, strict: true };
 
 /**
  * Read the chain and answer, per declared agent, whether it is still being captured.
@@ -389,6 +430,8 @@ export function readCaptureHealth(paths: AnchorPaths, options: CaptureReadOption
 		sinceLastRun: 0,
 		allowedSinceLastRun: 0,
 		deniedSinceLastRun: 0,
+		escapedSinceLastRun: 0,
+		permittedByConfigSinceLastRun: [],
 		bytesSinceLastRun: 0,
 		firstAt: null,
 		lastAt: null,
@@ -398,7 +441,9 @@ export function readCaptureHealth(paths: AnchorPaths, options: CaptureReadOption
 	};
 	const identityCounts = new Map<string, number>();
 	const hostCounts = new Map<string, number>();
+	const permitCounts = new Map<string, number>();
 	let spoofedIds = 0;
+	let judgedByCurrentConfig = 0;
 
 	for (const sighting of sightings) {
 		// With no fleet declared nothing can be attributed by construction, and every record
@@ -412,8 +457,27 @@ export function readCaptureHealth(paths: AnchorPaths, options: CaptureReadOption
 			if (declared.has(sighting.agentId)) spoofedIds += 1;
 			if (sighting.chainIndex > floor) {
 				undeclared.sinceLastRun += 1;
-				if (sighting.denied) undeclared.deniedSinceLastRun += 1;
-				else undeclared.allowedSinceLastRun += 1;
+				if (sighting.denied) {
+					undeclared.deniedSinceLastRun += 1;
+				} else {
+					undeclared.allowedSinceLastRun += 1;
+					// Why was undeclared traffic allowed out? Only one of these answers is an
+					// escape, and reporting the others as one would accuse an operator of a
+					// breach their own configuration prescribes.
+					const posture = sighting.unmatched ?? options.unmatched;
+					if (sighting.unmatched === null) judgedByCurrentConfig += 1;
+					// A record with no mode marker cannot be shown to have been gated, and
+					// "unproven" must not round up to "escaped".
+					const enforcing = sighting.mode !== null && ENFORCING_MODES[sighting.mode] === true;
+					const reason =
+						posture === "global"
+							? 'fleet.unmatched: global (the global allowlist judges undeclared traffic, by design)'
+							: !enforcing
+								? `enforcement.mode: ${sighting.mode ?? "not recorded"} (gates nothing, by design)`
+								: null;
+					if (reason === null) undeclared.escapedSinceLastRun += 1;
+					else permitCounts.set(reason, (permitCounts.get(reason) ?? 0) + 1);
+				}
 				undeclared.bytesSinceLastRun += sighting.bytes;
 				identityCounts.set(sighting.agentId, (identityCounts.get(sighting.agentId) ?? 0) + 1);
 				hostCounts.set(sighting.host, (hostCounts.get(sighting.host) ?? 0) + 1);
@@ -455,6 +519,17 @@ export function readCaptureHealth(paths: AnchorPaths, options: CaptureReadOption
 		.map(([host, count]) => ({ host, count }))
 		.sort((left, right) => right.count - left.count || left.host.localeCompare(right.host))
 		.slice(0, 5);
+	undeclared.permittedByConfigSinceLastRun = [...permitCounts.entries()]
+		.map(([reason, count]) => ({ reason, count }))
+		.sort((left, right) => right.count - left.count || left.reason.localeCompare(right.reason));
+
+	if (judgedByCurrentConfig > 0) {
+		notes.push(
+			`${judgedByCurrentConfig} allowed undeclared record(s) do not state the fleet posture in force when ` +
+				`they were written, so they were judged against the posture this config declares now ` +
+				`("${options.unmatched}"). An older build wrote them; records from this version carry their own.`,
+		);
+	}
 
 	if (spoofedIds > 0) {
 		notes.push(

@@ -100,9 +100,10 @@ interface DoctorJson {
   checks: Array<{ name: string; ok: boolean }>;
   capture: {
     unavailable: string | null;
-    fleetError: string | null;
+    fleetError: { message: string; environmental: boolean } | null;
     watermarkError: string | null;
-    alarm: boolean;
+    verdict: "clear" | "inconclusive" | "escape";
+    verdictReason: string;
     health: {
       chainPresent: boolean;
       egressRecords: number;
@@ -124,6 +125,8 @@ interface DoctorJson {
         sinceLastRun: number;
         allowedSinceLastRun: number;
         deniedSinceLastRun: number;
+        escapedSinceLastRun: number;
+        permittedByConfigSinceLastRun: Array<{ reason: string; count: number }>;
         bytesSinceLastRun: number;
         byIdentity: Array<{ id: string; count: number }>;
         topHosts: Array<{ host: string; count: number }>;
@@ -132,6 +135,7 @@ interface DoctorJson {
     } | null;
   };
   failures: number;
+  exitCode: number;
 }
 
 describeLinux("doctor reports capture from a chain a real server wrote", () => {
@@ -420,28 +424,47 @@ describeLinux("doctor reports capture from a chain a real server wrote", () => {
       agentIds: expect.arrayContaining(["worker", "blip", "ghost"]),
     });
 
+    // Every allowed undeclared record carries the posture that was in force, and it says
+    // `global`. That is the DEFAULT posture and it permits exactly this, so doctor must not
+    // call it an escape. This assertion is also the drift check on src/index.ts: if
+    // `fleetUnmatched` is ever renamed or dropped, escapedSinceLastRun goes non-zero here
+    // and this test fails rather than the section quietly starting to accuse people.
+    expect(health?.undeclared.escapedSinceLastRun).toBe(0);
+    expect(health?.undeclared.permittedByConfigSinceLastRun[0]?.reason).toContain("fleet.unmatched: global");
+
     // The first run is the baseline: it seeds the bookmark and does not fail, because there
     // is no "last run" for "since the last run" to mean anything against yet.
     expect(health?.since).toBeNull();
-    expect(payload.capture.alarm).toBe(false);
+    expect(payload.capture.verdict).toBe("clear");
     expect(status).toBe(0);
   }, 120_000);
 
-  it("run 2: fails, loudly, when undeclared egress reaches the network after the last run", async () => {
+  it("run 2: reports INCONCLUSIVE, not an escape, when the configuration permitted the egress", async () => {
     expect(await requestAs("aw-stranger", proxyPort, `http://${HOST_OPEN}:${ports[HOST_OPEN]}/loose-3`)).toBe(200);
 
     const { status, payload } = doctorJson();
     const health = payload.capture.health;
 
     // The bookmark from run 1 is in force, so only the new record counts. Everything run 1
-    // saw is still in `total`, so history does not vanish when the alarm clears.
+    // saw is still in `total`, so history does not vanish when the verdict clears.
     expect(health?.since).not.toBeNull();
     expect(health?.undeclared.total).toBe(baselineTotal + 1);
     expect(health?.undeclared.sinceLastRun).toBe(1);
     expect(health?.undeclared.allowedSinceLastRun).toBe(1);
-    expect(payload.capture.alarm).toBe(true);
-    expect(payload.failures).toBeGreaterThanOrEqual(1);
-    expect(status).toBe(1);
+
+    // Undeclared traffic reached the network, and this deployment's own `unmatched: global`
+    // is what let it. Calling that an escape would accuse the operator of a breach their
+    // configuration prescribes, so the verdict is inconclusive and exit 2, not exit 1. There
+    // is deliberately no end-to-end ESCAPE case in this file: under `unmatched: deny` and an
+    // enforcing mode the proxy refuses undeclared connections before opening an upstream
+    // socket, so the combination that means "escaped" is not producible against a real
+    // server. That is the product working, and it is why the escape verdict is proved from a
+    // crafted chain in tests/capture-health.test.ts instead of faked here.
+    expect(health?.undeclared.escapedSinceLastRun).toBe(0);
+    expect(payload.capture.verdict).toBe("inconclusive");
+    expect(payload.failures).toBe(0);
+    expect(payload.exitCode).toBe(2);
+    expect(status).toBe(2);
   }, 60_000);
 
   it("run 3: renders never-seen and seen-idle differently, and names the weakest binding", async () => {
@@ -449,11 +472,18 @@ describeLinux("doctor reports capture from a chain a real server wrote", () => {
 
     const { status, stdout } = doctor(false);
 
-    // The alarm is a line of its own, above the per-agent table, and it says what happened
+    // The finding is a line of its own, above the per-agent table, and it says what happened
     // to the traffic rather than only that it existed. Exactly one record is new here, so
     // the singular is what the renderer has to produce.
     expect(stdout).toContain("1 undeclared egress record since the last run");
     expect(stdout).toContain("1 reached the network, 0 were refused");
+
+    // Named as inconclusive, with the setting responsible and the remedy that makes the next
+    // run able to answer. Not the word "escape" anywhere.
+    expect(stdout).toContain("INCONCLUSIVE: 1 of those were allowed out by the configuration itself");
+    expect(stdout).toContain("fleet.unmatched: global");
+    expect(stdout).toContain("Set `fleet.unmatched: deny` to make the next run able to answer");
+    expect(stdout).not.toContain("ESCAPE");
 
     // The two states that must never look alike.
     expect(stdout).toContain("DECLARED, NEVER SEEN");
@@ -464,16 +494,16 @@ describeLinux("doctor reports capture from a chain a real server wrote", () => {
 
     expect(stdout).toContain("weakest binding in use: comm");
     expect(stdout).toContain("Anything on this host can claim it");
-    expect(status).toBe(1);
+    expect(status).toBe(2);
   }, 60_000);
 
-  it("run 4: goes quiet once the escape is accounted for, without forgetting it happened", () => {
+  it("run 4: goes quiet once the traffic is accounted for, without forgetting it happened", () => {
     const { status, payload } = doctorJson();
     const health = payload.capture.health;
 
     expect(health?.undeclared.sinceLastRun).toBe(0);
     expect(health?.undeclared.total).toBe(baselineTotal + 2);
-    expect(payload.capture.alarm).toBe(false);
+    expect(payload.capture.verdict).toBe("clear");
     expect(status).toBe(0);
   }, 60_000);
 });
