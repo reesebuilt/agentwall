@@ -48,6 +48,9 @@ than a narrative document.
 - [The perimeter](perimeter.md): closing cooperative capture with a dedicated agent UID and
   nftables redirection, how a destination is named when there are no proxy headers to read,
   and the holes the model leaves open.
+- [The sandbox](sandbox.md): confining the agent PROCESS with Landlock and seccomp rather than
+  its packets, which kernel versions buy which rights, how to measure that the kernel really
+  refused something, and why there is deliberately no network namespace.
 - [Detection benchmark](benchmark.md): re-measuring the detection numbers yourself, why
   precision and recall are never combined into one score, and what a corpus of 190 cases
   cannot tell you.

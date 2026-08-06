@@ -9,6 +9,7 @@ import { runAnchorPass, runVerify, resolvePaths } from "./audit/anchor-service";
 import { runMcpWrap, runMcpHttpWrap } from "./mcp/wrap";
 import { runDecoyCommand } from "./decoy";
 import { runPerimeterCommand } from "./perimeter";
+import { runSandboxCommand } from "./sandbox";
 import {
   formatRationaleReport,
   parseRationaleArgs,
@@ -114,6 +115,7 @@ Commands:
   resume              Resume one runtime session
   terminate           Terminate one runtime session
   perimeter           Contain an agent UID behind the transparent proxy
+  sandbox             Confine one process with Landlock and seccomp (Linux, no root needed)
   decoy               Generate and inspect decoy tokens
   why                 Explain which check fires on a URL, some text, or a tool call
   version             Print version
@@ -168,6 +170,17 @@ Perimeter options:
   verify                              Check the perimeter end to end from the agent UID
   run -- <cmd>                        Run a command as the agent UID inside the perimeter
   rollback                            Remove the ruleset AgentWall installed
+
+Sandbox options:
+  probe                               Measure this kernel's Landlock ABI and seccomp support
+  plan                                Print the profile that would be applied, and its gaps
+  build                               Compile the launcher from native/agentwall-sandbox.c
+  run -- <cmd>                        Apply the profile and exec the command
+  --workdir <path>                    The one directory the command may write to
+  --allow-read/-write/-exec <path>    Widen the profile by one path. Repeatable.
+  --allow-tcp/-bind <port>            Permit one TCP port. Repeatable. Needs Landlock ABI 4.
+  --seccomp <off|errno|kill>          Syscall filter action (default: errno)
+  --require-abi <n>                   Refuse to run below this Landlock ABI
 
 Decoy options:
   --kind <kind>                       Decoy kind: aws-access-key, github-pat, openai-key, generic-secret, url
@@ -1116,6 +1129,10 @@ async function main() {
       // everything after `run --` belongs to the contained command rather than to us.
       await commandPerimeter(args);
       return;
+    case "sandbox":
+      // Raw args for the same reason `perimeter` takes them: everything after `run --` belongs
+      // to the sandboxed command, and parseFlags() would read those options as ours.
+      process.exit(await runSandboxCommand(args));
     case "decoy":
       // Raw args for the same reason `mcp` takes them: the subcommand is a positional that
       // parseFlags() would hand back stripped of the ordering the decoy parser needs.
