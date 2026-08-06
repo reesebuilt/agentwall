@@ -51,6 +51,9 @@ than a narrative document.
 - [The sandbox](sandbox.md): confining the agent PROCESS with Landlock and seccomp rather than
   its packets, which kernel versions buy which rights, how to measure that the kernel really
   refused something, and why there is deliberately no network namespace.
+- [Fleet governance](fleet.md): several agents on one host with their own identities,
+  allowlists, and budgets, what each identity signal is actually worth, what stays global,
+  and what multi-host would take that this does not do.
 - [Detection benchmark](benchmark.md): re-measuring the detection numbers yourself, why
   precision and recall are never combined into one score, and what a corpus of 190 cases
   cannot tell you.

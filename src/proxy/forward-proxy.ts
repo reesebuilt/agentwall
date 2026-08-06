@@ -6,6 +6,7 @@ import { brotliDecompressSync, constants as zlibConstants, gunzipSync, inflateSy
 import { MAX_SCAN_CHARS } from "../policy/injection";
 import type { RiskLevel } from "../types";
 import { MAX_CLIENT_HELLO_BYTES, peekClientHello } from "./tls-peek";
+import { parseProxyCredential } from "../fleet/registry";
 
 /**
  * CONNECT-aware forward proxy: the insertion mechanism.
@@ -52,6 +53,23 @@ export interface ProxyVerdict {
    * because a DLP record that leaks the secret it detected is worse than no record at all.
    */
   metadata?: Readonly<Record<string, string>>;
+  /**
+   * Per-connection facts the decision resolved, echoed verbatim onto the record.
+   *
+   * Which agent this was, on what signal, and against whose allowlist. Carried rather than
+   * recomputed for the same reason the rule ids are: `decide` and `record` are one logical
+   * event split across a socket lifetime, and a record path that re-derives identity can
+   * disagree with the identity that was actually enforced.
+   */
+  attribution?: Readonly<Record<string, string>>;
+  /**
+   * Opaque handle the caller uses to charge this connection's bytes when it closes.
+   *
+   * The proxy never reads it. Unlike attribution it could not be recomputed even in
+   * principle: it names a row in a sliding window that has moved on by the time the
+   * connection ends.
+   */
+  budgetTicket?: number | null;
 }
 
 export type ProxyDecideResult = ProxyDecision | ProxyVerdict;
@@ -116,8 +134,16 @@ export interface ProxyEvent {
   port: number;
   scheme: "http" | "https";
   method: string;
-  /** Resolved originating process, or nulls when attribution failed. */
-  client: { pid: number | null; comm: string | null };
+  /** Resolved originating process and socket owner, or nulls when attribution failed. */
+  client: { pid: number | null; comm: string | null; uid: number | null };
+  /**
+   * Secret the client presented in Proxy-Authorization, stripped of its auth scheme, or null.
+   *
+   * Passed to `decide` and NEVER to the destination: the header is hop-by-hop and is removed
+   * before the upstream request is built. A fleet credential that leaks to every host the
+   * agent talks to is a credential that has to be rotated.
+   */
+  credential: string | null;
   startedAt: number;
   /**
    * The hostname the client negotiated inside the tunnel, when one was readable.
@@ -140,6 +166,17 @@ export interface ProxyEvent {
   headers?: Readonly<Record<string, string>>;
   /** One buffered body. Present only on the calls made after a body has been read. */
   body?: ProxyBody;
+  /**
+   * True on every `decide` call after the first one for this connection.
+   *
+   * One connection is decided more than once because more of it becomes readable as it goes:
+   * the name a tunnel negotiates arrives after the 200, and a plaintext HTTP exchange has a
+   * request body and then a response body. Those are later looks at the same connection, and
+   * only this file knows which call is which. A caller that meters connections has to be able
+   * to tell the difference or it charges one exchange three times; a caller that does not care
+   * ignores the field and behaves exactly as it did.
+   */
+  reDecision?: boolean;
 }
 
 /**
@@ -151,8 +188,16 @@ export interface ProxyEvent {
  * eventually carry a request body into a log, and a DLP record that leaks the secret it
  * detected is worse than no record. What the record carries about content is its
  * classification: `metadata` holds the class and position of each finding and never a value.
+ *
+ * `credential` is removed for the same reason and it is the sharpest case: it is the secret
+ * an agent presents to identify itself, it is stripped from the upstream request precisely so
+ * that no destination ever sees it, and writing it here would put it in cleartext into the
+ * ledger and the audit chain instead. What a reader needs is already carried safely by
+ * `attribution`: which agent this was and that the match came from a presented credential.
+ * `reDecision` goes with it because it describes a call, not a connection.
  */
-export interface ProxyRecord extends Omit<ProxyEvent, "headers" | "body" | "path"> {
+export interface ProxyRecord
+  extends Omit<ProxyEvent, "headers" | "body" | "path" | "credential" | "reDecision"> {
   /**
    * The resource, pathname only, with the query string stripped. Not `ProxyEvent.path`: the
    * query is scanned in full and recorded never, because it is attacker-chosen content and
@@ -168,6 +213,10 @@ export interface ProxyRecord extends Omit<ProxyEvent, "headers" | "body" | "path
   /** Evidence from every decision made about this exchange, folded into one bag. */
   metadata?: Readonly<Record<string, string>>;
   bodyVisibility: BodyVisibility;
+  /** Echoed from the verdict. Empty when the decision came back as a bare string. */
+  attribution?: Readonly<Record<string, string>>;
+  /** Echoed from the verdict. Null when nothing was charged to an agent's budget. */
+  budgetTicket: number | null;
   durationMs: number;
   bytesUp: number;
   bytesDown: number;
@@ -204,13 +253,21 @@ export interface ForwardProxyOptions {
 }
 
 /**
- * Map a proxy client socket back to the process that opened it.
+ * Map a proxy client socket back to the process, and the uid, that opened it.
  *
  * This is what lets the ledger name the process that actually made the call, rather than
  * "unknown", WITHOUT harness cooperation, which is the point of a harness-agnostic
  * design. /proc/net/tcp turns a local port into a socket inode; /proc/<pid>/fd finds the
  * owner. Linux-specific and best-effort by design: attribution failing must never break
  * egress.
+ *
+ * The uid comes out of the SAME /proc/net/tcp line as the inode (column 7), so it costs
+ * nothing beyond a second array index and, unlike the pid, survives the case where the fd
+ * walk finds nothing. That difference matters for identity: a uid is a kernel fact a process
+ * cannot change without privilege, whereas `comm` is a 16-byte label the process writes
+ * itself. Measured on this host: Node rewrites its own comm to "MainThread" at startup, and
+ * `process.title = "aw-scraper"` sets it to anything the process likes. src/fleet/registry.ts
+ * ranks the signals accordingly.
  */
 /**
  * Attribution cost control.
@@ -268,7 +325,7 @@ function pidHoldsInode(pid: number, target: string): boolean {
 }
 
 /**
- * Resolve one connection to the process that opened it.
+ * Resolve one connection to the process, and the uid, that opened it.
  *
  * Both ends are required, and the row has to match both. A match on the client's port alone
  * names the wrong process, reliably rather than occasionally: /proc/net/tcp lists LISTENING
@@ -281,15 +338,22 @@ function pidHoldsInode(pid: number, target: string): boolean {
  * Where the evidence is ambiguous, nothing is named. Two rows can share both ports only if
  * they differ in an address, and addresses are not compared here, so a second candidate means
  * this function cannot tell which socket it was asked about. Declining is the honest answer and
- * it costs nothing: attribution is best-effort and the connection proceeds either way.
+ * it costs nothing: attribution is best-effort and the connection proceeds either way. That
+ * covers the uid as well: it is read off the same row as the inode, so an ambiguous row makes
+ * the owner as unknowable as the process.
  */
-function attributeSocket(clientPort: number, proxyPort: number): { pid: number | null; comm: string | null } {
-  if (!clientPort || !proxyPort) return { pid: null, comm: null };
+function attributeSocket(
+  clientPort: number,
+  proxyPort: number
+): { pid: number | null; comm: string | null; uid: number | null } {
+  if (!clientPort || !proxyPort) return { pid: null, comm: null, uid: null };
   try {
     const wantLocal = `:${clientPort.toString(16).toUpperCase().padStart(4, "0")}`;
     const wantRemote = `:${proxyPort.toString(16).toUpperCase().padStart(4, "0")}`;
-    // Dynamic membership, and the count is the decision, so a Set rather than a lookup table.
-    const candidates = new Set<string>();
+    // Dynamic membership, and the count is the decision, so a keyed collection rather than a
+    // lookup table. Inode to uid, because both come off the same row and the uid outlives the
+    // fd walk: a socket whose owning process cannot be found still has an owning user.
+    const candidates = new Map<string, number | null>();
 
     // Both tables, all the way through. Stopping at the first hit is what let a listening
     // socket stand in for a connection, and a v4 row and a v6 row that both match are two
@@ -304,18 +368,24 @@ function attributeSocket(clientPort: number, proxyPort: number): { pid: number |
       for (const line of content.split("\n").slice(1)) {
         const cols = line.trim().split(/\s+/);
         if (cols.length < 10) continue;
-        if (cols[1].endsWith(wantLocal) && cols[2].endsWith(wantRemote)) candidates.add(cols[9]);
+        if (cols[1].endsWith(wantLocal) && cols[2].endsWith(wantRemote)) {
+          // Column 7 is the socket owner's uid. Parsed defensively rather than trusted: a
+          // malformed row must degrade to "unknown", never to uid 0, which would hand a
+          // root-scoped agent identity to whoever produced the bad line.
+          const parsed = Number(cols[7]);
+          candidates.set(cols[9], Number.isInteger(parsed) && parsed >= 0 ? parsed : null);
+        }
       }
     }
-    if (candidates.size !== 1) return { pid: null, comm: null };
-    const [inode] = candidates;
+    if (candidates.size !== 1) return { pid: null, comm: null, uid: null };
+    const [[inode, uid]] = candidates;
 
     const target = `socket:[${inode}]`;
 
     for (const pid of [...hotPids]) {
       if (pidHoldsInode(pid, target)) {
         touchHotPid(pid);
-        return { pid, comm: readComm(pid) };
+        return { pid, comm: readComm(pid), uid };
       }
     }
 
@@ -323,19 +393,19 @@ function attributeSocket(clientPort: number, proxyPort: number): { pid: number |
     try {
       entries = readdirSync("/proc");
     } catch {
-      return { pid: null, comm: null };
+      return { pid: null, comm: null, uid };
     }
     for (const entry of entries) {
       if (!/^\d+$/.test(entry)) continue;
       const pid = Number(entry);
       if (pidHoldsInode(pid, target)) {
         touchHotPid(pid);
-        return { pid, comm: readComm(pid) };
+        return { pid, comm: readComm(pid), uid };
       }
     }
-    return { pid: null, comm: null };
+    return { pid: null, comm: null, uid };
   } catch {
-    return { pid: null, comm: null };
+    return { pid: null, comm: null, uid: null };
   }
 }
 
@@ -381,11 +451,13 @@ export interface ResolvedVerdict {
   matchedRules: readonly string[];
   riskLevel?: RiskLevel;
   metadata?: Readonly<Record<string, string>>;
+  attribution?: Readonly<Record<string, string>>;
+  budgetTicket: number | null;
 }
 
 function resolveVerdict(result: ProxyDecideResult): ResolvedVerdict {
   if (typeof result === "string") {
-    return { decision: result, reasons: NO_STRINGS, matchedRules: NO_STRINGS };
+    return { decision: result, reasons: NO_STRINGS, matchedRules: NO_STRINGS, budgetTicket: null };
   }
   return {
     decision: result.decision,
@@ -393,6 +465,8 @@ function resolveVerdict(result: ProxyDecideResult): ResolvedVerdict {
     matchedRules: result.matchedRules ?? NO_STRINGS,
     riskLevel: result.riskLevel,
     metadata: result.metadata,
+    attribution: result.attribution,
+    budgetTicket: result.budgetTicket ?? null,
   };
 }
 
@@ -445,7 +519,10 @@ export function crossCheckNegotiatedName(
   // than only the typed one. This can only ever ADD a denial: it runs after an allow, so it
   // can refuse what the CONNECT line was permitted and can never permit what it was refused.
   // Monitor mode is unaffected, because monitor mode's `decide` returns allow.
-  const negotiatedVerdict = resolveVerdict(decide({ ...event, host: observed }));
+  // `reDecision` is what tells the caller this is a second look at one connection rather than
+  // a new one. Without it a metered caller admits the same tunnel twice and its per-agent
+  // request budget means half of what its operator wrote.
+  const negotiatedVerdict = resolveVerdict(decide({ ...event, host: observed, reDecision: true }));
   return {
     verdict: {
       decision: negotiatedVerdict.decision,
@@ -465,6 +542,17 @@ export function crossCheckNegotiatedName(
         current.metadata || negotiatedVerdict.metadata
           ? { ...current.metadata, ...negotiatedVerdict.metadata }
           : undefined,
+      // The agent is the same agent either way; the later pass wins a key collision because
+      // it was decided against the better-sourced hostname.
+      attribution:
+        current.attribution || negotiatedVerdict.attribution
+          ? { ...current.attribution, ...negotiatedVerdict.attribution }
+          : undefined,
+      // The FIRST pass's ticket, always. It names the row that was opened when this
+      // connection was admitted, and the bytes counted below belong to that row. The second
+      // pass is a re-decision and admits nothing, so it has no ticket to offer; taking its
+      // null here would leave the connection's bytes uncharged.
+      budgetTicket: current.budgetTicket ?? negotiatedVerdict.budgetTicket,
     },
     refuse: negotiatedVerdict.decision === "deny",
   };
@@ -487,6 +575,15 @@ class VerdictLedger {
   readonly reasons: string[] = [];
   readonly matchedRules: string[] = [];
   readonly metadata: Record<string, string> = {};
+  readonly attribution: Record<string, string> = {};
+  /**
+   * The ticket the FIRST pass came back with, and only that one.
+   *
+   * The later passes are re-decisions of one connection and admit nothing, so they have no
+   * ticket to offer. Taking a later null would leave this exchange's bytes charged to
+   * nobody, and taking a later non-null would charge them to a row that was never opened.
+   */
+  budgetTicket: number | null = null;
 
   fold(verdict: ResolvedVerdict): ResolvedVerdict {
     if (verdict.decision === "deny") this.decision = "deny";
@@ -496,6 +593,10 @@ class VerdictLedger {
       this.riskLevel = verdict.riskLevel;
     }
     if (verdict.metadata) this.absorb(verdict.metadata);
+    // Later passes see the same agent, so a key collision is a re-statement rather than a
+    // disagreement and the newest wins.
+    if (verdict.attribution) Object.assign(this.attribution, verdict.attribution);
+    if (this.budgetTicket === null) this.budgetTicket = verdict.budgetTicket;
     return verdict;
   }
 
@@ -752,7 +853,10 @@ export function createForwardProxy(opts: ForwardProxyOptions): Server {
       port,
       scheme: "https",
       method: "CONNECT",
-      client: { pid: null, comm: null },
+      client: { pid: null, comm: null, uid: null },
+      // Read here rather than after the tunnel opens: the header only exists on the CONNECT
+      // request, and the request object is not kept alive for the life of the tunnel.
+      credential: parseProxyCredential(req.headers["proxy-authorization"]),
       startedAt: Date.now(),
     };
     const clientPort = clientSocket.remotePort ?? 0;
@@ -760,7 +864,7 @@ export function createForwardProxy(opts: ForwardProxyOptions): Server {
     // Defaulted rather than left unset: the catch-all below can reach finish() before
     // decide() has run, and a record with no decision at all is worse evidence than one
     // that says the connection was never gated.
-    let verdict: ResolvedVerdict = { decision: "allow", reasons: NO_STRINGS, matchedRules: NO_STRINGS };
+    let verdict: ResolvedVerdict = { decision: "allow", reasons: NO_STRINGS, matchedRules: NO_STRINGS, budgetTicket: null };
     let bytesUp = 0;
     let bytesDown = 0;
     let recorded = false;
@@ -780,8 +884,16 @@ export function createForwardProxy(opts: ForwardProxyOptions): Server {
       // operator's JSONL whether or not `ProxyRecord`'s type admits it. Destination facts are
       // welcome. Anything read out of a message body is not, and would have to be named
       // rather than spread, as the HTTP handler does.
+      //
+      // Which is exactly why these two are destructured off first. `credential` is the secret
+      // the agent presented to identify itself: it is deliberately withheld from every
+      // destination, and a spread would put it in cleartext in the operator's ledger instead,
+      // in the very record that exists to prove who the agent was. The type excludes it and
+      // a spread does not respect the type, so it has to leave here. `reDecision` describes a
+      // call rather than a connection and has no business in a record at all.
+      const { credential: _credential, reDecision: _reDecision, ...connection } = event;
       opts.record({
-        ...event,
+        ...connection,
         ...verdict,
         bodyVisibility: "tunneled",
         durationMs: Date.now() - event.startedAt,
@@ -797,7 +909,7 @@ export function createForwardProxy(opts: ForwardProxyOptions): Server {
     try {
       event.client = attributeSocket(clientPort, proxyPort);
     } catch {
-      event.client = { pid: null, comm: null };
+      event.client = { pid: null, comm: null, uid: null };
     }
     verdict = resolveVerdict(opts.decide(event));
 
@@ -1045,6 +1157,7 @@ export function createForwardProxy(opts: ForwardProxyOptions): Server {
       scheme: "http",
       method: req.method ?? "GET",
       client: attributeSocket(req.socket.remotePort ?? 0, req.socket.localPort ?? 0),
+      credential: parseProxyCredential(req.headers["proxy-authorization"]),
       startedAt: Date.now(),
     };
 
@@ -1104,6 +1217,11 @@ export function createForwardProxy(opts: ForwardProxyOptions): Server {
         matchedRules: ledger.matchedRules,
         riskLevel: ledger.riskLevel,
         metadata: { ...ledger.metadata, pathQueryBytes: String(parsed.search.length) },
+        // Which agent, on what evidence, judged against whose allowlist. Named like every
+        // other field here rather than spread from the event: this is the decision's own
+        // account of the connection, and the credential it was resolved from stays out.
+        attribution: ledger.attribution,
+        budgetTicket: ledger.budgetTicket,
         bodyVisibility: visibility ?? "unread",
         durationMs: Date.now() - event.startedAt,
         bytesUp,
@@ -1156,15 +1274,26 @@ export function createForwardProxy(opts: ForwardProxyOptions): Server {
     res.on("close", abandon);
 
     const forward = (buffered: BufferedBody): void => {
+      // Hop-by-hop headers are addressed to this proxy and must not be relayed. Forwarding
+      // req.headers wholesale sent Proxy-Authorization to the destination, which means every
+      // host a fleet agent talks to received the credential that identifies that agent to
+      // AgentWall. Deleted from a copy: req.headers is shared with the event above and with
+      // Node's own parser state, and the scan is entitled to see the credential even though
+      // the destination is not.
+      const upstreamHeaders = { ...req.headers };
+      delete upstreamHeaders["proxy-authorization"];
+      delete upstreamHeaders["proxy-connection"];
+
       const outbound = httpRequest(
         {
           host: parsed.hostname,
           port,
           path,
           method: req.method,
-          // Forwarded exactly as they arrived. The scan reads a copy; it never rewrites what
-          // the destination sees, so an allowed request is byte-identical to an unproxied one.
-          headers: req.headers,
+          // Otherwise forwarded exactly as they arrived. The scan reads a copy; it never
+          // rewrites what the destination sees, so an allowed request differs from an
+          // unproxied one only by the two hop-by-hop names stripped above.
+          headers: upstreamHeaders,
         },
         (upRes) => respond(upRes)
       );
@@ -1224,6 +1353,7 @@ export function createForwardProxy(opts: ForwardProxyOptions): Server {
               ...event,
               path,
               headers,
+              reDecision: true,
               body: { direction: "response", text: "", truncated: false, bytes: 0, status, unscannable: "stream" },
             })
           )
@@ -1250,6 +1380,7 @@ export function createForwardProxy(opts: ForwardProxyOptions): Server {
               ...event,
               path,
               headers,
+              reDecision: true,
               body: {
                 direction: "response",
                 text: decoded.text,
@@ -1286,6 +1417,7 @@ export function createForwardProxy(opts: ForwardProxyOptions): Server {
             ...event,
             path,
             headers,
+            reDecision: true,
             body: {
               direction: "request",
               text: decoded.text,

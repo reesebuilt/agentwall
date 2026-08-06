@@ -3,6 +3,8 @@ import * as path from "path";
 import * as yaml from "js-yaml";
 import { EgressPolicy, HeartbeatConfig } from "./types";
 import type { EnforcementMode } from "./runtime/enforcement";
+import { FleetConfigSchema } from "./fleet/registry";
+import type { FleetConfig } from "./fleet/registry";
 
 export interface AgentwallConfig {
   port: number;
@@ -63,6 +65,21 @@ export interface AgentwallConfig {
     redactSecrets: boolean;
   };
   egress: EgressPolicy;
+  /**
+   * The agents that share this host, and what each one is allowed to spend.
+   *
+   * Absent means one undifferentiated agent, which is the shape most deployments have and
+   * the behaviour every earlier version had: records carry the process comm as the agentId
+   * and the process-wide allowlist judges everything. Declaring agents is what turns that
+   * into per-agent identity, per-agent allowlists, and per-agent budgets.
+   *
+   * Validated by FleetConfigSchema at load, not here, because the failures worth catching
+   * (a literal secret in the file, two agents that match the same connection) are semantic
+   * rather than structural. See src/fleet/registry.ts and docs/fleet.md.
+   *
+   * Scope: one host. There is no cross-instance identity and no shared budget.
+   */
+  fleet?: FleetConfig;
   /**
    * Egress enforcement. Absent means `monitor`: upgrading AgentWall must never start
    * blocking traffic that yesterday's identical configuration allowed.
@@ -315,6 +332,31 @@ export function loadConfig(configPath?: string): AgentwallConfig {
     merged["sourcePath"] = resolvedSource;
   } else {
     delete merged["sourcePath"];
+  }
+
+  // The fleet section is parsed rather than trusted, and a bad one is a boot failure for the
+  // same reason a bad enforcement mode is. An agent whose match block has a typo does not
+  // half-work: it silently never binds, every one of its connections falls back to the global
+  // allowlist, and the operator's per-agent policy is simply not in force with nothing on
+  // screen to say so.
+  if (merged["fleet"] !== undefined) {
+    const parsed = FleetConfigSchema.safeParse(merged["fleet"]);
+    if (!parsed.success) {
+      const detail = parsed.error.issues
+        .map((issue) => `${issue.path.length > 0 ? issue.path.join(".") : "fleet"}: ${issue.message}`)
+        .join("; ");
+      throw new Error(`agentwall: invalid fleet section in ${sourcePath}. ${detail}`);
+    }
+    if (parsed.data.unmatched === "deny" && parsed.data.agents.length === 0) {
+      // This configuration denies all proxied egress in guarded and strict, which is what the
+      // lockdown is for. Accepting it would mean an operator who wrote the posture line before
+      // the agent list takes the fleet offline and reads a wall of allowlist denials.
+      throw new Error(
+        `agentwall: fleet.unmatched is "deny" in ${sourcePath} but no agents are declared, which refuses ` +
+          `all proxied egress in guarded and strict. Declare the agents, or use the lockdown to stop traffic.`
+      );
+    }
+    merged["fleet"] = parsed.data;
   }
 
   return merged as unknown as AgentwallConfig;

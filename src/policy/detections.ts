@@ -286,6 +286,32 @@ export const detectionCatalog: DetectionMapping[] = [
     },
     severity: "high",
   },
+  {
+    id: "det.fleet.budget.exhausted",
+    ruleId: "fleet:deny-agent-budget-exhausted",
+    name: "Agent egress budget exhausted",
+    description:
+      "A declared agent reached the request or byte ceiling configured for its window and the connection was refused. Expected when a budget is doing its job; worth reading when an agent that has never approached its ceiling suddenly does, which is what a runaway loop or an exfiltration attempt looks like from the outside.",
+    mitreAttack: {
+      tactic: "Exfiltration",
+      technique: "Exfiltration Over C2 Channel",
+      techniqueId: "T1041",
+    },
+    severity: "medium",
+  },
+  {
+    id: "det.fleet.agent.undeclared",
+    ruleId: "fleet:deny-undeclared-agent",
+    name: "Egress from an agent no declaration claims",
+    description:
+      "A proxied connection could not be bound to any declared agent and the fleet is configured to refuse those. Either an agent was deployed without being declared, or something on the host is using the proxy that the operator did not put there. Both are worth knowing; only the second is an incident.",
+    mitreAttack: {
+      tactic: "Defense Evasion",
+      technique: "Masquerading",
+      techniqueId: "T1036",
+    },
+    severity: "high",
+  },
 ];
 
 const detectionByRule = new Map<string, DetectionMapping[]>(

@@ -2183,6 +2183,43 @@ function renderAuditFeed(state) {
   );
 }
 
+/**
+ * The fleet facts under an agent row: which identity, on what evidence, and where its budget
+ * stands.
+ *
+ * Renders nothing when the record carried none of it. Most audit records do not come off the
+ * egress path and were never resolved against a declared fleet, and a row that showed
+ * "matched on: none" for all of them would train the operator to stop reading the field on
+ * the rows where it is the whole point.
+ *
+ * `matchedOn` is shown verbatim rather than translated to a confidence word. "comm" and
+ * "credential" are different claims and the operator is entitled to see which one this was;
+ * docs/fleet.md says what each is worth.
+ */
+function agentIdentityLine(item) {
+  const parts = [];
+  if (item.matchedOn && item.matchedOn !== "none") {
+    parts.push(`identity: ${item.matchedOn}`);
+  } else if (item.declared === false) {
+    parts.push("identity: not resolved to a declared agent");
+  }
+  if (item.allowlistSource && item.allowlistSource !== "global") {
+    parts.push(`allowlist: ${item.allowlistSource}`);
+  }
+  if (item.budget) {
+    const req =
+      item.budget.maxRequests === null
+        ? `${item.budget.requests} req`
+        : `${item.budget.requests}/${item.budget.maxRequests} req`;
+    const bytes =
+      item.budget.maxBytes === null
+        ? `${item.budget.bytes} B`
+        : `${item.budget.bytes}/${item.budget.maxBytes} B`;
+    parts.push(`budget ${item.budget.windowSeconds}s: ${req}, ${bytes}`);
+  }
+  return parts.length ? `<p class="meta">${escapeHtml(parts.join(" · "))}</p>` : "";
+}
+
 function renderInspectionActivity(state) {
   setHTML(
     "inspection-activity",
@@ -2235,10 +2272,11 @@ function renderInspectionActivity(state) {
             (item) => `
               <article class="list-card">
                 <div class="split">
-                  <strong>${escapeHtml(item.agentId)}</strong>
+                  <strong>${escapeHtml(item.label && item.label !== item.agentId ? `${item.label} (${item.agentId})` : item.agentId)}</strong>
                   <span class="kv-value">${escapeHtml(item.lastPlane)}</span>
                 </div>
                 <p>${escapeHtml(item.lastAction)}</p>
+                ${agentIdentityLine(item)}
                 <div class="action-row compact">
                   ${chip("Open", "neutral", `data-drilldown-kind="agent" data-drilldown-id="${escapeHtml(item.agentId)}"`)}
                   <span class="meta">${escapeHtml(formatRelative(item.lastSeenAt))}</span>

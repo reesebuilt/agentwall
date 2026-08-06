@@ -581,7 +581,11 @@ describe("what the audit chain is allowed to know", () => {
 
     expect(Object.keys(record).sort()).toEqual(
       [
+        // The fleet fields the decision resolved. Both are the decision's own account of the
+        // connection; neither carries the credential it was resolved from.
+        "attribution",
         "bodyVisibility",
+        "budgetTicket",
         "bytesDown",
         "bytesUp",
         "client",

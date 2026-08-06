@@ -201,7 +201,10 @@ Stated plainly, because a security tool that oversells itself is worse than no t
 | The watchdog does not auto-deny | It exposes heartbeat age and a stop flag, and a rule denies on the `watchdog_timeout` label, but nothing wires staleness to that label automatically. Treat it as a signal you act on. |
 | Telemetry is off by default | The OTLP/HTTP decision-trace exporter is disabled unless configured. |
 | Bearer tokens, not identity | A shared token, not OIDC or mTLS. No identity-provider integration. |
-| Single host | Multiple instances can be polled into one summary view. There is no clustered or highly-available control plane. |
+| Per-agent identity is only as strong as its signal | A fleet agent is bound by a presented credential, by the socket's uid, or by the process name. A credential separates cooperating agents and does not contain one that can read the secret; `comm` is a label the process sets for itself. Which signal matched is on every record so the claim is never stronger than the evidence. See [docs/fleet.md](docs/fleet.md). |
+| Fleet budgets are per-instance and in-memory | Ceilings are enforced by the instance that saw the traffic, and the running windows reset when the process does. The records are durable; the counters are not. Byte budgets refuse the next connection rather than truncating a live one. |
+| No fleet identity on the transparent path | A kernel-redirected connection carries no process name, no uid, and no proxy credential, so it resolves to the undeclared agent. `fleet.unmatched: "deny"` therefore refuses everything the perimeter redirects. |
+| Single host | Within one instance, identity, allowlists, and budgets are per-agent. Across instances there is nothing: no shared identity, no shared budget, and no clustered or highly-available control plane. Multiple instances can be polled into one read-only summary view. [docs/fleet.md](docs/fleet.md) states what multi-host would actually require. |
 
 ## Built with
 
@@ -214,7 +217,8 @@ this project declines.
 ## Docs
 
 [Install](docs/install.md) · [Enforcement](docs/enforcement.md) ·
-[Perimeter](docs/perimeter.md) · [MCP](docs/mcp.md) · [Lockdown](docs/lockdown.md) ·
+[Perimeter](docs/perimeter.md) · [Fleet](docs/fleet.md) · [MCP](docs/mcp.md) ·
+[Lockdown](docs/lockdown.md) ·
 [Architecture](docs/architecture.md) · [Threat model](docs/threat-model.md) ·
 [Verification](docs/verification.md) · [Audit format](docs/audit-format.md) ·
 [API and configuration](docs/reference.md) · [Probe API](docs/probe-api.md) ·

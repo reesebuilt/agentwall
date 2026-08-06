@@ -862,7 +862,7 @@ describe("forward proxy", () => {
       const conn = await connectTunnel(proxyPort, `127.0.0.1:${upstreamPort}`, { localPort: sharedPort });
       await until(() => events.length > 0);
 
-      expect((events[0] as ProxyEvent).client).toEqual({ pid: null, comm: null });
+      expect((events[0] as ProxyEvent).client).toEqual({ pid: null, comm: null, uid: null });
       conn.socket.destroy();
     }, 30000);
 
@@ -883,7 +883,7 @@ describe("forward proxy", () => {
       const conn = await connectTunnel(proxyPort, `127.0.0.1:${upstreamPort}`);
       await tunnelOpen(conn);
 
-      expect((events[0] as ProxyEvent).client).toEqual({ pid: null, comm: null });
+      expect((events[0] as ProxyEvent).client).toEqual({ pid: null, comm: null, uid: null });
       // Attribution failing must never cost egress: the decision still ran and the tunnel
       // still opened. That is what makes it safe for attribution to stay best-effort.
       expect(responseHead(conn.received)).toBe("HTTP/1.1 200 Connection Established\r\n\r\n");
@@ -900,7 +900,7 @@ describe("forward proxy", () => {
       const conn = await connectTunnel(proxyPort, `127.0.0.1:${upstreamPort}`);
       await tunnelOpen(conn);
 
-      expect((events[0] as ProxyEvent).client).toEqual({ pid: null, comm: null });
+      expect((events[0] as ProxyEvent).client).toEqual({ pid: null, comm: null, uid: null });
       expect(responseHead(conn.received)).toBe("HTTP/1.1 200 Connection Established\r\n\r\n");
       expect(rejections).toEqual([]);
       conn.socket.destroy();

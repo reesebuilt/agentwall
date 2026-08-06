@@ -126,17 +126,25 @@ interface ResolvedVerdict {
   reasons: readonly string[];
   matchedRules: readonly string[];
   riskLevel?: RiskLevel;
+  attribution?: Readonly<Record<string, string>>;
+  /**
+   * Always null here. Nothing on this path resolves to a declared agent, so there is no
+   * budget row for a connection to be charged against; see the note on `event.credential`.
+   */
+  budgetTicket: number | null;
 }
 
 function resolveVerdict(result: ProxyDecision | ProxyVerdict): ResolvedVerdict {
   if (typeof result === "string") {
-    return { decision: result, reasons: NO_STRINGS, matchedRules: NO_STRINGS };
+    return { decision: result, reasons: NO_STRINGS, matchedRules: NO_STRINGS, budgetTicket: null };
   }
   return {
     decision: result.decision,
     reasons: result.reasons ?? NO_STRINGS,
     matchedRules: result.matchedRules ?? NO_STRINGS,
     riskLevel: result.riskLevel,
+    attribution: result.attribution,
+    budgetTicket: result.budgetTicket ?? null,
   };
 }
 
@@ -269,7 +277,13 @@ function handleConnection(client: Socket, opts: TransparentProxyOptions): void {
     // file is out of scope for this change. Copying the implementation would create a second
     // copy of a security-relevant lookup to drift, so transparent records honestly say
     // "unknown" instead. Lifting the helper into a shared module is the follow-up.
-    client: { pid: null, comm: null },
+    //
+    // The same applies to fleet identity: with no comm, no uid, and no Proxy-Authorization
+    // (a kernel-redirected connection carries no proxy request at all), a declared agent can
+    // only be matched on this path once that helper moves. Records here therefore resolve to
+    // the undeclared agent, which is accurate rather than convenient. docs/fleet.md says so.
+    client: { pid: null, comm: null, uid: null },
+    credential: null,
     startedAt,
   };
 
@@ -286,6 +300,7 @@ function handleConnection(client: Socket, opts: TransparentProxyOptions): void {
     reasons: [UNNAMED_REASON],
     matchedRules: NO_STRINGS,
     riskLevel: "high",
+    budgetTicket: null,
   };
 
   let peek: Buffer = EMPTY;
@@ -299,8 +314,13 @@ function handleConnection(client: Socket, opts: TransparentProxyOptions): void {
     if (recorded) return;
     recorded = true;
     try {
+      // `credential` is destructured off rather than spread, matching the forward proxy: a
+      // presented secret is evidence for a decision and never something to write into a
+      // ledger. Always null on this path, because a kernel-redirected connection carries no
+      // Proxy-Authorization to read, but the shape is the guarantee rather than the value.
+      const { credential: _credential, reDecision: _reDecision, ...connection } = event;
       opts.record({
-        ...event,
+        ...connection,
         ...verdict,
         // This listener relays raw TCP: it peeks only far enough to name the destination and
         // never parses a message, so no body on either scheme is inspected here. Recorded as
@@ -364,7 +384,13 @@ function handleConnection(client: Socket, opts: TransparentProxyOptions): void {
     // Labelled https on the record even though it was never named: "not-tls" is the only
     // status that rules a handshake out, so a truncated hello still counts as one.
     if (peek.length > 0 && peekClientHello(peek).status !== "not-tls") event.scheme = "https";
-    verdict = { decision: "deny", reasons: [UNNAMED_REASON], matchedRules: NO_STRINGS, riskLevel: "high" };
+    verdict = {
+      decision: "deny",
+      reasons: [UNNAMED_REASON],
+      matchedRules: NO_STRINGS,
+      riskLevel: "high",
+      budgetTicket: null,
+    };
     finish();
     destroyAll();
   };
@@ -456,6 +482,7 @@ function handleConnection(client: Socket, opts: TransparentProxyOptions): void {
         reasons: ["egress decision failed"],
         matchedRules: NO_STRINGS,
         riskLevel: "high",
+        budgetTicket: null,
       };
     }
 
