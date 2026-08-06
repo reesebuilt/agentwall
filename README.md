@@ -1,165 +1,32 @@
-<p align="center"><img src="assets/brand/agentwall-logo-mark.svg" width="140" alt="Agentwall"></p>
+# Agentwall
 
-<h1 align="center">Agentwall</h1>
+A runtime firewall for AI agents.
 
-<p align="center"><strong>A runtime firewall for AI agents.</strong></p>
+Agentwall watches what agents actually do on the host, attributes each action to the process
+that took it, and writes a record that cannot be quietly rewritten. It runs locally, needs no
+account, and has no paid tier.
 
-<p align="center">
-It observes what agents actually do on the host, attributes each action to the process that took it,<br/>
-and keeps a record that cannot be quietly rewritten.
-</p>
+Prompts are not a security boundary. An agent that has been argued into leaking a key still
+holds the key. Agentwall works one layer down, where an action becomes real, and treats the
+agent as the untrusted party.
 
-<p align="center">
-  <a href="https://github.com/repsecure/agentwall/actions/workflows/ci.yml"><img src="https://github.com/repsecure/agentwall/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-22d3ee?style=flat-square&labelColor=0b0f14" alt="License: Apache-2.0"></a>
-  <img src="https://img.shields.io/badge/TypeScript-5.x-22d3ee?style=flat-square&labelColor=0b0f14&logo=typescript&logoColor=22d3ee" alt="TypeScript">
-  <img src="https://img.shields.io/badge/Node-22.12%2B-22d3ee?style=flat-square&labelColor=0b0f14&logo=node.js&logoColor=22d3ee" alt="Node 22.12+">
-  <img src="https://img.shields.io/badge/platform-Linux-22d3ee?style=flat-square&labelColor=0b0f14&logo=linux&logoColor=22d3ee" alt="Platform: Linux">
-</p>
+## Before you install
 
----
+Two limits matter more than any feature below.
 
-An agent with credentials, a shell, and network access is asked to behave. Prompts are not a
-security boundary: an agent that has been argued into exfiltrating a key still holds the key.
-Agentwall works one layer down, where an action becomes real, and treats the agent as the
-untrusted party rather than a collaborator.
+**It observes. It does not block.** Egress through the proxy is recorded and allowed. The
+allow decision is hard-coded at [`src/index.ts:29`](src/index.ts). Blocking is a posture you
+move to later, once your own ledger shows what your agents legitimately reach.
 
-It is for people running agents on machines they care about: an individual whose workstation
-holds a dozen API keys, a small team sharing a build box, anyone operating a fleet of
-autonomous jobs. It runs locally, needs no account, has no paid tier, and the operator console
-is part of the tool.
+**Capture is cooperative.** The proxy is found through standard proxy environment variables. A
+process that ignores them egresses unseen. Nothing here installs iptables or nftables
+redirection. Agentwall raises the cost of unobserved egress; it does not make it impossible.
 
-<p align="center"><img src="docs/assets/agentwall-console-hero.png" width="900" alt="The Agentwall operator console: live decisions, per-agent evidence, and the audit chain"></p>
+The rest are in [Limits](#limits). They are not footnotes.
 
-## Read this before the feature list
+## Install
 
-Two properties matter more than anything below, and both are limits.
-
-**It ships observing, not blocking.** Egress through the proxy is recorded and allowed. The
-shipped entrypoint hard-codes the allow decision ([`src/index.ts:29`](src/index.ts)), so
-monitor mode is not a default you might drift off, it is the only behaviour the proxy has
-today. Blocking is a posture you move to deliberately, once your own ledger shows what your
-agents legitimately reach. A firewall that starts by breaking your tooling gets switched off,
-and a switched-off firewall protects nothing.
-
-**Capture is cooperative, not enforced.** The proxy is found through standard proxy
-environment variables. A process that ignores them egresses without being seen. This is
-measurable, not theoretical: on Node 20+, `fetch` bypasses `https_proxy` unless
-`NODE_USE_ENV_PROXY=1` is set, and a bypassing request produces zero ledger rows. Nothing in
-this repository installs iptables or nftables redirection. Agentwall raises the cost of
-unobserved egress; it does not make it impossible.
-
-The rest of the limits are in [Limits](#limits). They are not footnotes.
-
-## What it does
-
-### Sees egress, and knows which process caused it
-
-A CONNECT-aware forward proxy ([`src/proxy/forward-proxy.ts`](src/proxy/forward-proxy.ts))
-captures egress from any client honouring proxy environment variables. Verified with `curl`,
-`python3`, `bun`, and `node` (the last needs `NODE_USE_ENV_PROXY=1`).
-
-Identity is observed, not self-reported. Agentwall maps the client socket back to its owning
-process through `/proc/net/tcp` inode matching and `/proc/<pid>/fd`, so a record carries the
-real `pid` and `comm` even when the agent framework cooperates in no way at all and even if it
-lies about who it is.
-
-The cost scales with how many processes and descriptors the host has, so treat these as shape
-rather than a constant. Resolving a socket for a process not seen recently walks all of
-`/proc`; a recently-seen process is checked directly from a 16-entry cache. Measured on a
-430-process host: 19.7 ms cold, 0.48 ms warm (medians). On a busier machine the same walk
-measured roughly 44 ms cold and 1.6 ms warm, recorded at
-[`src/proxy/forward-proxy.ts:60-71`](src/proxy/forward-proxy.ts). For HTTPS the walk happens
-after the tunnel is established, off the connection's critical path. Attribution failure
-degrades to `pid: null` and never blocks egress.
-
-One quirk worth knowing: a process name comes from `/proc/<pid>/comm`, which is the thread
-name, not the binary. Node reports `MainThread`, so Node egress is attributed to `MainThread`
-rather than `node`.
-
-### Decides, with precedence you can predict
-
-The policy engine ([`src/policy/engine.ts`](src/policy/engine.ts)) scores an action across six
-planes (`network`, `tool`, `content`, `browser`, `identity`, `governance`) and returns one of
-`allow`, `redact`, `approve`, `deny`. Every matching rule contributes; the most restrictive
-wins, ordered `deny` > `approve` > `redact` > `allow`
-([`src/policy/engine.ts:12-16`](src/policy/engine.ts)). Results carry matched rule IDs, plain
-reasons, a risk level, and detections mapped to MITRE ATT&CK technique IDs, so an operator and
-an audit record agree on why something happened.
-
-The engine's built-in default is `deny` ([`src/config.ts:150`](src/config.ts)), as is egress
-default-deny ([`src/config.ts:158`](src/config.ts)). `init --mode guarded` and `--mode strict`
-both write that. `init --mode monitor` deliberately writes `allow` instead, because the point
-of monitor mode is to learn your real traffic without breaking it. Check which you have before
-assuming you are protected:
-
-```bash
-grep -A1 defaultDecision agentwall.config.yaml
-```
-
-Policy is a built-in rule pack plus hot-reloadable YAML. A file that fails to parse is
-rejected whole and the previous ruleset stays in force
-([`src/policy/runtime.ts:66-77`](src/policy/runtime.ts)), so a typo cannot leave you running
-with half a policy or none.
-
-Also present: DLP detectors with inline redaction (AWS keys, GitHub PATs and OAuth tokens,
-OpenAI keys, Slack tokens, private keys, JWTs, SSNs, credit cards, emails, phone numbers);
-SSRF and egress inspection with scheme, port, and host allowlists that block private,
-loopback, and link-local ranges plus cloud metadata endpoints; shell command preflight; a
-persistent approval queue with `auto`/`always`/`never` modes; per-session and per-actor rate
-limits, pending-approval caps, and cost budgets; manifest drift detection against approved
-fingerprints; and session pause, resume, and terminate enforced on `/evaluate`.
-
-### Keeps a record that resists rewriting
-
-Audit events are SHA-256 hash-chained, each record naming its predecessor
-([`src/audit/chain.ts`](src/audit/chain.ts)). Edit one and every later link breaks. The
-integrity status a record carries is `chained-local`, deliberately not `verified`, because
-linking at write time is not evidence that anything checked it.
-
-Three properties make the file survive real operation rather than only a demo:
-
-- **Single-writer lock.** An `O_EXCL` lock file holds the writer's pid. A second writer starts
-  only if the first is provably unable to append, and "I could not tell" is not proof: an
-  unverifiable live owner refuses the takeover with an explanation
-  ([`src/audit/file-sink.ts:121-174`](src/audit/file-sink.ts)). Two processes appending would
-  interleave two chains into one file and destroy the property the log exists for.
-- **Torn-tail recovery.** A crash mid-append leaves a partial record. On restart Agentwall
-  resumes from the last intact one and reports what it dropped
-  (`resumed from the last intact record; discarded 1 torn record(s) at the tail`).
-- **Restart-safe resume.** A restart continues the existing chain rather than starting a new
-  one, logging `audit chain resumed from prior run`. A genuine discontinuity is reported as
-  one instead of being silently absorbed.
-
-`agentwall anchor` seals the segment, signs an Ed25519 checkpoint over the head, and submits
-the digest to OpenTimestamps, which batches it into a Merkle tree whose root lands in a
-Bitcoin transaction. No account and no API key. The calendar's response is the proof and is
-persisted, since discarding it would reduce the anchor to a claim that an HTTP request once
-happened.
-
-Why bother, given the chain and the signature already exist: neither survives an adversary who
-owns the host. Anyone who can write the file can recompute the chain, and anyone who can read
-the signing key can re-sign it. Every purely local control has that ceiling. An anchor breaks
-it by putting a fingerprint somewhere this machine cannot reach back into, so rewriting history
-requires altering a record held by someone the operator does not control. The reasoning is
-kept next to the code in [`src/audit/signing.ts:12-37`](src/audit/signing.ts) and
-[`src/audit/anchor.ts:6-46`](src/audit/anchor.ts).
-
-### Refuses unauthenticated callers
-
-Operator auth ([`src/auth/operator.ts`](src/auth/operator.ts)) is a bearer token compared in
-constant time, registered as a global `onRequest` hook on an allowlist model: everything is
-protected unless explicitly public, so a route added next year is guarded by default rather
-than open until someone remembers. Only `/health` and `/api/health` are public.
-
-It fails closed. With no token configured and loopback-dev off, every other route returns
-`401` and the server logs why, loudly, because a service that silently refuses everything is
-worse than one that explains itself. A wrong token is an explicit failure that does not fall
-through to the loopback path.
-
-## Quick start
-
-Linux, Node.js 22.12 or newer. Verified on Node 24.14.1.
+Linux, Node.js 22.12 or newer.
 
 ```bash
 npm install -g @repsecure/agentwall
@@ -168,43 +35,36 @@ agentwall init --mode monitor
 agentwall doctor
 ```
 
-The npm package named `agentwall`, without a scope, is a different and unrelated project. This
-one is `@repsecure/agentwall`; the command it installs is `agentwall`.
+The unscoped npm package `agentwall` is a different, unrelated project. This one is
+`@repsecure/agentwall`.
 
-From a checkout instead:
+`init` writes `agentwall.config.yaml` and `policy.yaml` into the current directory. Both are
+gitignored, and `init` will not overwrite work you already have. `doctor` checks Node, the
+build output, and those two files.
+
+From a checkout instead — run `node dist/cli.js` wherever this file says `agentwall`:
 
 ```bash
 git clone https://github.com/repsecure/agentwall.git
-cd agentwall
-npm install
-npm run build
-
-node dist/cli.js init --mode monitor
-node dist/cli.js doctor
+cd agentwall && npm install && npm run build
 ```
 
-`init` writes `agentwall.config.yaml` and `policy.yaml` into the current directory. Both are
-gitignored, so a fresh clone has neither and `init` will not overwrite work you already have.
-`doctor` checks Node, the build output, and those two files.
+## Run it
 
-Start it. Every value here is required for the thing it enables, so none of them are optional
-noise:
+Every variable below is required for the thing it enables.
 
 ```bash
 export AGENTWALL_OPERATOR_TOKEN="$(openssl rand -hex 32)"   # without this, every route 401s
-export AGENTWALL_AUDIT_FILE="$PWD/audit.jsonl"              # without this, the chain is stdout-only
+export AGENTWALL_AUDIT_FILE="$PWD/audit.jsonl"              # without this, the chain is stdout only
 export AGENTWALL_PROXY_PORT=8899                            # without this, the proxy does not start
 
-node dist/cli.js start
+agentwall start
 ```
 
-Run commands through it, from a second shell in the same directory:
+Send traffic through it from a second shell in the same directory:
 
 ```bash
 https_proxy=http://127.0.0.1:8899 curl -s -o /dev/null https://example.com/
-https_proxy=http://127.0.0.1:8899 python3 -c "import urllib.request; urllib.request.urlopen('https://example.com/')"
-NODE_USE_ENV_PROXY=1 https_proxy=http://127.0.0.1:8899 node -e "fetch('https://example.com/')"
-
 tail -1 audit.jsonl
 ```
 
@@ -212,26 +72,23 @@ Each request appends a chained record naming the process that made it:
 
 ```json
 {"agentId":"curl","plane":"network","action":"egress:https","decision":"allow",
- "reasons":["monitor-first: observed, not gated"],
- "metadata":{"host":"example.com","port":"443","pid":"1101858","comm":"curl",
-             "durationMs":"378","bytesUp":"797","bytesDown":"5344"},
+ "metadata":{"host":"example.com","port":"443","pid":"1101858","comm":"curl"},
  "integrity":{"chainIndex":1,"hash":"0e86f943...","previousHash":"4678da51...",
               "algorithm":"sha256","status":"chained-local","canon":"cu1"}}
 ```
 
 The operator console is at `http://127.0.0.1:3000/dashboard`. A browser cannot send a bearer
 header, so for local use start with `AGENTWALL_ALLOW_LOOPBACK_DEV=1`, which accepts loopback
-callers as a `loopback-dev` principal. Do not set it on a host reachable by anyone else.
+callers as a `loopback-dev` principal. Do not set it on a host anyone else can reach.
 
-## Check the evidence without trusting us
+## Check the record without trusting us
 
-A verifier written by the same people in the same language as the writer proves the code
-agrees with itself. Two independent implementations agreeing is evidence about the FORMAT.
-So AgentWall ships both, and a corpus of deliberate forgeries that runs them against each
-other on every push.
+A verifier written by the same people in the same language as the writer only proves the code
+agrees with itself. Agentwall ships two independent verifiers and a corpus of deliberate
+forgeries that runs them against each other on every push.
 
 ```bash
-node dist/cli.js verify                  # the bundled verifier
+agentwall verify                                                   # bundled TypeScript verifier
 cd verifier && go build -o agentwall-verify . && ./agentwall-verify --audit <path>
 ```
 
@@ -244,25 +101,47 @@ PASS  linked    segments link and match their files, so replacing one is detecta
 PASS  anchored  a fingerprint exists off-box, so a local rewrite shows
 ```
 
-The Go verifier has zero third-party dependencies, and you can confirm that in one command:
+`agentwall anchor` seals the segment, signs an Ed25519 checkpoint over the head, and submits
+the digest to OpenTimestamps for inclusion in a Bitcoin block. No account, no API key. An
+anchor stays `pending` for roughly one to six hours, and pending is not proof.
 
-```bash
-cd verifier && go list -m all      # prints exactly one line
-```
+A signature only proves a key holder vouched. Pin the key you expect with `--pubkey-file`; a
+foreign key exits 1. The Go verifier has zero third-party dependencies — `cd verifier && go
+list -m all` prints one line.
 
-A checkpoint signature proves a key holder vouched. Unpinned, that is worth nothing, and
-the tool says so rather than printing green. Pin the key you expect with `--pubkey-file`
-and a foreign key exits 1.
-
-Full detail, including the conformance corpus and what verification does NOT prove, is in
+Full detail, including the conformance corpus and what verification does not prove, is in
 [docs/verification.md](docs/verification.md).
 
-A storage failure is deliberately not reported that way. When a record cannot be written, the
-chain does not advance past it, so the file stays contiguous and nothing in it reads as a removed
-record; the refused record goes to stderr under `agentwall_audit_dropped`, `/health` counts it, and
-the first append that succeeds afterwards writes a record declaring how many were lost. `verify`
-surfaces that as `chain-gap-declared` without failing the layer. A full partition and a deletion
-have to look different, or the alert for one gets ignored because of the other.
+## What it does
+
+- **Egress capture with observed identity.** A CONNECT-aware forward proxy maps the client
+  socket back to its owning process through `/proc/net/tcp` and `/proc/<pid>/fd`, so a record
+  carries the real `pid` and `comm` even if the agent lies about who it is. Linux only.
+  Attribution failure degrades to `pid: null` and never blocks egress.
+- **A policy engine with predictable precedence.** Six planes, four outcomes, most restrictive
+  wins: `deny` > `approve` > `redact` > `allow`. Results carry matched rule IDs, plain reasons,
+  a risk level, and MITRE ATT&CK technique IDs.
+- **Hot-reloadable policy.** A built-in rule pack plus YAML. A file that fails to parse is
+  rejected whole and the previous ruleset stays in force, so a typo cannot leave you running
+  with half a policy.
+- **DLP with inline redaction.** AWS keys, GitHub PATs and OAuth tokens, OpenAI keys, Slack
+  tokens, private keys, JWTs, SSNs, credit cards, emails, phone numbers.
+- **SSRF and egress inspection.** Scheme, port, and host allowlists blocking private, loopback,
+  and link-local ranges plus cloud metadata endpoints. Shell command preflight and manifest
+  drift detection alongside.
+- **Approvals and budgets.** A persistent approval queue with `auto`/`always`/`never` modes,
+  per-session and per-actor rate limits, pending-approval caps, cost budgets, and session
+  pause, resume, and terminate enforced at `/evaluate`.
+- **An audit log built for real operation.** SHA-256 hash-chained records, a single-writer
+  `O_EXCL` lock, torn-tail recovery, and restart-safe resume. A storage failure is reported as
+  a declared gap, never as a deletion, so a full disk and a tampered file do not look alike.
+- **Auth that fails closed.** A bearer token compared in constant time on an allowlist model:
+  every route is protected unless explicitly public, so a route added next year is guarded by
+  default. Only `/health` and `/api/health` are public.
+
+Egress observed by the proxy enters the same hash chain. The request-to-decision-to-audit path
+is written out in [docs/architecture.md](docs/architecture.md); the routes and every
+environment variable are in [docs/reference.md](docs/reference.md).
 
 ## Limits
 
@@ -270,78 +149,34 @@ Stated plainly, because a security tool that oversells itself is worse than no t
 
 | Limit | What it means |
 | --- | --- |
-| Monitor-first, no blocking | The proxy records and allows. `decide` is hard-coded to `allow` at [`src/index.ts:29`](src/index.ts). Enforcement is a posture you build toward, not something you get by installing this. |
+| Monitor-first, no blocking | The proxy records and allows. `decide` is hard-coded to `allow` at [`src/index.ts:29`](src/index.ts). Enforcement is a posture you build toward, not something installing this gives you. |
 | Cooperative capture | Proxy environment variables are honoured voluntarily. A process that ignores them egresses unobserved. No iptables or nftables redirection is installed. |
-| Anchoring is pending, not instant | An OpenTimestamps anchor stays `pending` until a Bitcoin block confirms, roughly one to six hours. `verify` reports pending as pending. Pending is not proof. |
-| Anchoring proves no alteration, not completeness | An anchor shows that what was written was not altered afterwards. It cannot show that everything which should have been written was. Silent omission at write time is a different, unsolved problem. |
-| A signature is necessary, not sufficient | It proves a key holder vouched. On a host where the audited principal can read the key, an agent with root can sign anything the operator can. Off-box anchoring is what closes that gap. |
-| Verifier agreement is bounded by the corpus | The bundled TypeScript verifier and the independent Go verifier return the same verdict on all 26 conformance cases. That is agreement about the cases the corpus contains, not a proof that the two implementations are equivalent, and it says nothing about a forgery neither has been asked to judge. The harness fails if they ever stop agreeing on a case the corpus does contain. |
-| No TLS interception | CONNECT traffic is visible at hostname and port level only. Request paths, headers, and bodies stay opaque. This is deliberate: MITM would need a CA in every runtime trust store, which breaks the framework-agnostic property the proxy exists for. |
-| Attribution is Linux-only | It reads `/proc/net/tcp` and `/proc/<pid>/fd`. There is no macOS or Windows equivalent here. The rest of the server is portable; process attribution is not. |
-| Channel containment is Telegram only | Slack and Discord appear in the platform schema ([`src/integrations/communication-channel/control.ts:5`](src/integrations/communication-channel/control.ts)) with no route implementation behind them. |
-| The watchdog does not auto-deny | It evaluates heartbeat age and exposes a kill-switch flag, and a rule denies on the `watchdog_timeout` flow label ([`src/policy/rules.ts:394`](src/policy/rules.ts)), but nothing wires staleness to that label automatically. Treat it as a signal you act on, not an automatic containment. |
-| Telemetry is off by default | The OTLP/HTTP JSON decision-trace exporter is hand-rolled over Node `http`/`https` with no OpenTelemetry SDK dependency, and is disabled unless configured ([`src/config.ts:136`](src/config.ts)). |
-| Bearer tokens, not identity | A shared token, not OIDC or mTLS. There is no identity-provider integration. |
+| Anchoring is pending, not instant | An OpenTimestamps anchor stays `pending` until a Bitcoin block confirms, roughly one to six hours. Pending is not proof. |
+| Anchoring proves no alteration, not completeness | An anchor shows that what was written was not altered afterwards. It cannot show that everything which should have been written was. |
+| A signature is necessary, not sufficient | On a host where the audited principal can read the signing key, an agent with root can sign anything the operator can. Off-box anchoring is what closes that gap. |
+| Verifier agreement is bounded by the corpus | The two verifiers return the same verdict on all 26 conformance cases. That is agreement about those cases, not a proof of equivalence, and it says nothing about a forgery neither has been asked to judge. |
+| No TLS interception | CONNECT traffic is visible at hostname and port level only. Paths, headers, and bodies stay opaque. MITM would need a CA in every runtime trust store, which breaks the framework-agnostic property the proxy exists for. |
+| Attribution is Linux-only | It reads `/proc/net/tcp` and `/proc/<pid>/fd`. There is no macOS or Windows equivalent. The rest of the server is portable; process attribution is not. |
+| Channel containment is Telegram only | Slack and Discord appear in the platform schema with no route implementation behind them. |
+| The watchdog does not auto-deny | It exposes heartbeat age and a kill-switch flag, and a rule denies on the `watchdog_timeout` label, but nothing wires staleness to that label automatically. Treat it as a signal you act on. |
+| Telemetry is off by default | The OTLP/HTTP decision-trace exporter is disabled unless configured. |
+| Bearer tokens, not identity | A shared token, not OIDC or mTLS. No identity-provider integration. |
 | Single host | Multiple instances can be polled into one summary view. There is no clustered or highly-available control plane. |
-
-## Architecture
-
-Request to decision to audit, for a single agent action:
-
-```mermaid
-flowchart TD
-    A["Agent action"] -->|"POST /evaluate"| AUTH{"Operator auth<br/>bearer token"}
-    AUTH -->|401| Z0["Rejected"]
-    AUTH -->|ok| C{"Rate &amp; cost limits"}
-    C -->|throttled| Z["Blocked and audited"]
-    C -->|ok| D{"Session paused<br/>or terminated?"}
-    D -->|contained| Z
-    D -->|active| E["Policy engine"]
-
-    subgraph INPUTS["Evaluation inputs"]
-      direction LR
-      F["DLP scan<br/>secrets &amp; PII"]
-      G["Egress / SSRF<br/>inspector"]
-      H["Provenance &amp;<br/>flow labels"]
-      I["Built-in &amp; YAML<br/>rules"]
-    end
-    INPUTS --> E
-
-    E --> J{"Decision<br/>deny &gt; approve &gt; redact &gt; allow"}
-    J -->|redact| L["Redacted content"]
-    J -->|approve| M["Approval queue"]
-    J -->|deny| N["Blocked"]
-    J -->|allow| K["Permitted"]
-
-    M --> O["Operator console"]
-    O -->|"approve / deny"| J
-
-    K --> P["Audit event"]
-    L --> P
-    N --> P
-    P --> Q["SHA-256 hash chain"]
-    Q --> R["Ed25519 checkpoint"]
-    R --> S["OpenTimestamps anchor<br/>pending until a block"]
-```
-
-Egress observed by the proxy enters the same hash chain, attributed to the originating process
-([`src/index.ts:27-83`](src/index.ts)).
 
 ## Built with
 
 TypeScript 5 (strict) on Node.js 22.12+, Fastify 5, Zod, YAML policy via `js-yaml`, Jest.
-Runtime dependencies are deliberately three: `fastify`, `js-yaml`, `zod`. Logging is Fastify's
-own pino instance, which arrives as its dependency rather than ours. The audit and anchoring
-paths use Node's own `crypto` and plain HTTP with no third-party clients, because a dependency
-inside the component whose entire job is being trustworthy is a supply-chain risk this project
-declines.
+Runtime dependencies are deliberately three: `fastify`, `js-yaml`, `zod`. The audit and
+anchoring paths use Node's own `crypto` and plain HTTP with no third-party clients, because a
+dependency inside the component whose whole job is being trustworthy is a supply-chain risk
+this project declines.
 
 ## Docs
 
-[Install](docs/install.md) - [Architecture](docs/architecture.md) -
-[Threat model](docs/threat-model.md) - [Verification](docs/verification.md) -
-[Audit format](docs/audit-format.md) - [API and configuration](docs/reference.md) -
-[FloodGuard](docs/runtime-floodguard.md) - [Tutorials](docs/tutorials/README.md) -
+[Install](docs/install.md) · [Architecture](docs/architecture.md) ·
+[Threat model](docs/threat-model.md) · [Verification](docs/verification.md) ·
+[Audit format](docs/audit-format.md) · [API and configuration](docs/reference.md) ·
+[FloodGuard](docs/runtime-floodguard.md) · [Tutorials](docs/tutorials/README.md) ·
 [Changelog](CHANGELOG.md)
 
 ## Contributing
@@ -352,3 +187,5 @@ See [CONTRIBUTING.md](CONTRIBUTING.md), [GOVERNANCE.md](GOVERNANCE.md), and
 [SECURITY.md](SECURITY.md), not a public issue.
 
 ## License
+
+Apache-2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
