@@ -567,10 +567,57 @@ export const builtinRules: PolicyRule[] = [
     match: (ctx: AgentContext) =>
       ctx.plane === "network" &&
       ctx.metadata?.["fleetUnmatched"] === "deny" &&
-      ctx.metadata?.["agentDeclared"] === "false",
+      ctx.metadata?.["agentDeclared"] === "false" &&
+      // A refused claim has its own rule below. Both would be true at once, and a record
+      // carrying two identity denials sends an operator looking for two problems.
+      ctx.metadata?.["agentIdentityRefusal"] === undefined,
     decision: "deny",
     riskLevel: "high",
     reason: "No declared fleet agent claims this connection and the fleet is configured to refuse those",
+  },
+  /**
+   * A claim that was made and rejected on evidence: a credential the operator withdrew that
+   * is still being presented, or a binding below `fleet.minimumMatchTier` by an agent that
+   * HAS the proof the floor asks for and did not present it.
+   *
+   * Separate from the undeclared rule because the two need different people, and separate
+   * from the unconfigured rule below because that one is not an alarm at all. What is left
+   * here is the set where something presented an identity it is not currently entitled to.
+   *
+   * Not gated on `fleet.unmatched`. Revocation is not a posture, it is an instruction.
+   */
+  {
+    id: "fleet:deny-refused-agent-identity",
+    description: "Deny proxied egress presenting a withdrawn fleet credential, or claiming an identity whose proof exists and was not shown",
+    plane: "network",
+    match: (ctx: AgentContext) =>
+      ctx.plane === "network" &&
+      ctx.metadata?.["agentIdentityRefusal"] !== undefined &&
+      ctx.metadata?.["agentIdentityOrigin"] !== "operator-configuration",
+    decision: "deny",
+    riskLevel: "high",
+    reason: "The fleet identity this connection claimed was refused",
+  },
+  /**
+   * The same denial, when the OPERATOR caused it.
+   *
+   * An agent that cannot satisfy the fleet's minimum binding tier at all, or a credential
+   * issued to an agent this instance no longer declares, is refused identically for every
+   * client. Filing that as an intrusion technique would mean an operator who raised the floor
+   * fleet-wide gets a wall of high-severity findings for their own migration, and the one
+   * refusal that means something would be invisible inside it. This rule exists so the
+   * denial is still recorded, still carries a reason naming the config key responsible, and
+   * is still auditable, without pretending anybody attacked anything.
+   */
+  {
+    id: "fleet:deny-unconfigured-agent-identity",
+    description: "Deny proxied egress from an agent that cannot satisfy the fleet's configured minimum binding tier",
+    plane: "network",
+    match: (ctx: AgentContext) =>
+      ctx.plane === "network" && ctx.metadata?.["agentIdentityOrigin"] === "operator-configuration",
+    decision: "deny",
+    riskLevel: "medium",
+    reason: "This agent cannot satisfy the fleet's configured minimum binding tier",
   },
   /**
    * The per-agent egress budget, expressed as a rule for the same reason the lockdown is:

@@ -5,7 +5,7 @@ import { scanInjection } from "../policy/injection";
 import { DECOY_DETECTION_ID, DECOY_RULE_ID, scanForDecoys } from "../decoy";
 import { AgentRegistry, UNDECLARED_AGENT_ID } from "../fleet/registry";
 import { AgentBudgetLedger } from "../fleet/budget";
-import type { AgentMatchSignal, RegisteredAgent } from "../fleet/registry";
+import type { AgentMatchSignal, AgentRefusal, MinimumMatchTier, RegisteredAgent } from "../fleet/registry";
 import type { BudgetCounters } from "../fleet/budget";
 import type { PolicyEngine } from "../policy/engine";
 import type { AgentContext, Decision, PolicyResult, RiskLevel } from "../types";
@@ -128,10 +128,29 @@ export interface EgressAgentAttribution {
   id: string;
   label: string;
   matchedOn: AgentMatchSignal;
-  /** False when no declared agent claimed the connection. */
+  /** False when no declared agent claimed the connection, or when the claim was refused. */
   declared: boolean;
   /** Which allowlist judged the destination: the process-wide one, or this agent's. */
   allowlistSource: string;
+  /**
+   * Set when the connection presented an identity the operator has decided is not good
+   * enough: a revoked credential, one whose rotation overlap closed, or a binding below the
+   * fleet's minimum tier. Distinct from `declared: false` on its own, which means nothing
+   * claimed the connection at all.
+   */
+  refusal?: AgentRefusal;
+  /**
+   * The fleet's identity floor, when a fleet is declared.
+   *
+   * On every egress record rather than only on refusals, for the same reason the enforcement
+   * mode is: "agent X, matched on comm, allowed" means something different under a credential
+   * floor than under none, and a ledger read back a month later cannot recover the difference
+   * from anywhere else. Absent when no fleet is declared, so a single-agent deployment does
+   * not grow a key describing a feature nobody turned on.
+   */
+  minimumMatchTier?: MinimumMatchTier;
+  /** The issued credential that bound this connection, when one did. Never the digest. */
+  credentialId?: string;
 }
 
 export interface EgressVerdict {
@@ -174,6 +193,10 @@ const FLEET_BUDGET_RULE_ID = "fleet:deny-agent-budget-exhausted";
 const FLEET_BUDGET_DETECTION_ID = "det.fleet.budget.exhausted";
 const FLEET_UNDECLARED_RULE_ID = "fleet:deny-undeclared-agent";
 const FLEET_UNDECLARED_DETECTION_ID = "det.fleet.agent.undeclared";
+const FLEET_IDENTITY_RULE_ID = "fleet:deny-refused-agent-identity";
+const FLEET_IDENTITY_DETECTION_ID = "det.fleet.identity.refused";
+const FLEET_UNCONFIGURED_RULE_ID = "fleet:deny-unconfigured-agent-identity";
+const FLEET_UNCONFIGURED_DETECTION_ID = "det.fleet.identity.unconfigured";
 
 const RISK_ORDER: Record<RiskLevel, number> = { low: 0, medium: 1, high: 2, critical: 3 };
 
@@ -617,6 +640,19 @@ function buildContext(
       // the built-in set that name a governance denial. Forging either can only produce a
       // denial: the runtime re-checks both and does not consult a rule for permission.
       fleetUnmatched: fleetRegistry?.unmatched ?? "global",
+      // The identity floor, and whether this connection's claim was refused by it or by a
+      // credential that is no longer valid. Present only when there was a refusal, so a rule
+      // can distinguish "refused" from "nothing claimed this" with an undefined check.
+      fleetMinimumMatchTier: fleetRegistry?.minimumMatchTier ?? "any",
+      ...(principal.agent.refusal
+        ? {
+            agentIdentityRefusal: principal.agent.refusal.kind,
+            // Whose fault it is, which is what decides whether this is an alarm. Read by the
+            // two identity rules so exactly one of them fires.
+            agentIdentityOrigin: principal.agent.refusal.origin,
+          }
+        : {}),
+      ...(principal.agent.credentialId ? { agentCredentialId: principal.agent.credentialId } : {}),
       // Same exclusion as the runtime gate: on a re-decision the window already counts this
       // connection, so a rule reading this marker would refuse it for its own admission.
       agentBudgetExhausted: principal.exhausted && !attempt.reDecision ? "true" : "false",
@@ -696,6 +732,9 @@ function resolvePrincipal(attempt: EgressAttempt): EgressPrincipal {
       matchedOn: resolved.matchedOn,
       declared: resolved.declared,
       allowlistSource: egress.source,
+      minimumMatchTier: fleetRegistry.minimumMatchTier,
+      ...(resolved.refusal ? { refusal: resolved.refusal } : {}),
+      ...(resolved.credential ? { credentialId: resolved.credential.credentialId } : {}),
     },
     registered: resolved.agent,
     hosts: egress.hosts,
@@ -755,6 +794,61 @@ function enforce(
   // found" over a prefix, an event stream, or bytes that would not decode is a different
   // claim from "nothing found", and the ledger has to carry which one it is.
   if (content !== null) for (const note of coverageNotes(content)) pushUnique(reasons, note);
+
+  // A claim that was made and rejected, checked before the undeclared gate because it is the
+  // more specific answer and because it fires whatever `fleet.unmatched` says.
+  //
+  // Independent of `unmatched` on purpose. A revoked credential must stop working on a host
+  // running the open posture too: the operator revoked it, and "the fleet is not closed yet"
+  // is not a reason to keep honouring a credential somebody explicitly withdrew. The same
+  // goes for the minimum tier, which is a statement about what proof is acceptable, not
+  // about what happens to traffic nobody claimed.
+  //
+  // Nothing falls back. A refused connection is not re-judged against a weaker signal here
+  // or in the registry, because a revocation that can be survived by keeping a process name
+  // is not a revocation.
+  if (principal.agent.refusal) {
+    // Which rule fires depends on WHO caused the refusal, not on the fact that one happened.
+    //
+    // A control that files "Valid Accounts, high" against an operator who raised the identity
+    // floor an hour ago and has not issued that agent a credential yet is a control that
+    // trains its operator to ignore it, and it buries the one refusal that means something
+    // under the migration traffic of the ones that do not. So a refusal the operator's own
+    // configuration caused gets its own rule, its own detection, and no ATT&CK claim.
+    const configured = principal.agent.refusal.origin === "operator-configuration";
+    pushUnique(matchedRules, configured ? FLEET_UNCONFIGURED_RULE_ID : FLEET_IDENTITY_RULE_ID);
+    pushUnique(detectionIds, configured ? FLEET_UNCONFIGURED_DETECTION_ID : FLEET_IDENTITY_DETECTION_ID);
+    // At the FRONT: the forward proxy turns reasons[0] into X-Agentwall-Block-Reason, and
+    // this one sentence is the only thing the operator of a broken agent ever sees.
+    reasons.unshift(principal.agent.refusal.reason);
+    if (principal.agent.refusal.origin === "indeterminate") {
+      // Said out loud on the record rather than left for a reader to infer from the kind.
+      // A withdrawn credential still in use is a stale deployment or a stolen secret, and
+      // nothing on this connection separates them. Asserting either would be a guess.
+      pushUnique(
+        reasons,
+        "this evidence does not distinguish a deployment that missed the change from a copy of the " +
+          "credential in someone else's hands; treat it as unresolved until the holder is confirmed"
+      );
+    }
+    return {
+      decision: "deny",
+      riskLevel: decoyHit
+        ? "critical"
+        : // Medium for a refusal the configuration caused: that is the control working exactly
+          // as the operator asked, the same call the budget gate makes for an agent at its
+          // ceiling. High for the other two, which are the cases where something presented an
+          // identity it is not entitled to and a person should look.
+          configured
+          ? "medium"
+          : "high",
+      reasons,
+      matchedRules,
+      detectionIds,
+      mode,
+      ...attribution,
+    };
+  }
 
   // Who the client is comes before where it wants to go. An operator running a closed fleet
   // has said that unattributed egress is itself the finding, and answering it with a host

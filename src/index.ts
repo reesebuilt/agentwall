@@ -1,4 +1,4 @@
-import { loadConfig } from "./config";
+import { loadConfig, resolveConfigSource } from "./config";
 import { buildServer } from "./server";
 import { createForwardProxy } from "./proxy/forward-proxy";
 import type { ProxyRecord } from "./proxy/forward-proxy";
@@ -9,6 +9,7 @@ import { decideEgress, setEgressPolicy, setFleet } from "./runtime/enforcement";
 import type { EnforcementMode, EgressVerdict } from "./runtime/enforcement";
 import { AgentRegistry } from "./fleet/registry";
 import { AgentBudgetLedger } from "./fleet/budget";
+import { CredentialStore, credentialState, resolveCredentialStorePath } from "./fleet/credentials";
 import { resolveInterceptor } from "./proxy/tls-intercept";
 import type { Interceptor } from "./proxy/tls-intercept";
 
@@ -47,20 +48,43 @@ async function main() {
    * matching the same connection, a credential in a form that would put a secret in the
    * config file). Letting that reach the operator as a boot failure is the point.
    */
-  const fleet = config.fleet && config.fleet.agents.length > 0 ? new AgentRegistry(config.fleet) : null;
+  const credentialStore = config.fleet
+    ? new CredentialStore(resolveCredentialStorePath(resolveConfigSource(), config.fleet.credentialStore))
+    : null;
+  const fleet = config.fleet && config.fleet.agents.length > 0 ? new AgentRegistry(config.fleet, credentialStore) : null;
   const budgets = fleet ? new AgentBudgetLedger() : null;
   setFleet(fleet, budgets);
   if (fleet) {
+    const issued = credentialStore?.list() ?? [];
     app.log.info(
       {
         agents: fleet.list().map((agent) => agent.id),
         unmatched: fleet.unmatched,
+        minimumMatchTier: fleet.minimumMatchTier,
         scopedAllowlists: fleet.list().filter((agent) => agent.egress).length,
         budgeted: fleet.list().filter((agent) => agent.budget).length,
+        credentialStore: credentialStore?.filePath,
+        credentialsActive: issued.filter((credential) => credentialState(credential) === "active").length,
+        credentialsInOverlap: issued.filter((credential) => credentialState(credential) === "overlap").length,
+        credentialsRevoked: issued.filter((credential) => credentialState(credential) === "revoked").length,
       },
-      `fleet: ${fleet.size} declared agent(s) on this host. Governance is per-agent and single-host: ` +
-        `there is no cross-instance identity and no shared budget.`
+      `fleet: ${fleet.size} declared agent(s) on this host. Per-agent allowlists and budgets are enforced by ` +
+        `this instance against its own traffic; an issued credential is the one binding signal that means the ` +
+        `same thing on another host.`
     );
+    // Named at boot rather than left to be discovered by an outage. These agents are
+    // declared, cannot bind under the current floor, and will have every connection refused
+    // with a reason. That is a legitimate state during a migration and a silent one without
+    // this line. `agentwall doctor` says the same thing.
+    for (const blocked of fleet.unbindable()) {
+      app.log.warn(`fleet: agent "${blocked.id}" can never bind: ${blocked.reason}`);
+    }
+    if (credentialStore?.error) {
+      app.log.error(
+        `fleet: credential store ${credentialStore.filePath} could not be read (${credentialStore.error.message}). ` +
+          `No issued credential will bind until it parses.`
+      );
+    }
   }
 
   /**
@@ -195,6 +219,21 @@ async function main() {
       // may have been edited since.
       fleetUnmatched: fleet?.unmatched ?? "global",
     };
+    if (verdict.agent.minimumMatchTier) fields["fleetMinimumMatchTier"] = verdict.agent.minimumMatchTier;
+    // The identity outcome, when there was one to report. A refusal names the credential it
+    // was about and why, because "this connection was denied" and "this connection presented
+    // a credential you revoked at 14:32" are answers to different questions, and only the
+    // second one closes an incident. Never the digest.
+    if (verdict.agent.credentialId) fields["agentCredentialId"] = verdict.agent.credentialId;
+    if (verdict.agent.refusal) {
+      fields["agentIdentityRefusal"] = verdict.agent.refusal.kind;
+      // Whose doing it was. Without this the ledger cannot separate the refusals worth
+      // investigating from an operator's own floor migration, and a reader six months later
+      // has no way to recover the distinction from the kind alone.
+      fields["agentIdentityOrigin"] = verdict.agent.refusal.origin;
+      fields["agentIdentityRefusalReason"] = verdict.agent.refusal.reason;
+      if (verdict.agent.refusal.credentialId) fields["agentCredentialId"] = verdict.agent.refusal.credentialId;
+    }
     if (verdict.budget) {
       fields["budgetWindowSeconds"] = String(verdict.budget.windowSeconds);
       fields["budgetRequests"] = String(verdict.budget.requests);
