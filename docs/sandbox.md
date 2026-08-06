@@ -329,8 +329,43 @@ never reached it.
 
 The seccomp denylist closes the other half of this: because `unshare`, `setns` and
 `clone(CLONE_NEWUSER)` are all refused, a process launched under the sandbox cannot create a
-network namespace even if something talks it into trying. Under `agentwall sandbox`, the agent
-cannot escape the perimeter's namespace.
+network namespace even if something talks it into trying.
+
+### What was measured, and how big the hole actually is
+
+The namespace claim above is not reasoning. It was measured on a disposable lab VM, kernel
+`6.8.0-136-generic` with nftables 1.0.9, during the perimeter containment work on branch
+`agent/8.7-containment-proof`: inside a fresh namespace, `unshare -Urn -- nft list tables` shows
+no `agentwall` table while the host namespace has one. The perimeter's own containment was
+confirmed on the same VM across 29 probes with two independent oracles, uid-scoped nft counters
+and tcpdump on the wire, agreeing on every one.
+
+Three qualifiers keep that from being overstated, because the hole is real but smaller than the
+mechanism suggests.
+
+**A bare network namespace is self-denial, not escape.** A fresh netns has a down `lo`, no route
+and no peer interface, so `connect()` returns `ENETUNREACH`. It becomes an actual way out only
+with a userspace connectivity helper such as slirp4netns, pasta, passt or `lxc-user-nic`, or a
+writable container socket. The danger is not that the agent gains the network, it is that it
+leaves the table while every status stays green.
+
+**A user namespace alone does NOT break the perimeter.** This was the good news from the same
+measurement. With `kernel.apparmor_restrict_unprivileged_userns` lowered to 0, `unshare -Ur`
+gives uid 0 inside the namespace and the perimeter still holds: TCP to an arbitrary address and
+port is dropped, TCP to 443 is still redirected to the proxy. `meta skuid` matches the real kuid
+in the initial user namespace, not the namespace-local one. The network namespace is the part
+that matters; the user namespace is only the usual way an unprivileged process gets one.
+
+**On a stock Ubuntu 24.04 host the agent cannot get there today.** Measured on this project's
+development host: `kernel.apparmor_restrict_unprivileged_userns = 1`, and `unshare -Urn` fails
+with `write failed /proc/self/uid_map: Operation not permitted`. Worth noticing precisely what
+that means, because it is the argument for the seccomp denial rather than against it: the raw
+`unshare(CLONE_NEWUSER)` syscall still SUCCEEDS on that host (measured, `rc=0`), and only the
+later `uid_map` write is refused. The AppArmor restriction blocks the useful outcome; the seccomp
+denial blocks the syscall. So the correct claim is that this closes a real hole that is currently
+unreachable on a default Ubuntu install, not that the perimeter leaks today. An operator who
+lowers that sysctl, or runs a distribution that does not ship the restriction, is relying on the
+seccomp filter instead.
 
 If a network namespace is ever added, it has to own the perimeter's rules too, install them
 inside the new namespace, and make the perimeter's `status` and `verify` report on the namespace
@@ -381,8 +416,23 @@ you are making. `agentwall sandbox plan` prints the whole profile precisely so t
 before you rely on it.
 
 **UDP, ICMP, raw sockets, and unix domain sockets.** Landlock's network support covers TCP
-`connect` and `bind` only. A DNS query is UDP and is not restricted by the sandbox at all. The
-perimeter's default drop does cover UDP, which is one of the concrete reasons to run both.
+`connect` and `bind` only. The perimeter's default drop does cover UDP, which is one of the
+concrete reasons to run both.
+
+**DNS, when the perimeter has been given a resolver.** This one is measured, not theoretical, and
+it is the sharpest edge in the composed posture. `agentwall perimeter --dns-resolver <ip>` opens
+port 53 to that resolver for the agent uid. On the lab VM used for the perimeter containment
+work, an attacker-chosen payload was pushed off the host inside a DNS QNAME and 142 bytes came
+back, and TCP/53 to the same resolver carried a full bidirectional stream. Neither control closes
+it. Landlock cannot: port 53 has to be permitted for DNS to work at all, so scoping it out only
+turns the hole into a broken resolver. The sandbox does close the TCP half if you simply never
+pass `--allow-tcp 53`, which leaves the UDP half open and unobserved.
+
+The posture that closes it is the perimeter's own default: name no resolver. The agent then gets
+no DNS, which is correct under the perimeter model because the agent does not need to resolve
+anything. Its TCP is redirected to the proxy, and the proxy does the resolving. Name a resolver
+only when you have decided that an exfiltration channel neither control can see is an acceptable
+cost, and know that you decided it.
 
 **Abstract unix sockets and signals to same-uid processes.** Landlock gained scoping for these in
 ABI 6 (Linux 6.12). Below that, a sandboxed process can still connect to an abstract unix socket
@@ -414,11 +464,19 @@ started earlier.
 The intended posture on a Linux host, in order:
 
 ```
-sudo agentwall perimeter install --agent-uid 61001 --proxy-uid 61002 --proxy-port 8080
-agentwall perimeter verify
-sudo agentwall perimeter run -- \
+PERIM="--agent-uid 61001 --proxy-uid 61002 --proxy-port 8080"
+agentwall perimeter plan $PERIM | sudo nft -f -
+agentwall perimeter verify $PERIM
+sudo agentwall perimeter run $PERIM -- \
   agentwall sandbox run --workdir /srv/agent/work --allow-tcp 80 --allow-tcp 443 -- node agent.js
 ```
+
+The pipe form rather than `agentwall perimeter install` is deliberate. The containment work on
+branch `agent/8.7-containment-proof` found that `install` never worked on any host: it fed the
+ruleset to nft through `spawnSync("nft", ["-f", "-"], { input })`, libuv backs child stdio with a
+unix socket, and nft stats `/dev/stdin`, finds neither a regular file nor a fifo, and refuses the
+transaction with `Not a regular file: "/dev/stdin"`. The documented pipe recipe always worked,
+which is exactly why the defect stayed hidden. Use the pipe until that fix has landed.
 
 `perimeter run` drops to the agent uid, then `sandbox run` applies Landlock and seccomp to that
 already-dropped process. The order matters: Landlock is inherited across `execve` and cannot be
@@ -440,6 +498,20 @@ that the profile-over-fd-3 design exists specifically to survive that uid change
 been observed is the whole chain running end to end. Treat the ordering above as reasoned rather
 than measured until you have run `agentwall perimeter verify` and the sandbox's own summary line
 on the same host and seen both.
+
+### The published container image does not carry the launcher
+
+That is a decision rather than an omission. The image built by this repository's `Dockerfile` is
+the AgentWall control plane: its entrypoint is the server, and the agent it protects runs
+somewhere else and points at the proxy. The sandbox wraps the AGENT process, so the launcher
+belongs wherever the agent runs, not in the control plane's image. Building it there would mean
+adding a C compiler to the build stage for a command that image never issues.
+
+If your agent does run inside a container, build the launcher in that container's image with
+`npm run build:sandbox`, or build it once elsewhere and mount it with `AGENTWALL_SANDBOX_HELPER`
+pointed at the mount. Note that a container is not a substitute: the default container runtime
+profile still lets a process inside it read every file in its own filesystem, which is the exact
+thing Landlock is here to stop.
 
 ## Related
 
