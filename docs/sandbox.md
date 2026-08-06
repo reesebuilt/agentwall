@@ -450,11 +450,13 @@ it. Landlock cannot: port 53 has to be permitted for DNS to work at all, so scop
 turns the hole into a broken resolver. The sandbox does close the TCP half if you simply never
 pass `--allow-tcp 53`, which leaves the UDP half open and unobserved.
 
-### Closing DNS properly
+### Two corrections, and where that leaves DNS
 
-An earlier version of this section said the agent does not need to resolve anything because the
-proxy resolves on its behalf. That was wrong about the mechanism, and the correction produces a
-better recipe rather than a worse one.
+This section has been wrong twice, and both versions are named here rather than quietly
+rewritten, because each reads plausibly and the next person will arrive at them the same way.
+
+The first said the agent does not need to resolve anything because the proxy resolves on its
+behalf. That was wrong about the mechanism.
 
 The agent does need to resolve, because `connect()` needs a destination address before it can
 emit a SYN, and the redirect acts on that SYN. Measured on the lab VM with no resolver named:
@@ -463,31 +465,89 @@ emit a SYN, and the redirect acts on that SYN. Measured on the lab VM with no re
 no resolver" on its own does not give you a contained agent, it gives you an agent that cannot
 open any connection.
 
-What is true, and is the useful part, is that the address does not have to be CORRECT. The
-redirect rewrites the destination before a byte leaves the host, and the proxy recovers the real
-hostname from SNI, so whatever the agent resolved is discarded. Measured: an agent pointed at
-`192.0.2.1`, which is TEST-NET-1 and routes nowhere, asking for `example.com`, over a perimeter
-installed with no resolver at all. Result `http=200` with real content, and the ledger recorded
-`example.com:443` with `bytesDown=5344`. The same trick against a host outside the allowlist was
-denied and recorded as a deny.
+What is true is narrower. The address the AGENT resolves does not have to be correct, because the
+redirect rewrites the destination before a byte leaves the host and the proxy recovers the real
+hostname from SNI. Measured on the lab VM with
+`curl --resolve example.com:443:192.0.2.1`, where `192.0.2.1` is TEST-NET-1 and routes nowhere:
+`http=200` with real content, and the ledger recorded `example.com:443` with `bytesDown=5344`. A
+host outside the allowlist was denied and recorded as a deny. Note the scope of that override.
+It is curl-internal and per-invocation; it never reaches `getaddrinfo` and never touches
+`/etc/hosts`. That detail is the whole difference between the paragraph above and the one below.
 
-So the posture that actually closes the DNS channel is a recipe, not a default:
+### Why that does not become a recipe
 
-1. Install the perimeter with no `--dns-resolver`. There is then no port 53 path in or out.
-2. Give the agent a static `/etc/hosts` mapping every name it uses to a placeholder address such
-   as `192.0.2.1`. The proxy still reaches the right hosts, because it reads the name from SNI.
-3. Scope the sandbox to `--allow-tcp 80 --allow-tcp 443`. With no resolver there is no port 53 to
-   carve out, so that pair is the entire set.
+An earlier version of this section turned that into three steps, the middle one being "give the
+agent a static `/etc/hosts` mapping every name it uses to a placeholder address". That recipe is
+withdrawn. It does not work, and it fails in the least helpful way possible: by breaking the
+fetch it claims succeeds, silently.
 
-That is a closure rather than a mitigation: there is no DNS path to abuse, and the agent still
-works.
+The same lab VM then measured the recipe as written, which is the negative control the original
+claim never had. Same perimeter, same live proxy as uid 61002, same target, no resolver named,
+the only change being `192.0.2.1 example.com` in a host-wide `/etc/hosts` instead of the
+per-invocation override: `curl: (28) Connection timed out after 20002 milliseconds`, `http=000`,
+and NO ledger record at all, because the proxy hung on its own upstream connect and never
+reached a verdict. That last part is the operationally nasty bit. A broken hosts recipe does not
+produce a deny an operator can see; it produces silence and a hang.
 
-Two things measured on this project's own host about how that recipe interacts with the sandbox.
+`/etc/hosts` is host-wide and uid-agnostic, and there is no mount namespace anywhere in this
+design. The proxy is on the same host, reached over loopback: `src/perimeter/spec.ts` emits
+`redirect to :${proxyPort}` and accepts the agent to `ip daddr 127.0.0.1 tcp dport ${proxyPort}`,
+and exempts the proxy uid so it reaches upstream directly. And the proxy resolves through NSS
+like everything else: `connectUpstream` in `src/proxy/transparent.ts` dials
+`netConnect(destination.port, destination.host, ...)`, where `destination.host` is the name
+recovered from SNI, and Node's `net.connect` resolves a hostname with `dns.lookup`, which is
+`getaddrinfo`, which reads `/etc/hosts`.
+
+So a host-wide entry pointing `example.com` at `192.0.2.1` is read by the proxy too, and the
+proxy's upstream connection goes to TEST-NET-1. The agent's fake address is discarded exactly as
+described; the proxy's identical fake address is not, because nothing rewrites the proxy's
+traffic. One file cannot serve a process that needs any address and a process that needs the
+right one.
+
+### What is actually true about DNS here
+
+There is no general host-wide closure for this channel today. Stating that plainly is better than
+a fourth attempt at a recipe.
+
+`src/perimeter/spec.ts` already says the operative thing about the no-resolver default: "the
+agent gets no DNS at all: the default-drop eats port 53 with everything else, and every name
+lookup fails immediately." That is a deliberate hard deny and it is coherent as a fail-closed
+default. It is not a working agent configuration, and this document should never have implied it
+was. The `curl: (6) Could not resolve host` above is that default behaving as designed.
+
+That leaves two honest options.
+
+**Name a resolver and accept the channel.** Port 53 to one address, with the QNAME exfiltration
+path documented above wide open. This is the only configuration in which a name-using agent works
+out of the box, and the cost is a channel neither control observes.
+
+**Override the address per application, where the client supports it.** This is the one that was
+actually measured: `curl --resolve example.com:443:192.0.2.1` is the `http=200` run above. Any
+client with an equivalent, or anything else scoped to the agent's own process rather than the
+host, works the same way, because the proxy keeps normal resolution when nothing global changed.
+It is per-application configuration rather than a posture, so it cannot be written down once and
+applied everywhere, and every client the agent might reach for needs its own answer.
+
+The general fix would be a **mount namespace** giving the agent a private `/etc/hosts` while the
+proxy keeps the host's. That is unimplemented and unmeasured here, and it is listed as a
+direction rather than a recommendation. Two things a future implementer needs. First, the good
+news: a MOUNT namespace does not break the perimeter the way a NETWORK namespace does, because
+nftables tables are per-netns and not per-mntns, so the uid redirect keeps applying. That
+asymmetry is the whole reason this direction is worth anything. Second: the sandbox's own seccomp
+denylist refuses `unshare`, so the launcher would have to create the namespace itself before
+installing the filter, not leave it to the agent.
+
+Two things measured on this project's own host about how any of this meets the sandbox.
 
 **Static names resolve fine under the default profile.** Landlock does not get in the way of NSS:
 `fs read /etc` covers `nsswitch.conf` and `hosts`, and `fs exec /usr` covers the NSS modules.
 Verified with TCP scoped to 80 and 443 only, so no port 53 was reachable by TCP at any point:
-`localhost` resolved to `::1` and `ip6-localhost` resolved to `::1`. Step 2 of the recipe composes.
+`localhost` and `ip6-localhost` both resolved to `::1`. This is what makes any future
+hosts-file-based approach viable at all, and `tests/sandbox-kernel.test.ts` pins it: the same
+`getent hosts localhost` fails under a profile without `fs read /etc` and succeeds with it. That
+test is the only thing in either this suite or the perimeter's that would notice a hosts-file
+approach breaking, because a static hosts file is host configuration rather than product
+behaviour and has no natural home in a product test.
 
 **On a systemd-resolved host the default profile already removes the DNS path, incidentally.**
 `/etc/resolv.conf` is a symlink to `../run/systemd/resolve/stub-resolv.conf`, Landlock evaluates
@@ -498,10 +558,14 @@ DNS control: on a host where `/etc/resolv.conf` is a regular file, the default p
 reading it and name resolution works normally. The sandbox is not a DNS control and should never
 be described as one.
 
-**If you do name a resolver, repoint the agent's `resolv.conf` too.** With
-`--dns-resolver 1.1.1.1` the perimeter permits port 53 to `1.1.1.1`, but the agent's libc still
-asks `127.0.0.53`, which is neither the permitted resolver nor reachable loopback, so
-`getaddrinfo` is dropped and the perimeter looks broken while behaving exactly as specified.
+**If you do name a resolver, repoint the agent's `resolv.conf`, and know that editing it is not
+enough.** With `--dns-resolver 1.1.1.1` the perimeter permits port 53 to `1.1.1.1`, but the
+agent's libc still asks `127.0.0.53`, which is neither the permitted resolver nor reachable
+loopback, so `getaddrinfo` is dropped and the perimeter looks broken while behaving exactly as
+specified. On a systemd-resolved host `/etc/resolv.conf` is a symlink into
+`/run/systemd/resolve/`, and systemd-resolved owns and rewrites the file at the other end, so an
+operator editing through the link has the change reverted with no warning and concludes the
+perimeter is broken twice over. Replace the symlink with a real file.
 
 **And a note that outlives the DNS question.** Policy is evaluated against the hostname recovered
 from the stream, never against the address the agent dialled. Any DNS pinning or IP allowlisting
