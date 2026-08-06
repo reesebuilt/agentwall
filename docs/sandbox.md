@@ -450,11 +450,62 @@ it. Landlock cannot: port 53 has to be permitted for DNS to work at all, so scop
 turns the hole into a broken resolver. The sandbox does close the TCP half if you simply never
 pass `--allow-tcp 53`, which leaves the UDP half open and unobserved.
 
-The posture that closes it is the perimeter's own default: name no resolver. The agent then gets
-no DNS, which is correct under the perimeter model because the agent does not need to resolve
-anything. Its TCP is redirected to the proxy, and the proxy does the resolving. Name a resolver
-only when you have decided that an exfiltration channel neither control can see is an acceptable
-cost, and know that you decided it.
+### Closing DNS properly
+
+An earlier version of this section said the agent does not need to resolve anything because the
+proxy resolves on its behalf. That was wrong about the mechanism, and the correction produces a
+better recipe rather than a worse one.
+
+The agent does need to resolve, because `connect()` needs a destination address before it can
+emit a SYN, and the redirect acts on that SYN. Measured on the lab VM with no resolver named:
+`curl https://example.com/` as the agent uid fails with
+`curl: (6) Could not resolve host: example.com`. It never reaches the redirect at all. So "name
+no resolver" on its own does not give you a contained agent, it gives you an agent that cannot
+open any connection.
+
+What is true, and is the useful part, is that the address does not have to be CORRECT. The
+redirect rewrites the destination before a byte leaves the host, and the proxy recovers the real
+hostname from SNI, so whatever the agent resolved is discarded. Measured: an agent pointed at
+`192.0.2.1`, which is TEST-NET-1 and routes nowhere, asking for `example.com`, over a perimeter
+installed with no resolver at all. Result `http=200` with real content, and the ledger recorded
+`example.com:443` with `bytesDown=5344`. The same trick against a host outside the allowlist was
+denied and recorded as a deny.
+
+So the posture that actually closes the DNS channel is a recipe, not a default:
+
+1. Install the perimeter with no `--dns-resolver`. There is then no port 53 path in or out.
+2. Give the agent a static `/etc/hosts` mapping every name it uses to a placeholder address such
+   as `192.0.2.1`. The proxy still reaches the right hosts, because it reads the name from SNI.
+3. Scope the sandbox to `--allow-tcp 80 --allow-tcp 443`. With no resolver there is no port 53 to
+   carve out, so that pair is the entire set.
+
+That is a closure rather than a mitigation: there is no DNS path to abuse, and the agent still
+works.
+
+Two things measured on this project's own host about how that recipe interacts with the sandbox.
+
+**Static names resolve fine under the default profile.** Landlock does not get in the way of NSS:
+`fs read /etc` covers `nsswitch.conf` and `hosts`, and `fs exec /usr` covers the NSS modules.
+Verified with TCP scoped to 80 and 443 only, so no port 53 was reachable by TCP at any point:
+`localhost` resolved to `::1` and `ip6-localhost` resolved to `::1`. Step 2 of the recipe composes.
+
+**On a systemd-resolved host the default profile already removes the DNS path, incidentally.**
+`/etc/resolv.conf` is a symlink to `../run/systemd/resolve/stub-resolv.conf`, Landlock evaluates
+the resolved path rather than the link, and `/run` is not granted. Measured: `example.com` fails
+`EAI_AGAIN` under the default profile and resolves to `172.66.147.243` the moment
+`--allow-read /run` is added. Treat that as a property of this distribution layout and not as a
+DNS control: on a host where `/etc/resolv.conf` is a regular file, the default profile permits
+reading it and name resolution works normally. The sandbox is not a DNS control and should never
+be described as one.
+
+**If you do name a resolver, repoint the agent's `resolv.conf` too.** With
+`--dns-resolver 1.1.1.1` the perimeter permits port 53 to `1.1.1.1`, but the agent's libc still
+asks `127.0.0.53`, which is neither the permitted resolver nor reachable loopback, so
+`getaddrinfo` is dropped and the perimeter looks broken while behaving exactly as specified.
+
+**And a note that outlives the DNS question.** Policy is evaluated against the hostname recovered
+from the stream, never against the address the agent dialled. Any DNS pinning or IP allowlisting
+an operator believes they have in front of this is decorative.
 
 **Abstract unix sockets and signals to same-uid processes.** Landlock gained scoping for these in
 ABI 6 (Linux 6.12). Below that, a sandboxed process can still connect to an abstract unix socket

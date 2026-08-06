@@ -225,6 +225,65 @@ describe("sandbox kernel enforcement", () => {
     expect(result.stdout).toContain("declared-content");
   });
 
+  /**
+   * The documented way to close the DNS exfiltration channel is to run the perimeter with no
+   * resolver and give the agent a static /etc/hosts mapping every name it uses to a placeholder
+   * address, because the redirect discards the address anyway and the proxy recovers the real
+   * host from SNI. That recipe only works if name resolution through /etc/hosts still functions
+   * inside the sandbox, which needs nsswitch.conf, the hosts file, and the NSS modules to all be
+   * reachable. Dropping `fs read /etc` from the default profile would break the recommendation in
+   * docs/sandbox.md without breaking any other test in this file.
+   *
+   * getent is used rather than a DNS lookup precisely because it must NOT reach the network: this
+   * asserts the static path works, not that resolution works.
+   */
+  itKernel()("resolves a static /etc/hosts name, which the documented DNS closure depends on", () => {
+    const bare = run("/usr/bin/getent", ["hosts", "localhost"]);
+    if (bare.status !== 0) {
+      console.log("static hosts resolution: NOT MEASURED, this host has no localhost entry.");
+      return;
+    }
+
+    // No `net connect-tcp 53` in either profile, so nothing below can fall back to DNS over TCP.
+    // The only variable between the two runs is whether /etc is readable.
+    const nssProfile = (extra: string[]) =>
+      [
+        `version 1`,
+        `require-abi 1`,
+        ...basePermits(),
+        ...extra,
+        "net restrict",
+        "net connect-tcp 443",
+        "seccomp errno",
+        "end",
+        "",
+      ].join("\n");
+
+    const withoutEtc = run(env.helper, [
+      "--quiet",
+      "--profile-file",
+      profileFile("nss-no-etc.profile", nssProfile([])),
+      "--",
+      "/usr/bin/getent",
+      "hosts",
+      "localhost",
+    ]);
+    // getent exits 2 for "key not found". Without /etc there is no hosts file to find it in.
+    expect(withoutEtc.status).not.toBe(0);
+
+    const withEtc = run(env.helper, [
+      "--quiet",
+      "--profile-file",
+      profileFile("nss-etc.profile", nssProfile(["fs read /etc"])),
+      "--",
+      "/usr/bin/getent",
+      "hosts",
+      "localhost",
+    ]);
+    expect(withEtc.status).toBe(0);
+    expect(withEtc.stdout).toContain("localhost");
+  });
+
   itKernel()("refuses a write outside the writable path", () => {
     const target = join(secretDir, "planted.sh");
     const bare = run("/usr/bin/touch", [target]);
