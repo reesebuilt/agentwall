@@ -224,6 +224,7 @@ this project declines.
 
 [Install](docs/install.md) · [Enforcement](docs/enforcement.md) ·
 [Perimeter](docs/perimeter.md) · [Fleet](docs/fleet.md) · [MCP](docs/mcp.md) ·
+[Proving capture](docs/verify-capture.md) ·
 [Lockdown](docs/lockdown.md) ·
 [Architecture](docs/architecture.md) · [Threat model](docs/threat-model.md) ·
 [Verification](docs/verification.md) · [Audit format](docs/audit-format.md) ·

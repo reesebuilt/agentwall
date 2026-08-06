@@ -11,6 +11,7 @@ import { runDecoyCommand } from "./decoy";
 import { runPerimeterCommand } from "./perimeter";
 import { runSandboxCommand } from "./sandbox";
 import { runInterceptCommand } from "./intercept";
+import { runVerifyCaptureCommand } from "./capture/verify";
 import {
   formatRationaleReport,
   parseRationaleArgs,
@@ -106,6 +107,7 @@ Commands:
   status              Read live dashboard state from the running Agentwall server
   anchor              Seal audit segments, sign a checkpoint, submit it off-box
   verify              Check the three audit integrity layers independently
+  verify-capture      Prove one agent's traffic really passes through Agentwall
   mcp wrap            Wrap a local MCP server and gate its stdio traffic
   approval-mode       Set approval mode (auto|always|never)
   shield              Enable FloodGuard shield mode
@@ -195,6 +197,16 @@ Why options:
   --tool <name>                       Tool name for --kind tool
   --args <json>                       JSON object of tool arguments for --kind tool
   --json                              Print the whole result as JSON
+
+Verify-capture options:
+  --agent <id>                        Declared agent the traffic must bind to (required)
+  --command '<cmd>'                   Command that makes the agent fetch; '{url}' is substituted
+  --audit <path>                      Audit chain file (default: $AGENTWALL_AUDIT_FILE)
+  --proxy <url>                       Proxy the agent uses; enables the independent peer-pid check
+  --host <addr>                       Interface the canary binds (default: 127.0.0.1)
+  --timeout <ms>                      How long to wait for the fetch (default: 120000)
+  --settle-ms <ms>                    How long to wait for the chain to catch up (default: 3000)
+  --json                              Print the whole report as JSON
 `);
 }
 
@@ -1134,6 +1146,11 @@ async function main() {
     case "verify":
       await commandVerify(flags);
       return;
+    case "verify-capture":
+      // Raw args for the same reason `mcp` takes them: `--command '<cmd>'` carries the agent's
+      // own command line, and parseFlags() splits on whitespace-free tokens in a way that would
+      // hand the capture parser a command that is no longer the one the operator typed.
+      process.exit(await runVerifyCaptureCommand(args));
     case "mcp":
       // Raw args, not the parsed flags: the wrapped server's own options are on this line and
       // parseFlags() has already read them as if they were ours.

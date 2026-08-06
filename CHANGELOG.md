@@ -8,6 +8,44 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 ## [Unreleased]
 
 ### Added
+- `agentwall verify-capture --agent <id>`, which proves one declared agent's traffic actually
+  passes through AgentWall instead of assuming it because the configuration looks right. It binds
+  a single-use canary on an ephemeral loopback port with a 256-bit token in its path, drives the
+  fetch (`--command '<cmd>'`, or interactively by printing the URL and waiting), then asserts
+  three things and reports each separately: a record for that exact request is in the chain, the
+  record binds it to the named agent AND AT WHICH TIER, and the canary was not reached directly.
+  The third assertion is the reason the command exists. A request that arrives at the canary with
+  no matching chain record is an agent that reached the network without passing through, and a
+  check that looked only for a chain record would report "captured" while half an agent's traffic
+  went around the proxy. The bypass is named, not merely counted: the pid that opened the
+  connection is resolved through /proc and compared against the pid listening on the proxy port,
+  so the report says which process escaped. That comparison is three-valued, because attribution
+  is best-effort and treating "could not tell" as "not the proxy" would fail every correctly
+  captured agent on a host where AgentWall runs as another uid. Binding tier is always printed:
+  "captured, bound by comm only" is a materially weaker statement than "captured, bound by
+  credential", and an agent configured for a credential that binds by comm is flagged as weaker
+  than configured. Exit 0 captured, 1 not captured or bypassed, 2 could not be completed. See
+  docs/verify-capture.md, which states what the command does not prove: it proves the path the
+  agent used during the check, not that no other egress path exists.
+  `verify-capture` also reads the `NO_PROXY` its fetch will inherit and refuses to call an
+  exempted canary a bypass. `NO_PROXY=localhost,127.0.0.1,::1` is a reasonable-looking line that
+  makes a loopback canary reached directly BY CONSTRUCTION, and reporting that as a bypass would
+  accuse an operator of a hole their own configuration deliberately opened. The outcome is
+  inconclusive with exit 2, naming the entry and the fix, and saying plainly what the entry
+  costs: every address in `NO_PROXY` is one the agent is TOLD to reach without AgentWall. The
+  match is graded rather than binary, from measurement: curl 8.5.0, python requests 2.31.0 and
+  node 24 under `NODE_USE_ENV_PROXY` all compare a `:port` in an entry, so `127.0.0.1:3000` is
+  inert for all three and does not suppress a verdict, while a bare host or `*` does. An earlier
+  draft of this feature asserted the opposite about curl from memory and was wrong; two
+  independent rigs now agree. Go was not tested and nothing claims anything about it. The whole
+  list is walked across both variable spellings before answering, so a narrow entry cannot mask
+  a broader one later in the same list.
+- `src/proxy/socket-attribution.ts`: the /proc/net/tcp to pid resolution the forward proxy has
+  always used, extracted so `verify-capture` can identify the far end of a canary hit through the
+  same code rather than a second parser free to drift from it. Adds `listenerPids(port)`, which
+  returns every pid holding a LISTEN socket on a port as a set, because a dual-stack bind and a
+  pre-forking server both produce more than one and picking the first would compare a canary's
+  peer against the wrong half.
 - Content inspection on the forward proxy's plaintext HTTP path. The DLP engine, the injection
   scanner, and the decoy tripwires all existed and were wired to zero proxied bytes: no call site
   under `src/proxy/` reached any of them, and `scanForDecoys` had no call site on any request path

@@ -39,6 +39,9 @@ than a narrative document.
 - [Why a check fired](why.md): re-running the scanners against a subject to see which
   check fires, the narrowest knob that silences that one finding, and why a clean result is
   evidence rather than silence.
+- [Proving capture](verify-capture.md): making an agent fetch a single-use canary to prove its
+  traffic really passes through AgentWall, which binding tier actually held, and how a request
+  that reached the network without passing through is caught and named.
 - [Control mapping](owasp-mapping.md): which OWASP LLM, OWASP agentic, and ATT&CK controls
   this codebase addresses, the machine-checked evidence behind each rating, and the gaps
   stated rather than omitted.
