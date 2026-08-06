@@ -533,9 +533,36 @@ onlyWithOpenssl("end to end against a loopback https upstream", () => {
       }
     }
     // And the finding still reached the ledger, which is the point: the evidence survives without
-    // the secret. A ledger with neither would be safe and useless.
+    // the secret. A ledger with neither would be safe and useless, and a redaction test with only
+    // the negative half passes just as well on a record that was never written.
     const findings = observation("intercepted").records.flatMap((r) => r.matchedRules);
     expect(findings).toContain("dlp:secret-in-request-body");
+  });
+
+  it("pins the exact key set of a record so a new content field cannot leak into it", () => {
+    // The negative assertions above only catch the fields we thought to name. This catches the next
+    // one: `finalise` names every field it carries rather than spreading the event, so a new
+    // content-bearing field on ProxyEvent is inert here until someone writes it down, and this test
+    // is what makes writing it down a deliberate act rather than an accident.
+    const request = observation("intercepted").records.find((r) => r.matchedRules.includes("dlp:secret-in-request-body"))!;
+    expect(Object.keys(JSON.parse(request.raw)).sort()).toEqual(
+      [
+        "bodyVisibility",
+        "bytesDown",
+        "bytesUp",
+        "client",
+        "decision",
+        "durationMs",
+        "host",
+        "matchedRules",
+        "method",
+        "path",
+        "port",
+        "reasons",
+        "scheme",
+        "startedAt",
+      ].sort()
+    );
   });
 
   it("asks the seam once per message and once for the connection", () => {

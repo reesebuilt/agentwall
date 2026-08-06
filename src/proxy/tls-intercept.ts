@@ -373,9 +373,23 @@ function buildInterceptor(minter: CertMinter, bypass: ReadonlySet<string>, notes
       const tlsSocket = new TLSSocket(clientSocket, {
         isServer: true,
         // Serves the name the client asked for rather than the one it typed on the CONNECT line.
-        // Node parses the ClientHello for this, so there is no second TLS parser here:
-        // `tls-peek.ts` reads a hello on the tunnelled path, and on this path the TLS stack that
-        // is already terminating the connection reports the same field.
+        // Node parses the ClientHello for this, so there is no second TLS parser here: the TLS
+        // stack that is already terminating this connection reports the same field a record-level
+        // parser would have had to recover.
+        //
+        // MERGE NOTE for agent/8.4-tls, which adds a ClientHello peek to the tunnel path and uses
+        // it to cross-check the negotiated SNI against the CONNECT authority. That peek runs inside
+        // the `netConnect` callback in forward-proxy.ts, and an intercepted connection RETURNS
+        // before `netConnect` is reached, so on a merged branch the cross-check does not run for an
+        // intercepted host. Nothing contends for the socket (this path attaches no `data` listener
+        // to it), but the detection would go quiet exactly when interception is switched on, which
+        // is the worst shape a control can take. `wanted` below is the negotiated name and
+        // `fallbackName` is the CONNECT authority, so this callback is where that check belongs,
+        // under the same rule id rather than a second implementation of it. Refusing here is also
+        // strictly stronger than refusing on the tunnel path: `cb(err)` fails the handshake before
+        // a session exists, where the tunnel path can only tear down after its 200 has gone out.
+        // Bypassed and unmintable hosts still fall through to the tunnel, so the peek keeps
+        // covering those unchanged.
         SNICallback: (servername: string, cb: (err: Error | null, ctx?: SecureContext) => void) => {
           const wanted = normalizeHostname(servername ?? "");
           if (wanted.length === 0) {
@@ -699,18 +713,23 @@ function worseVisibility(first: BodyVisibility, second: BodyVisibility): BodyVis
 }
 
 /**
- * Turn an inspected event into a ledger record, leaving the content behind.
+ * Turn an inspected event into a ledger record, naming every field it carries.
  *
- * `headers` and `body` are destructured out and DROPPED rather than being left to a type that
- * merely says they are absent. The record is serialised whole into the flat ledger and onto the
- * audit chain, so carrying them would write the credential a DLP rule just detected into the
- * evidence for its own detection, and put a request's `Authorization` header there beside it.
- * A type-level `Omit` would not have stopped that: spreading an event into an object literal is
- * not excess-property checked, so the fields would have travelled at runtime with the compiler
- * silent.
+ * Named rather than spread, and that is the whole point of this function. A record is serialised
+ * whole into the flat ledger and onto the audit chain, so a record carrying the body it scanned
+ * would write the credential a DLP rule just detected into the evidence for its own detection, and
+ * put a request's `Authorization` header there beside it.
  *
- * The query string goes with them. A scanner has to see `?api_key=live_...` because that is where
- * a leaked key hides, and the ledger must not, for exactly the same reason.
+ * The type does not prevent that on its own: spreading an event into an object literal is not
+ * excess-property checked, so `Omit<ProxyEvent, "body">` compiles happily while `body` travels at
+ * runtime. Destructuring the content out and spreading the rest does prevent it, but only until
+ * somebody adds the NEXT content-bearing field to `ProxyEvent`, at which point it leaks silently.
+ * Naming inverts that: a new field on the event is inert here until someone writes it down, which
+ * is the right default for the one place where content becomes evidence. The exact key set is
+ * pinned by a test for the same reason.
+ *
+ * The query string is stripped for the same reason the body is dropped. A scanner has to see
+ * `?api_key=live_...` because that is where a leaked key hides, and the ledger must not.
  */
 function finalise(
   event: ProxyEvent,
@@ -720,25 +739,14 @@ function finalise(
   startedAt: number,
   visibility: BodyVisibility
 ): ProxyRecord {
-  // `credential` and `reDecision` leave with the content fields. The first is the secret the
-  // agent presented to identify itself, withheld from every destination on purpose, so writing
-  // it into the ledger would defeat the point of withholding it; the second describes a call
-  // rather than a connection.
-  const {
-    headers: _headers,
-    body: _body,
-    credential: _credential,
-    reDecision: _reDecision,
-    path: target,
-    ...rest
-  } = event;
-  void _headers;
-  void _body;
-  void _credential;
-  void _reDecision;
   return {
-    ...rest,
-    ...(target === undefined ? {} : { path: stripQuery(target) }),
+    host: event.host,
+    port: event.port,
+    scheme: event.scheme,
+    method: event.method,
+    client: event.client,
+    startedAt: event.startedAt,
+    ...(event.path === undefined ? {} : { path: stripQuery(event.path) }),
     decision: verdict.decision,
     reasons: [...verdict.reasons],
     matchedRules: [...verdict.matchedRules],
