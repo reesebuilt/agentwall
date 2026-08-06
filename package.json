@@ -19,6 +19,7 @@
     "onboard": "ts-node src/onboarding.ts",
     "uninstall:system": "bash ./scripts/agentwall-uninstall.sh",
     "test": "node --experimental-vm-modules node_modules/.bin/jest --maxWorkers=50%",
+    "build:sandbox": "bash ./scripts/build-sandbox-helper.sh",
     "test:security-regression": "node scripts/security-regression.js",
     "gen:corpus": "ts-node scripts/gen-corpus.ts",
     "bench": "ts-node bench/run.ts",
@@ -72,6 +73,8 @@
   },
   "files": [
     "dist/",
+    "native/agentwall-sandbox.c",
+    "scripts/build-sandbox-helper.sh",
     "public/",
     "!public/assets/*.png",
     "examples/",
