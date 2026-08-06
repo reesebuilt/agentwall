@@ -8,6 +8,23 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 ## [Unreleased]
 
 ### Added
+- A capture section in `agentwall doctor`, per declared agent: when it was last seen and at which
+  binding tier, its request and byte counts against its budget in the current window, and the
+  weakest binding tier anywhere in the fleet. Loudest of all, and first in the section, is
+  undeclared egress recorded since the last run, because rising undeclared traffic is what an
+  escaping agent and a broken identity binding both look like. An agent declared but never seen
+  renders as `DECLARED, NEVER SEEN` rather than a row of zeros: "never started" and "seen four
+  minutes ago and idle" are different states, and a counter table shows them identically. Doctor
+  exits non-zero when undeclared egress actually reached the network since its bookmark; an
+  attempt enforcement refused is reported and does not fail the run. Everything comes off the
+  chain and the config, with no background collector and no call to the running service, because
+  the moment you most want this answer is the moment that process is suspect. `--audit` selects
+  the chain and `--json` prints the whole report.
+- `strongestBindingTier` and `weakestBindingTier` on the fleet registry, derived from the same
+  rule the resolver indexes by. A declaration naming both a credential and a comm is reported at
+  its comm strength: `resolve()` falls through to comm when no credential is presented, so any
+  process claiming that name binds without the secret, and reporting "credential" there would
+  describe a property the declaration does not have.
 - Content inspection on the forward proxy's plaintext HTTP path. The DLP engine, the injection
   scanner, and the decoy tripwires all existed and were wired to zero proxied bytes: no call site
   under `src/proxy/` reached any of them, and `scanForDecoys` had no call site on any request path

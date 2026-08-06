@@ -46,7 +46,10 @@ The unscoped npm package `agentwall` is a different, unrelated project. This one
 
 `init` writes `agentwall.config.yaml` and `policy.yaml` into the current directory. Both are
 gitignored, and `init` will not overwrite work you already have. `doctor` checks Node, the
-build output, and those two files.
+build output, and those two files, and then reports **capture**: which declared agent was last
+seen and at what binding tier, each agent's standing against its budget, and any egress since
+the last run that no declared agent claims. That last one is the alarm, and it exits non-zero.
+See [fleet governance](docs/fleet.md#watching-capture-over-time).
 
 From a checkout instead — run `node dist/cli.js` wherever this file says `agentwall`:
 

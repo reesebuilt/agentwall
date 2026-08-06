@@ -19,6 +19,8 @@ import {
 } from "./rationale";
 import { PolicyEngine } from "./policy/engine";
 import { meetsNodeFloor, nodeFloor, packageVersion } from "./version";
+import { AgentRegistry, type AgentMatchSignal, type RegisteredAgent } from "./fleet/registry";
+import { readCaptureHealth, type CaptureHealth, type CaptureWatermark } from "./evidence/capture";
 
 type CliFlags = Record<string, string | boolean>;
 const BOOLEAN_FLAGS = new Set(["lan", "force", "json", "confirm"]);
@@ -102,7 +104,7 @@ Commands:
   init                Create agentwall.config.yaml and policy.yaml
   start               Start Agentwall server from current directory config
   dev                 Start in ts-node dev mode
-  doctor              Validate local install and starter files
+  doctor              Validate local install, and report per-agent capture from the chain
   status              Read live dashboard state from the running Agentwall server
   anchor              Seal audit segments, sign a checkpoint, submit it off-box
   verify              Check the three audit integrity layers independently
@@ -134,6 +136,14 @@ Init options:
   --allow-hosts <a,b,c>               Comma-separated egress allowlist
   --lan                               Bind to 0.0.0.0
   --force                             Overwrite existing config/policy files
+
+Doctor options:
+  --audit <path>                      Chain to read capture from (default: $AGENTWALL_AUDIT_FILE)
+  --json                              Print raw JSON
+
+  Doctor advances a bookmark (capture-watermark.json, beside the chain) on every run, so
+  "undeclared egress since the last run" means what it says. It exits non-zero when
+  undeclared egress reached the network since that bookmark.
 
 Status options:
   --json                              Print raw JSON
@@ -267,7 +277,290 @@ function commandInit(flags: CliFlags) {
   console.log(`\nRun: agentwall start  (dashboard: http://${config.host}:${config.port})`);
 }
 
-function commandDoctor() {
+/**
+ * Read doctor's bookmark in the chain.
+ *
+ * A missing, unreadable, or malformed bookmark is not an error: it means "no previous run",
+ * which is a state doctor has to handle on every fresh install anyway.
+ */
+function readCaptureWatermark(file: string): CaptureWatermark | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(fs.readFileSync(file, "utf8"));
+  } catch {
+    return null;
+  }
+  if (typeof parsed !== "object" || parsed === null) return null;
+  if (!("chainIndex" in parsed) || typeof parsed.chainIndex !== "number") return null;
+  if (!("at" in parsed) || typeof parsed.at !== "string") return null;
+  return { chainIndex: parsed.chainIndex, at: parsed.at };
+}
+
+interface DoctorCapture {
+  /** Null when there was no chain to read. */
+  health: CaptureHealth | null;
+  /** Why there was not, in the words the operator needs. */
+  unavailable: string | null;
+  /** The fleet declaration did not load, so no agent can be reported against it. */
+  fleetError: string | null;
+  watermarkPath: string | null;
+  /** The bookmark could not be advanced, which breaks "since the last run" permanently. */
+  watermarkError: string | null;
+  /** Undeclared egress reached the network since the last run. The failure condition. */
+  alarm: boolean;
+}
+
+/**
+ * Answer "is everything on this host still being captured" from what is already on disk.
+ *
+ * Offline on purpose. The moment you most want to know whether an agent is escaping is the
+ * moment the serving process is suspect, and a check that has to ask that process is a check
+ * that goes quiet exactly then. Everything here comes off the chain and the config.
+ */
+function collectDoctorCapture(flags: CliFlags): DoctorCapture {
+  const empty = { health: null, fleetError: null, watermarkPath: null, watermarkError: null, alarm: false };
+  const auditPath = typeof flags.audit === "string" ? flags.audit : process.env.AGENTWALL_AUDIT_FILE;
+  if (!auditPath) {
+    return {
+      ...empty,
+      unavailable:
+        "no audit file is configured, so there is no record of who reached what. " +
+        "Set AGENTWALL_AUDIT_FILE, or pass --audit <path>.",
+    };
+  }
+
+  // The declared fleet, resolved exactly as the server resolves it, credentials and all. A
+  // declaration that will not load is its own finding: the server would refuse to boot on
+  // it, and until it does every agent on this host is falling back to the global allowlist.
+  let agents: readonly RegisteredAgent[] = [];
+  let fleetError: string | null = null;
+  try {
+    const config = loadCliConfig(flags);
+    if (config.fleet && config.fleet.agents.length > 0) {
+      agents = new AgentRegistry(config.fleet).list();
+    }
+  } catch (error) {
+    fleetError = error instanceof Error ? error.message : String(error);
+  }
+
+  // Beside the chain, because that is what it bookmarks: move the chain and the bookmark
+  // travels, delete the chain and the bookmark goes with it. The name deliberately does not
+  // start with the audit file's own name, because segment discovery globs `<audit>.*`.
+  const watermarkPath = path.join(path.dirname(auditPath), "capture-watermark.json");
+  const since = readCaptureWatermark(watermarkPath);
+
+  let health: CaptureHealth;
+  try {
+    health = readCaptureHealth({ auditPath }, { agents, since });
+  } catch (error) {
+    return {
+      ...empty,
+      fleetError,
+      watermarkPath,
+      unavailable: `${auditPath} could not be read: ${error instanceof Error ? error.message : String(error)}`,
+    };
+  }
+
+  if (!health.chainPresent) {
+    return {
+      ...empty,
+      health,
+      fleetError,
+      watermarkPath,
+      unavailable: `no chain exists at ${auditPath} yet. Nothing has been recorded, so nothing can be checked.`,
+    };
+  }
+
+  // Advancing the bookmark is what makes the next run's alarm mean anything, so failing to
+  // write it is a failure and not a footnote. A bookmark that never advances reports zero
+  // new undeclared records forever, which is a green light with nothing behind it.
+  let watermarkError: string | null = null;
+  if (health.watermark !== null) {
+    try {
+      fs.writeFileSync(watermarkPath, `${JSON.stringify(health.watermark)}\n`);
+    } catch (error) {
+      watermarkError = error instanceof Error ? error.message : String(error);
+    }
+  }
+
+  return {
+    health,
+    unavailable: null,
+    fleetError,
+    watermarkPath,
+    watermarkError,
+    // Only egress that actually REACHED the network fails the run. An undeclared attempt
+    // that enforcement refused is the wall doing its job, and a check that goes red when
+    // the wall works is a check an operator learns to ignore.
+    alarm: health.since !== null && health.undeclared.allowedSinceLastRun > 0,
+  };
+}
+
+function formatByteCount(value: number): string {
+  if (value < 1024) return `${value} B`;
+  const units = ["KB", "MB", "GB", "TB"];
+  let scaled = value / 1024;
+  let unit = 0;
+  while (scaled >= 1024 && unit < units.length - 1) {
+    scaled /= 1024;
+    unit += 1;
+  }
+  return `${scaled.toFixed(1)} ${units[unit]}`;
+}
+
+/** What each tier actually proves, wrapped for a terminal rather than left to the shell. */
+const TIER_ADVICE: Record<AgentMatchSignal, string[]> = {
+  credential: [
+    "A presented secret. The only tier that survives a process renaming itself, and the",
+    "only one that works across a host boundary.",
+  ],
+  "uid+comm": [
+    "A kernel-owned uid plus a self-chosen name. As strong as the uid on its own; the",
+    "name adds precision, not proof.",
+  ],
+  uid: [
+    "A kernel-owned uid. The process cannot change it, but every process running as that",
+    "user shares the identity.",
+  ],
+  comm: [
+    "A name the process chose for itself. Anything on this host can claim it, including",
+    "whatever you are trying to catch. Bind by credential (Proxy-Authorization) or uid.",
+  ],
+  none: ["Nothing bound this at all."],
+};
+
+/** The capture section, printed after the install checks. Returns lines, does not exit. */
+function renderCaptureSection(capture: DoctorCapture): { lines: string[]; failures: number } {
+  const lines: string[] = ["", "Capture"];
+  let failures = 0;
+
+  if (capture.fleetError !== null) {
+    failures += 1;
+    lines.push(`❌ the fleet declaration did not load: ${capture.fleetError}`);
+    lines.push("   Until it does, no agent on this host has an identity and the global allowlist judges everything.");
+  }
+
+  const health = capture.health;
+  if (capture.unavailable !== null || health === null) {
+    lines.push(`⚠️  ${capture.unavailable ?? "nothing to read"}`);
+    return { lines, failures };
+  }
+
+  lines.push(`   chain            ${health.auditPath}`);
+  lines.push(`   egress records   ${health.egressRecords} read${health.truncated ? " (capped, newest first)" : ""}`);
+  lines.push(
+    health.since === null
+      ? "   since last run   no previous run recorded, so this run is the baseline"
+      : `   since last run   chain index ${health.since.chainIndex}, ${formatRelative(health.since.at)}`,
+  );
+
+  if (capture.watermarkError !== null) {
+    failures += 1;
+    lines.push("");
+    lines.push(`❌ the capture bookmark at ${capture.watermarkPath} could not be written: ${capture.watermarkError}`);
+    lines.push("   Every future run will report zero new undeclared egress, whatever happens. Fix this first.");
+  }
+
+  const undeclared = health.undeclared;
+  if (!health.fleetDeclared) {
+    lines.push("");
+    lines.push(
+      "⚠️  no agents are declared, so nothing on this host can be attributed to one. Every record carries the",
+    );
+    lines.push(
+      "   process name as its identity and no traffic can be called undeclared, because there is nothing to",
+    );
+    lines.push("   declare against. Add a `fleet:` section to turn identity into something checkable.");
+    return { lines, failures };
+  }
+
+  if (undeclared.sinceLastRun > 0) {
+    const scope = health.since === null ? "in the chain (no previous run to compare against)" : "since the last run";
+    const marker = capture.alarm ? "❌" : "⚠️ ";
+    if (capture.alarm) failures += 1;
+    lines.push("");
+    lines.push(
+      `${marker} ${undeclared.sinceLastRun} undeclared egress ` +
+        `${undeclared.sinceLastRun === 1 ? "record" : "records"} ${scope}: ` +
+        `${undeclared.allowedSinceLastRun} reached the network, ` +
+        `${undeclared.deniedSinceLastRun} ${undeclared.deniedSinceLastRun === 1 ? "was" : "were"} refused.`,
+    );
+    lines.push(
+      `   identity      ${undeclared.byIdentity.map((row) => `${row.id} ${row.count}`).join(", ")}`,
+    );
+    lines.push(`   destinations  ${undeclared.topHosts.map((row) => `${row.host} ${row.count}`).join(", ")}`);
+    lines.push(`   bytes         ${formatByteCount(undeclared.bytesSinceLastRun)}`);
+    lines.push(`   first / last  ${formatRelative(undeclared.firstAt)} / ${formatRelative(undeclared.lastAt)}`);
+    if (undeclared.predatingAttribution > 0) {
+      lines.push(
+        `   ${undeclared.predatingAttribution} of these predate agent attribution and were written by an older build.`,
+      );
+    }
+    lines.push(
+      "   This is either an agent nobody declared, or a declared agent whose identity binding broke. Both",
+    );
+    lines.push("   look exactly like this. Compare the identities above against fleet.agents in your config.");
+  } else {
+    lines.push(
+      `   undeclared       none${health.since === null ? " in the chain" : " since the last run"}` +
+        `${undeclared.total > 0 ? ` (${undeclared.total} earlier, already accounted for)` : ""}`,
+    );
+  }
+
+  lines.push("");
+  lines.push(
+    `   ${"agent".padEnd(20)}${"binding".padEnd(13)}${"last seen".padEnd(15)}${"window".padEnd(16)}${"requests".padEnd(14)}bytes`,
+  );
+
+  const neverSeen: string[] = [];
+  for (const row of health.agents) {
+    const binding =
+      row.strongestTier === row.weakestTier ? row.weakestTier : `${row.strongestTier}/${row.weakestTier}`;
+    const head = `   ${row.agentId.padEnd(20)}${binding.padEnd(13)}`;
+    if (row.lastSeen === null) {
+      neverSeen.push(row.agentId);
+      // Deliberately NOT a row of zeros. "Declared, never seen" and "seen a minute ago and
+      // idle" are different states, and rendering both as 0/0 is how an agent that stopped
+      // being captured hides in a table.
+      lines.push(`${head}${health.truncated ? "DECLARED, NOT SEEN IN WHAT WAS READ" : "DECLARED, NEVER SEEN"}`);
+      continue;
+    }
+    const overRequests = row.maxRequests !== null && row.requests >= row.maxRequests;
+    const overBytes = row.maxBytes !== null && row.bytes >= row.maxBytes;
+    const requests = `${row.requests} / ${row.maxRequests ?? "-"}${overRequests ? " OVER" : ""}`;
+    const bytes = `${formatByteCount(row.bytes)} / ${row.maxBytes === null ? "-" : formatByteCount(row.maxBytes)}${
+      overBytes ? " OVER" : ""
+    }`;
+    const window = `${row.windowSeconds}s ${row.windowIsBudget ? "budget" : "observed"}`;
+    lines.push(
+      `${head}${formatRelative(row.lastSeen.at).padEnd(15)}${window.padEnd(16)}${requests.padEnd(14)}${bytes}` +
+        `${row.denied > 0 ? `  (${row.denied} denied)` : ""}`,
+    );
+  }
+
+  if (neverSeen.length > 0) {
+    lines.push("");
+    lines.push(
+      `⚠️  declared but never seen: ${neverSeen.join(", ")}. Either it has not run yet, or it is running and its`,
+    );
+    lines.push("   traffic is not reaching this proxy, which is the same picture as an agent that escaped.");
+  }
+
+  if (health.weakestBinding !== null) {
+    lines.push("");
+    lines.push(
+      `${health.weakestBinding.tier === "comm" || health.weakestBinding.tier === "none" ? "⚠️ " : "  "} ` +
+        `weakest binding in use: ${health.weakestBinding.tier} (${health.weakestBinding.agentIds.join(", ")})`,
+    );
+    for (const advice of TIER_ADVICE[health.weakestBinding.tier]) lines.push(`   ${advice}`);
+  }
+
+  for (const note of health.notes) lines.push(`   note: ${note}`);
+
+  return { lines, failures };
+}
+
+function commandDoctor(flags: CliFlags) {
   const checks = [
     {
       name: `Node version >= ${nodeFloor}`,
@@ -291,17 +584,49 @@ function commandDoctor() {
     },
   ];
 
-  let failures = 0;
-  for (const check of checks) {
-    if (check.ok) {
-      console.log(`✅ ${check.name}`);
-    } else {
-      failures += 1;
-      console.log(`❌ ${check.name} (hint: ${check.detail})`);
-    }
+  const capture = collectDoctorCapture(flags);
+  const section = renderCaptureSection(capture);
+  const installFailures = checks.filter((check) => !check.ok).length;
+
+  if (flags.json) {
+    console.log(
+      JSON.stringify(
+        {
+          checks: checks.map((check) => ({ name: check.name, ok: check.ok, detail: check.detail })),
+          capture: {
+            unavailable: capture.unavailable,
+            fleetError: capture.fleetError,
+            watermarkPath: capture.watermarkPath,
+            watermarkError: capture.watermarkError,
+            alarm: capture.alarm,
+            health: capture.health,
+          },
+          failures: installFailures + section.failures,
+        },
+        null,
+        2,
+      ),
+    );
+    if (installFailures + section.failures > 0) process.exit(1);
+    return;
   }
 
-  if (failures > 0) {
+  for (const check of checks) {
+    console.log(check.ok ? `✅ ${check.name}` : `❌ ${check.name} (hint: ${check.detail})`);
+  }
+  for (const line of section.lines) console.log(line);
+
+  if (installFailures + section.failures > 0) {
+    console.log("");
+    console.log(`${installFailures} install check(s) and ${section.failures} capture check(s) failed.`);
+    // Only explained when it happened. A standing sentence about escaping agents printed
+    // under a run that failed on a missing policy.yaml is how a warning stops being read.
+    if (section.failures > 0) {
+      console.log(
+        "A capture failure means traffic is leaving this host that no declared agent claims, or that " +
+          "doctor cannot tell whether it is.",
+      );
+    }
     process.exit(1);
   }
 }
@@ -1099,7 +1424,7 @@ async function main() {
       runNodeScript([path.resolve(process.cwd(), "node_modules/ts-node/dist/bin.js"), "src/index.ts"]);
       return;
     case "doctor":
-      commandDoctor();
+      commandDoctor(flags);
       return;
     case "status":
       await commandStatus(flags);

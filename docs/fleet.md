@@ -179,6 +179,87 @@ A denied request tells the client the specific reason first, so
 of several allowlists refused it. The full reason list, both allowlists, and the counters are
 in the chain.
 
+## Watching capture over time
+
+The section above answers "what happened". `agentwall doctor` answers the harder question:
+**is every declared agent still being captured, and is anything getting out that no declared
+agent claims?** Configuration proves capture once. This checks it on every run, which is what
+catches an agent that starts escaping next Tuesday because somebody edited its launch script.
+
+```
+Capture
+   chain            /var/lib/agentwall/audit.jsonl
+   egress records   412 read
+   since last run   chain index 1108, 6m ago
+
+❌ 3 undeclared egress records since the last run: 2 reached the network, 1 was refused.
+   identity      aw-rogue 3
+   destinations  open.example.test 2, closed.example.test 1
+   bytes         4.0 KB
+   first / last  1m ago / 12s ago
+   This is either an agent nobody declared, or a declared agent whose identity binding broke. Both
+   look exactly like this. Compare the identities above against fleet.agents in your config.
+
+   agent               binding      last seen      window          requests      bytes
+   claude-code         comm         2s ago         600s budget     2 / 5         4.0 KB / 32.0 KB
+   codex               comm         2s ago         1s budget       0 / 5         0 B / -
+   hermes              uid          DECLARED, NEVER SEEN
+
+⚠️  declared but never seen: hermes. Either it has not run yet, or it is running and its
+   traffic is not reaching this proxy, which is the same picture as an agent that escaped.
+
+⚠️  weakest binding in use: comm (claude-code, codex)
+   A name the process chose for itself. Anything on this host can claim it, including
+   whatever you are trying to catch. Bind by credential (Proxy-Authorization) or uid.
+```
+
+Four things it can tell you that nothing else could:
+
+1. **Undeclared egress since the last run**, as the loudest line rather than a footnote.
+   Rising undeclared traffic is the signal that something is escaping or that an agent's
+   identity binding broke, and those two look identical from here, which is why the text says
+   so instead of guessing.
+2. **Declared but never seen**, rendered differently from a zero. An agent that was seen four
+   minutes ago and did nothing since is idle. An agent that has never appeared at all is
+   either not started or not routed through the proxy. Both would be a row of zeros in a
+   plain counter table, and only one of them is fine.
+3. **Per-agent standing against the declared budget**, in the window the budget names. Agents
+   with no budget get an hour-long observation window instead, labelled `observed` rather than
+   `budget` so nobody reads a ceiling into it.
+4. **The weakest binding tier in use**, across the whole fleet. An agent bound only by `comm`
+   is bound by a string the process chose for itself. Note that a declaration naming BOTH a
+   credential and a comm is reported at its comm strength: `resolve()` falls through to comm
+   when no credential is presented, so the credential is a bonus rather than a requirement.
+
+### How "since the last run" works
+
+Doctor keeps a bookmark, `capture-watermark.json`, beside the audit file, holding the highest
+chain index it has already accounted for. Each run counts undeclared records past that index
+and then advances it. Consequences worth knowing:
+
+- The **first** run has no bookmark, so it reports the whole chain as a baseline and does not
+  fail. A cron seeds on its first firing and alarms from the second.
+- Doctor **exits non-zero** only when undeclared egress actually reached the network since the
+  bookmark. An attempt enforcement refused is printed and does not fail the run: a check that
+  goes red when the wall works is a check operators turn off.
+- A bookmark **ahead** of the chain (the file was rotated away, replaced, or restarted at
+  index zero) is discarded with a note, and everything readable is counted as new. Trusting it
+  would report zero new records forever over a chain full of them.
+- If the bookmark **cannot be written**, that is a hard failure with its own line, because
+  every later run would otherwise report a clean nothing whatever happened.
+
+It reads the chain and the config, and asks the running service nothing. The moment you most
+want to know whether an agent is escaping is the moment the serving process is suspect, and a
+check that has to interview that process goes quiet exactly then. The same property makes the
+numbers slightly different from the ones `GET /api/fleet` reports: the in-process ledger
+attributes a connection's bytes to the window that ADMITTED it, while doctor recounts from
+records, which are written when a connection CLOSES. For a long-lived model stream those two
+windows differ.
+
+With no `fleet:` section declared, the section says so and raises nothing. Every record then
+carries the process comm as its identity and there is nothing for traffic to be undeclared
+against, so alarming would fail every correct single-agent install permanently.
+
 ## What multi-host would take
 
 Not implemented, and this section exists so that nobody mistakes the section above for it.

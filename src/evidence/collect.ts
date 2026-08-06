@@ -141,8 +141,12 @@ export const READ_LIMITS = {
  *
  * Order is part of what the page shows. A reviewer reading a break needs to know whether it
  * sits in history that has been sealed and anchored or in the tail that has not.
+ *
+ * Exported because capture.ts reads the same chain for a different question, and two
+ * discovery paths would eventually disagree about which files are the chain. That module
+ * walks the list in reverse, which is a reading order rather than a second answer.
  */
-function recordFiles(r: ResolvedPaths): { path: string; role: FileRole; sealedAs: SegmentRecord | null }[] {
+export function recordFiles(r: ResolvedPaths): { path: string; role: FileRole; sealedAs: SegmentRecord | null }[] {
 	const out: { path: string; role: FileRole; sealedAs: SegmentRecord | null }[] = [];
 	const seen = new Set<string>();
 	const add = (path: string, role: FileRole, sealedAs: SegmentRecord | null): void => {
