@@ -19,9 +19,17 @@ approval:
   # webhookUrl: "https://operator.example/webhooks/agentwall-approvals"
 
 policy:
+  # "allow" or "deny". Anything else is refused at start-up: an unrecognised value used to
+  # become the decision for every unmatched request, and nothing downstream treats an unknown
+  # decision as a block, so a typo here failed open.
   defaultDecision: "deny"
-  # Optional external policy file. When present, Agentwall loads it at startup
-  # and hot-reloads changes from disk while the service is running.
+  # Optional external policy file. When present, Agentwall loads it at startup, hot-reloads
+  # changes from disk, and re-reads it on SIGHUP or POST /reload. Rules reload whole; a file
+  # that fails to validate is refused and the previous ruleset keeps enforcing.
+  #
+  # Most keys in THIS file are not reloadable: only logLevel and policy.defaultDecision apply
+  # to a running process, and a reload names every other changed key as restart-required. See
+  # docs/reload.md.
   configPath: "./examples/policy.yaml"
 
 dlp:

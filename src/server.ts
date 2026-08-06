@@ -21,8 +21,24 @@ import { lockdownRoutes } from "./routes/lockdown";
 import { initLockdown } from "./runtime/lockdown";
 import { probeRoutes } from "./routes/probe";
 import { FileBackedPolicyRuntime, ReloadResult } from "./policy/runtime";
+import { PolicySnapshot } from "./policy/engine";
+import { ReloadCoordinator } from "./runtime/reload";
+import { reloadRoutes } from "./routes/reload";
 import { RuntimeFloodGuard } from "./runtime/floodguard";
 import { createDecisionTraceExporter } from "./telemetry/otel";
+
+declare module "fastify" {
+  interface FastifyRequest {
+    /**
+     * The ruleset this request is being served under, pinned once when it arrived.
+     *
+     * A reload during the request swaps the engine's pointer and leaves this one alone, so a
+     * request cannot straddle two rulesets no matter how many times it evaluates or what it
+     * awaits in between.
+     */
+    policySnapshot?: PolicySnapshot;
+  }
+}
 
 export interface AgentwallServer {
   app: FastifyInstance;
@@ -30,7 +46,11 @@ export interface AgentwallServer {
   gate: ApprovalGate;
   runtime: RuntimeState;
   policyRuntime?: FileBackedPolicyRuntime;
-  reloadPolicy: () => ReloadResult | undefined;
+  /**
+   * Config and policy reload. Replaces the previous `reloadPolicy` closure, which reloaded
+   * rules only, recorded nothing on the chain, and had no caller outside a test.
+   */
+  reloadCoordinator: ReloadCoordinator;
 }
 
 export async function buildServer(config: AgentwallConfig): Promise<AgentwallServer> {
@@ -97,32 +117,47 @@ export async function buildServer(config: AgentwallConfig): Promise<AgentwallSer
   runtime.hydrateApprovalQueue(gate.getPersistedPending());
 
 
-  const applyReload = (result: ReloadResult) => {
-    if (!result.reloaded) {
-      return;
-    }
+  // Pin the ruleset for the life of the request, before anything can evaluate against it.
+  //
+  // A reload replaces the engine's snapshot pointer; it does not mutate the snapshot this holds,
+  // so a request that started under one policy finishes under it. Before this hook the
+  // guarantee was incidental: PolicyEngine.evaluate is synchronous and reads the rules array
+  // once, so no single evaluation could tear, but nothing stopped a handler that evaluates
+  // twice, or awaits before evaluating, from straddling a swap. That is a property that
+  // survives only until somebody makes a handler async, which is not a guarantee.
+  //
+  // Costs one property assignment and no allocation: snapshot() hands back the current object.
+  app.addHook("onRequest", async (req) => {
+    req.policySnapshot = engine.snapshot();
+  });
 
-    engine.replaceRules([...builtinRules, ...result.rules]);
-    app.log.info(
-      { policyPath: config.policy.configPath, ruleCount: engine.getRules().length },
-      "Reloaded declarative policy rules"
-    );
-  };
+  const reloadCoordinator = new ReloadCoordinator({
+    engine,
+    config,
+    policyRuntime,
+    logger: app.log,
+    // Pino accepts a level assignment at runtime. Routed through a closure so the coordinator
+    // does not need the Fastify instance, and validated before it is called: an unrecognised
+    // level makes this throw.
+    setLogLevel: (level: string) => {
+      app.log.level = level;
+    },
+  });
 
-  const reloadPolicy = (): ReloadResult | undefined => {
-    if (!policyRuntime) {
-      return undefined;
-    }
-
-    const result = policyRuntime.reload();
-    applyReload(result);
-    return result;
-  };
-
-  policyRuntime?.start(applyReload);
+  // The pre-existing policy-file watcher. It validates and reloads inside the runtime and hands
+  // the result here, so the only thing added is moving the engine and getting the change on the
+  // chain, which this path previously did not do. The before-state for the diff comes from the
+  // coordinator's own cache, because the runtime has already swapped by the time this fires.
+  //
+  // Deliberately NOT extended to the config file: an explicit trigger is the right shape for a
+  // policy surface, and a config change that needs a restart cannot be honoured by a watcher.
+  policyRuntime?.start((result: ReloadResult) => {
+    reloadCoordinator.applyExternalReload(result, { source: "watch" });
+  });
 
   app.addHook("onClose", async () => {
     policyRuntime?.stop();
+    reloadCoordinator.dispose();
     gate.close();
   });
 
@@ -147,10 +182,11 @@ export async function buildServer(config: AgentwallConfig): Promise<AgentwallSer
   await telegramTestBotRoutes(app, engine, runtime);
   await communicationChannelRoutes(app, engine, runtime);
   await damageControlRoutes(app, engine, runtime);
-  await dashboardRoutes(app, config, engine, gate, runtime, floodGuard, policyRuntime);
+  await dashboardRoutes(app, config, engine, gate, runtime, floodGuard, policyRuntime, reloadCoordinator);
   await uiRoutes(app);
   await lockdownRoutes(app);
   await probeRoutes(app, engine, runtime);
+  await reloadRoutes(app, reloadCoordinator);
 
-  return { app, engine, gate, runtime, policyRuntime, reloadPolicy };
+  return { app, engine, gate, runtime, policyRuntime, reloadCoordinator };
 }

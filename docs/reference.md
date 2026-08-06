@@ -38,6 +38,7 @@ POST /integrations/damage-control/command-preflight     # shell command prefligh
 GET  /detections          GET /rules                    # detection catalog, active rules
 GET  /api/dashboard/state GET /api/dashboard/events      # operator console state, SSE stream
 GET  /api/org/summary                                   # multi-instance summary
+POST /reload              GET /reload                   # config and policy reload, see docs/reload.md
 GET  /health              GET /ready                    # liveness; /ready needs the token
 ```
 

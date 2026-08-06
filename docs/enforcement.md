@@ -100,9 +100,12 @@ into an outage nobody ordered. Refusing to boot is the only outcome that cannot 
 and the message names the file, the key, the rejected value, and the valid set so the fix
 takes seconds. This is deliberate, not brittleness.
 
-Mode and allowlist are read once at start-up. Changing either needs a restart — appropriate
-ceremony for a change that can take an agent fleet offline. Policy *rules* are not part of
-that bargain: a hot-reloaded rule takes effect on the next connection without a restart.
+Mode and allowlist are read once at start-up. Changing either needs a restart, appropriate
+ceremony for a change that can take an agent fleet offline. A reload reports both as
+restart-required rather than pretending to apply them. Policy *rules* are not part of that
+bargain: a hot-reloaded rule takes effect on the next connection without a restart. See
+[Config and policy reload](reload.md) for what reloads, what does not, and how a reload is
+recorded.
 
 ## The recommended adoption path
 

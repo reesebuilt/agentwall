@@ -91,7 +91,11 @@ export async function policyRoutes(
       });
     }
 
-    const result = engine.evaluate(ctx);
+    // The snapshot pinned when this request arrived, not the engine's current one. A reload that
+    // lands between the request arriving and this line does not change the answer this caller
+    // gets. The fallback covers an app that registered these routes without the pinning hook,
+    // and resolves to the same ruleset the engine would have used anyway.
+    const result = (req.policySnapshot ?? engine.snapshot()).evaluate(ctx);
     const auditEvent = emit(ctx, result);
     runtime.recordAuditEvent(auditEvent);
 
