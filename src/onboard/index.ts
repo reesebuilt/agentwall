@@ -302,6 +302,32 @@ export function readInterceptionState(document: Record<string, unknown>): string
 }
 
 /**
+ * Prove the minted secret is absent from every file this command wrote.
+ *
+ * Extracted rather than inlined so the refusal can actually be exercised. A guard that has
+ * never been seen to fire is a guard nobody knows works, and this one defends the report's
+ * claim that only the digest reached disk. If a future refactor ever serialised the credential
+ * instead of its digest, this throws at the moment of the mistake rather than leaving the
+ * secret to be discovered in a committed config.
+ *
+ * Note the scope, which is exactly what the report is allowed to claim: files THIS COMMAND
+ * wrote. It says nothing about a shell history, a terminal scrollback, or a redirect of this
+ * command's own output, none of which are observable from here.
+ */
+export function assertSecretAbsentFromDisk(paths: readonly string[], secret: string, agentId: string): void {
+  for (const written of paths) {
+    if (!fs.existsSync(written)) continue;
+    if (fs.readFileSync(written, "utf8").includes(secret)) {
+      throw new Error(
+        `agentwall: refusing to continue. The minted secret for "${agentId}" appears in ` +
+          `${written}. Only the sha256 digest may reach disk. Treat that credential as burned: ` +
+          `remove it from the file and re-run onboard with --force to mint a replacement.`
+      );
+    }
+  }
+}
+
+/**
  * Load the config file as a plain object.
  *
  * Deliberately NOT loadConfig(): that applies defaults, resolves env credentials and validates
@@ -406,19 +432,7 @@ export function runOnboard(request: OnboardRequest): OnboardResult {
   fs.writeFileSync(request.configPath, yaml.dump(updated, { noRefs: true, lineWidth: 120 }));
 
   // Read the files back and PROVE the secret is not in either before telling the operator so.
-  // The report says "AgentWall stored only its digest"; that sentence is exactly the kind of
-  // confident, specific, reassuring claim that has to be checked rather than assumed. If a
-  // future refactor ever serialised the credential instead of its digest, this fails loudly at
-  // the moment of the mistake rather than being discovered in a committed config.
-  for (const written of [request.configPath, backupPath]) {
-    if (fs.readFileSync(written, "utf8").includes(credential.secret)) {
-      throw new Error(
-        `agentwall: refusing to continue. The minted secret for "${request.agentId}" appears in ` +
-          `${written}. Only the sha256 digest may reach disk. The config has been left as written ` +
-          `so you can inspect it; rotate this credential by re-running onboard with --force.`
-      );
-    }
-  }
+  assertSecretAbsentFromDisk([request.configPath, backupPath], credential.secret, request.agentId);
 
   const proxyUrl = proxyUrlFor(credential.secret, request.proxyHost, request.proxyPort);
   const caPath = path.join(process.env.HOME ?? "/root", ".agentwall", "ca", "agentwall-ca.crt");
@@ -485,8 +499,9 @@ export function renderReport(result: OnboardResult, request: OnboardRequest): st
   out.push("");
   out.push(`  AgentWall stored only its digest (sha256:${result.digest.slice(0, 16)}...).`);
   out.push("  Both the config and its backup were read back and checked: the secret is in neither.");
-  out.push("  It exists in this terminal and nowhere else. If you lose it, re-run onboard with --force");
-  out.push("  to mint a replacement; there is no recovery.");
+  out.push("  Nothing this command wrote contains it. It has NOT been checked for anywhere else,");
+  out.push("  and it is now in your shell history, your scrollback, and any file you redirected");
+  out.push("  this output into. If you lose it, re-run onboard with --force; there is no recovery.");
   out.push("");
 
   out.push("CONFIG");

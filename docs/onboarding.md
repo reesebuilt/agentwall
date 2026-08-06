@@ -91,13 +91,15 @@ CREDENTIAL, PRINTED ONCE AND NEVER AGAIN
   claude-code:73c22a6c4b85044c1bfcfadf7f08f8d26830e2db1eb14c1b0f92665d21cb4fa2
 
   AgentWall stored only its digest (sha256:7098590f422b7cfa...).
-  The secret is not written to any file. If you lose it, re-run onboard with --force
+  Nothing this command wrote contains it. It has NOT been checked for anywhere else, and it is
+  now in your shell history, your scrollback, and any file you redirected this output into.
   to mint a replacement; there is no recovery.
 
 CONFIG
   Written:    /srv/agents/agentwall.config.yaml
   Backup:     /srv/agents/agentwall.config.yaml.bak
-  Mode:       monitor. This agent is RECORDED, not blocked.
+  Mode:       monitor, and egress is not default-deny. This agent is RECORDED, not
+              blocked. Nothing it does today starts failing because you ran this command.
   Allowlist:  api.anthropic.com, platform.claude.com
   Budget:     2000 requests per 3600s
 
@@ -133,9 +135,23 @@ command now reads the `NO_PROXY` its child will inherit and, if the canary host 
 reports INCONCLUSIVE with exit 2 rather than accusing you of a bypass. A check whose own
 environment decided the answer must not claim either answer.
 
-Scoping the exemption to a port does not rescue it either: curl matches host only and ignores
-the port, Python `requests` and Go honour `host:port`, and Node's global fetch ignores
-`NO_PROXY` entirely. Three behaviours, so nothing portable to ship.
+Port-scoping the exemption is possible but does not make it a good idea. Measured here, with
+the proxy set and `NO_PROXY` naming the host with a deliberately non-matching port
+(`example.com:9999`) while the request goes to `:443`, so a surviving proxy hit proves the port
+was compared:
+
+| Runtime | no `NO_PROXY` | `example.com` | `example.com:9999` |
+|---|---|---|---|
+| curl 8.5.0 | 1 hit | 0 hits | 1 hit |
+| python3 `requests` 2.31.0 | 1 hit | 0 hits | 1 hit |
+| node v24.14.1, `NODE_USE_ENV_PROXY=1` | 1 hit | 0 hits | 1 hit |
+
+All three compare the port. Node is the one that needs care: without
+`NODE_USE_ENV_PROXY=1` it never proxies at all, so it never exempts either, and the two facts
+are easy to confuse. No claim is made about any runtime not in that table.
+
+So a `host:port` entry would work. It is still not shipped, because a narrower hole is
+a hole, and the reasons above are about what `NO_PROXY` IS rather than how portably it parses.
 
 None of these agents call AgentWall's dashboard anyway. You reach it from a browser or the CLI,
 and neither runs with the agent's proxy environment. Where an agent genuinely must reach a local

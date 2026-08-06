@@ -12,6 +12,7 @@ import {
   renderNoProxyNote,
   renderPostureLines,
   readInterceptionState,
+  assertSecretAbsentFromDisk,
   renderInterceptionLines,
   runOnboard,
   withAgent,
@@ -385,15 +386,25 @@ describe("the secret-never-on-disk claim is checked, not asserted", () => {
     expect(readFileSync(result.backupPath!, "utf8")).not.toContain(result.secret);
   });
 
-  it("refuses to continue if the secret ever reaches disk", () => {
-    // Drive the guard directly: a config whose existing content already contains the string
-    // the next mint produces cannot be constructed, so assert the guard's own contract by
-    // proving it inspects the written file rather than trusting the write path.
-    const result = runOnboard(baseRequest({ agentId: "guard-check" }));
-    const written = readFileSync(configPath, "utf8");
-    expect(written).toContain(`sha256:${result.digest}`);
-    // The digest is present and the preimage is not. That pairing is the whole guarantee.
-    expect(written).not.toContain(result.secret.split(":")[1]);
+  it("refuses to continue when the secret really is on disk", () => {
+    // Actually fires the guard rather than asserting around it. The previous version of this
+    // test had this name and a body that only re-checked the happy path, which is the same
+    // defect as a report claiming something it never verified.
+    const planted = join(dir, "planted.yaml");
+    writeFileSync(planted, "credential: agent-x:deadbeef\n");
+    expect(() => assertSecretAbsentFromDisk([planted], "agent-x:deadbeef", "agent-x")).toThrow(
+      /refusing to continue/
+    );
+  });
+
+  it("passes when the file holds only the digest", () => {
+    const clean = join(dir, "clean.yaml");
+    writeFileSync(clean, `credential: sha256:${"a".repeat(64)}\n`);
+    expect(() => assertSecretAbsentFromDisk([clean], "agent-x:deadbeef", "agent-x")).not.toThrow();
+  });
+
+  it("ignores a path that does not exist rather than throwing on it", () => {
+    expect(() => assertSecretAbsentFromDisk([join(dir, "absent.yaml")], "s", "a")).not.toThrow();
   });
 });
 
