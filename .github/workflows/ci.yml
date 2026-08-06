@@ -159,6 +159,13 @@ jobs:
       # fixed gap. The Python verifier needs no build step, so it joins the run from the
       # checkout. An implementation whose source tree is absent prints a note and sits out; one
       # whose source is present and whose binary is missing is a hard failure.
+      #
+      # Do not add a CONFORMANCE_SKIP_* variable to this step. They exist so a contributor
+      # without a Go or Rust toolchain can still run the harness locally, and setting one here
+      # would shrink the cross-comparison while every job stayed green, because each verifier
+      # also has its own job that tests it alone. Agreement between implementations is the
+      # thing this step buys that those jobs cannot; a skip spends it to make a red build go
+      # away. If a verifier cannot build in CI, fix the build or delete the verifier.
       - name: Conformance
         run: node scripts/conformance.js
 
