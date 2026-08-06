@@ -61,13 +61,10 @@ Two rendering conventions:
 
 ## Measured results
 
-Real output, not targets. Recorded 2026-08-05 on Node v24.14.1 against commit `96733e3`
-**plus uncommitted working-tree changes to `src/planes/identity/dlp.ts`** — the entropy,
-Luhn and checksum validators and the additional PII families were in the tree but not yet
-in that commit. A clean checkout of `96733e3` will produce different numbers, and several
-of the gaps below describe behaviour that does not exist there: gap 8 in particular names
-`ipv6-address` and `mac-address` patterns that the commit does not contain. Once those
-changes land, re-run and replace this section.
+Real output, not targets. Recorded on Node v24.14.1 against commit `43925ac`, which is the
+commit these numbers describe: the entropy, Luhn and checksum validators and the additional
+PII families are in it. The run was repeated after they landed and produced byte-identical
+figures.
 
 Re-run `npm run bench` to reproduce. These numbers move whenever a detector changes, and
 they are expected to.
