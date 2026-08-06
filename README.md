@@ -21,9 +21,12 @@ other two would have done, so you build the allowlist by reading your own ledger
 by breaking your tooling to find out. A firewall that starts by breaking your tooling gets
 switched off, and a switched-off firewall protects nothing.
 
-**Capture is cooperative.** The proxy is found through standard proxy environment variables. A
-process that ignores them egresses unseen. Nothing here installs iptables or nftables
-redirection. Agentwall raises the cost of unobserved egress; it does not make it impossible.
+**Capture is cooperative by default.** The proxy is found through standard proxy environment
+variables, and a process that ignores them egresses unseen. That assumption is removable: a
+perimeter runs the agent under its own UID and has nftables redirect that UID's outbound TCP
+into the proxy, so cooperation stops being required. It costs root, Linux, and a deliberate
+install, it is off unless you set it up, and DNS still leaves the host directly.
+See [docs/perimeter.md](docs/perimeter.md).
 
 The rest are in [Limits](#limits). They are not footnotes.
 
@@ -125,10 +128,15 @@ Full detail, including the conformance corpus and what verification does not pro
   frame through ordered gates: tool-poisoning and drift on the advertised inventory, secrets
   and injection in tool arguments, your policy rules, and injection in the tool output the
   agent is about to read. Same engine, same audit chain, either transport.
-- **An emergency stop with four independent sources.** Config, API, `SIGUSR1`, or a sentinel
-  file. Any one engages it, each releases only its own hold, and it overrides every mode
-  including monitor. The file channel is the one that still works when the HTTP surface is
-  wedged.
+- **Lockdown: an emergency stop with four independent sources.** Config, API, `SIGUSR1`, or a
+  flag file on disk. Any one engages it, each releases only its own hold, and it overrides
+  every mode including monitor. The file channel is the one that still works when the HTTP
+  surface is wedged.
+- **A perimeter that removes the cooperative-capture assumption.** `agentwall perimeter` runs
+  the agent under its own UID and generates nftables rules that redirect that UID's outbound
+  TCP into the proxy and drop the rest. The proxy then names the destination from the TLS SNI
+  or the HTTP `Host:` header, and refuses a connection it cannot name. Root and Linux, opt-in,
+  and `plan` prints the ruleset before anything touches your firewall.
 - **Egress capture with observed identity.** A CONNECT-aware forward proxy maps the client
   socket back to its owning process through `/proc/net/tcp` and `/proc/<pid>/fd`, so a record
   carries the real `pid` and `comm` even if the agent lies about who it is. Linux only.
@@ -166,7 +174,9 @@ Stated plainly, because a security tool that oversells itself is worse than no t
 | --- | --- |
 | Monitor by default | Enforcement is real but opt-in. Out of the box the proxy evaluates, records, and allows; `guarded` and `strict` are configured, not automatic. Installing this does not block anything until you say so. See [docs/enforcement.md](docs/enforcement.md). |
 | Only `deny` is enforceable on a socket | `approve` and `redact` verdicts are recorded and the request is allowed. A proxy has nowhere to put a held request and no way to rewrite a CONNECT body, so pretending otherwise would be worse than saying it. |
-| Cooperative capture | Proxy environment variables are honoured voluntarily. A process that ignores them egresses unobserved. No iptables or nftables redirection is installed. |
+| Cooperative capture, unless you install a perimeter | By default the proxy is found through environment variables a process may simply ignore. `agentwall perimeter` removes that with a dedicated UID and nftables redirection, but it is opt-in, needs root, and is Linux-only. Without it, unobserved egress stays possible. See [docs/perimeter.md](docs/perimeter.md). |
+| The perimeter does not contain DNS | The agent resolves names before it connects, so port 53 has to be permitted for anything to work. DNS is itself an exfiltration channel and this model does not close it. |
+| The perimeter ruleset is parser-verified, not kernel-verified | `nft` accepts the generated file as valid syntax, and a test checks that wherever `nft` is installed. Whether the kernel accepts the chain types, hooks, and `inet` NAT support at load time is settled by your first `install`. Run `plan`, read it, then install somewhere you can afford a refusal. |
 | Anchoring is pending, not instant | An OpenTimestamps anchor stays `pending` until a Bitcoin block confirms, roughly one to six hours. Pending is not proof. |
 | Anchoring proves no alteration, not completeness | An anchor shows that what was written was not altered afterwards. It cannot show that everything which should have been written was. |
 | A signature is necessary, not sufficient | On a host where the audited principal can read the signing key, an agent with root can sign anything the operator can. Off-box anchoring is what closes that gap. |
@@ -174,7 +184,7 @@ Stated plainly, because a security tool that oversells itself is worse than no t
 | No TLS interception | CONNECT traffic is visible at hostname and port level only. Paths, headers, and bodies stay opaque. MITM would need a CA in every runtime trust store, which breaks the framework-agnostic property the proxy exists for. |
 | Attribution is Linux-only | It reads `/proc/net/tcp` and `/proc/<pid>/fd`. There is no macOS or Windows equivalent. The rest of the server is portable; process attribution is not. |
 | Channel containment is Telegram only | Slack and Discord appear in the platform schema with no route implementation behind them. |
-| The watchdog does not auto-deny | It exposes heartbeat age and a kill-switch flag, and a rule denies on the `watchdog_timeout` label, but nothing wires staleness to that label automatically. Treat it as a signal you act on. |
+| The watchdog does not auto-deny | It exposes heartbeat age and a stop flag, and a rule denies on the `watchdog_timeout` label, but nothing wires staleness to that label automatically. Treat it as a signal you act on. |
 | Telemetry is off by default | The OTLP/HTTP decision-trace exporter is disabled unless configured. |
 | Bearer tokens, not identity | A shared token, not OIDC or mTLS. No identity-provider integration. |
 | Single host | Multiple instances can be polled into one summary view. There is no clustered or highly-available control plane. |
@@ -190,13 +200,13 @@ this project declines.
 ## Docs
 
 [Install](docs/install.md) · [Enforcement](docs/enforcement.md) ·
-[MCP](docs/mcp.md) · [Kill switch](docs/kill-switch.md) ·
+[Perimeter](docs/perimeter.md) · [MCP](docs/mcp.md) · [Lockdown](docs/lockdown.md) ·
 [Architecture](docs/architecture.md) · [Threat model](docs/threat-model.md) ·
 [Verification](docs/verification.md) · [Audit format](docs/audit-format.md) ·
-[API and configuration](docs/reference.md) · [Scan API](docs/scan-api.md) ·
-[Explain](docs/explain.md) · [Benchmark](docs/benchmark.md) ·
-[Compliance](docs/compliance.md) · [Canary tokens](docs/canary.md) ·
-[Filesystem sentinel](docs/filesystem-sentinel.md) ·
+[API and configuration](docs/reference.md) · [Probe API](docs/probe-api.md) ·
+[Why](docs/why.md) · [Benchmark](docs/benchmark.md) ·
+[Compliance](docs/compliance.md) · [Decoy tokens](docs/decoy.md) ·
+[Spill watch](docs/spill-watch.md) ·
 [FloodGuard](docs/runtime-floodguard.md) · [Tutorials](docs/tutorials/README.md) ·
 [Changelog](CHANGELOG.md)
 

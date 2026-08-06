@@ -12,7 +12,7 @@
  *
  * WHY THE INPUT IS `unknown` AND WHY IT INCLUDES `env`. Half of AgentWall's
  * security posture is not in the YAML file. The operator token, the audit file
- * path, the proxy port, and the kill-switch sentinel are all environment
+ * path, the proxy port, and the lockdown sentinel are all environment
  * variables, deliberately, because a security product should not invent a
  * location in $HOME or bake a credential into a file people commit. A scorer that
  * read only the config document would award a clean bill of health to a
@@ -495,14 +495,14 @@ export function scoreConfig(config: unknown): ConfigScore {
     }
   }
 
-  // 14. Kill switch. Scored on whether there is a way to stop the agent that does not
+  // 14. Lockdown. Scored on whether there is a way to stop the agent that does not
   // require the API to be healthy, which is exactly the situation you need it in.
   {
     const findings: string[] = [];
     let points = 0;
-    if (envValue(env, "AGENTWALL_KILLSWITCH_FILE")) {
+    if (envValue(env, "AGENTWALL_LOCKDOWN_FILE")) {
       points += 4;
-      findings.push("A sentinel file path is configured, so the kill switch works without a working API.");
+      findings.push("A sentinel file path is configured, so lockdown works without a working API.");
     } else {
       findings.push("No sentinel file: stopping the agent depends on the API or a signal reaching the process.");
     }
@@ -519,12 +519,12 @@ export function scoreConfig(config: unknown): ConfigScore {
       findings.push("watchdog.killSwitchMode is not deny_all, so a tripped watchdog does not stop action.");
     }
     add(
-      "killswitch.sentinel",
-      "Kill switch",
+      "lockdown.sentinel",
+      "Lockdown",
       8,
       points,
       findings,
-      'Set AGENTWALL_KILLSWITCH_FILE to a path you can touch from a shell, enable the watchdog, and set watchdog.killSwitchMode to "deny_all".'
+      'Set AGENTWALL_LOCKDOWN_FILE to a path you can touch from a shell, enable the watchdog, and set watchdog.killSwitchMode to "deny_all".'
     );
   }
 

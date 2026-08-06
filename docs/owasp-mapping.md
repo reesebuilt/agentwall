@@ -70,17 +70,17 @@ strength of a pattern table would be the exact failure this page exists to avoid
 
 ### LLM02 Sensitive Information Disclosure — `strong`
 
-Evidence: `src/planes/identity/dlp.ts`, `src/canary/index.ts`,
-`src/sentinel/filesystem.ts`, `det.content.secret.exfil`, `det.mcp.input.secret`,
-`det.mcp.response.secret`, `det.net.metadata.access`, `det.identity.canary.triggered`,
-`det.content.fs.secret_written`, `content:block-secret-exfil`, `content:redact-pii`,
+Evidence: `src/planes/identity/dlp.ts`, `src/decoy/index.ts`,
+`src/spill/watch.ts`, `det.content.secret.exfil`, `det.mcp.input.secret`,
+`det.mcp.response.secret`, `det.net.metadata.access`, `det.identity.decoy.triggered`,
+`det.content.spill.file_write`, `content:block-secret-exfil`, `content:redact-pii`,
 `mcp:redact-input-secret`, `mcp:redact-response-secret`,
 `channel:deny-sensitive-content-egress`, `channel:redact-pii-content-egress`,
-`net:block-metadata-endpoint`, `identity:deny-canary-triggered`,
-`content:deny-fs-secret-write`.
+`net:block-metadata-endpoint`, `identity:deny-decoy-triggered`,
+`content:deny-spill-file-write`.
 
 Known limits: the scanner is a pattern table, so a secret in a format it does not know — an
-internal token scheme, a bare high-entropy string — passes. Canary values close part of
+internal token scheme, a bare high-entropy string — passes. Decoy values close part of
 that hole by being synthetic and therefore unmistakable, but only for credentials someone
 planted on purpose. The harder limit is what the scanner is handed: https bodies through the
 forward proxy are opaque because that proxy does not terminate TLS, so egress of a secret
@@ -163,7 +163,7 @@ defensible claim on this page.
 ### LLM10 Unbounded Consumption — `strong`
 
 Evidence: `src/runtime/floodguard.ts`, `src/watchdog/heartbeat.ts`,
-`src/runtime/kill-switch.ts`, `governance:deny-watchdog-timeout`.
+`src/runtime/lockdown.ts`, `governance:deny-watchdog-timeout`.
 
 Known limits: the budget is denominated in AgentWall's own weighted cost units and request
 counts, not in provider tokens or currency, because AgentWall never sees a billing signal.
@@ -225,12 +225,12 @@ own tools, which is why the built-in set is a floor and not a finished policy.
 
 ### ASI03 Identity and Privilege Abuse — `partial`
 
-Evidence: `src/auth/operator.ts`, `src/canary/index.ts`, `det.identity.credential.access`,
-`det.net.metadata.access`, `det.browser.oauth.approval`, `det.identity.canary.triggered`,
-`det.content.fs.secret_written`, `identity:flag-credential-access`,
+Evidence: `src/auth/operator.ts`, `src/decoy/index.ts`, `det.identity.credential.access`,
+`det.net.metadata.access`, `det.browser.oauth.approval`, `det.identity.decoy.triggered`,
+`det.content.spill.file_write`, `identity:flag-credential-access`,
 `browser:require-approval-oauth`, `net:block-metadata-endpoint`,
-`channel:deny-sensitive-data-access`, `identity:deny-canary-triggered`,
-`content:deny-fs-secret-write`.
+`channel:deny-sensitive-data-access`, `identity:deny-decoy-triggered`,
+`content:deny-spill-file-write`.
 
 Known limits: credential acquisition is gated — reads of secret stores need approval, cloud
 metadata is blocked outright, and OAuth grants stop for a human. Identity itself is thin.
@@ -292,12 +292,12 @@ and transport authenticity is left to the transport.
 ### ASI08 Cascading Failures — `partial`
 
 Evidence: `src/runtime/floodguard.ts`, `src/watchdog/heartbeat.ts`,
-`src/runtime/kill-switch.ts`, `det.governance.killswitch.active`,
-`governance:deny-watchdog-timeout`, `governance:kill-switch`, `governance:log-all`.
+`src/runtime/lockdown.ts`, `det.governance.lockdown.active`,
+`governance:deny-watchdog-timeout`, `governance:lockdown`, `governance:log-all`.
 
 Known limits: blast radius is bounded locally — per-session rate and cost caps, a ceiling on
 pending approvals, shield mode to tighten every limit at once, a watchdog that stops
-governance changes when it fires, and a kill switch that refuses everything at once. None of
+governance changes when it fires, and a lockdown that refuses everything at once. None of
 that constitutes an understanding of the system a failure is cascading through. AgentWall
 has no dependency graph, no circuit breaker between agents, and no view of an agent whose
 calls do not pass through it, so it can stop its own agents and cannot stop a failure
@@ -319,15 +319,15 @@ and AgentWall records that a decision was made, not that it was understood.
 
 ### ASI10 Rogue Agents — `partial`
 
-Evidence: `src/watchdog/heartbeat.ts`, `src/runtime/kill-switch.ts`, `src/audit/logger.ts`,
-`src/audit/chain.ts`, `src/proxy/forward-proxy.ts`, `det.governance.killswitch.active`,
-`det.net.egress.blocked`, `governance:deny-watchdog-timeout`, `governance:kill-switch`,
+Evidence: `src/watchdog/heartbeat.ts`, `src/runtime/lockdown.ts`, `src/audit/logger.ts`,
+`src/audit/chain.ts`, `src/proxy/forward-proxy.ts`, `det.governance.lockdown.active`,
+`det.net.egress.blocked`, `governance:deny-watchdog-timeout`, `governance:lockdown`,
 `governance:log-all`, `control:deny-external-actions-answer-only`,
 `net:deny-egress-not-allowlisted`.
 
 Known limits: an agent that stops heart-beating, trips rules, or reaches an unlisted
 destination is detectable, the audit chain makes the sequence reconstructible afterwards
-because records cannot be edited without breaking the hash links, and the kill switch
+because records cannot be edited without breaking the hash links, and the lockdown
 refuses every action that reaches it. That is containment of the agent's *actions*, not of
 the agent: AgentWall cannot terminate a process, revoke a credential it did not issue, or
 see an agent that was never pointed at it. An operator holding the emergency stop still
@@ -358,11 +358,11 @@ through. Downgrading is the only direction that cannot mislead.
 | `T1098.001` | Additional Cloud Credentials | `partial` | `browser:require-approval-oauth` (approve) |
 | `T1562` | Impair Defenses | `partial` | `tool:approve-manifest-drift` (approve) |
 | `T1195` | Supply Chain Compromise | `partial` | `mcp:deny-tool-poisoning` (deny), `mcp:approve-tool-drift` (approve) |
-| `T1552` | Unsecured Credentials | `partial` | `mcp:redact-input-secret` (redact), `mcp:redact-response-secret` (redact), `identity:deny-canary-triggered` (deny) |
+| `T1552` | Unsecured Credentials | `partial` | `mcp:redact-input-secret` (redact), `mcp:redact-response-secret` (redact), `identity:deny-decoy-triggered` (deny) |
 | `T1059` | Command and Scripting Interpreter | `strong` | `mcp:deny-input-injection` (deny), `mcp:deny-response-injection` (deny) |
 | `T1071` | Application Layer Protocol | `strong` | `net:deny-egress-not-allowlisted` (deny) |
-| `T1489` | Service Stop | `strong` | `governance:kill-switch` (deny) |
-| `T1552.001` | Credentials In Files | `strong` | `content:deny-fs-secret-write` (deny) |
+| `T1489` | Service Stop | `strong` | `governance:lockdown` (deny) |
+| `T1552.001` | Credentials In Files | `strong` | `content:deny-spill-file-write` (deny) |
 
 Two things this table does not mean. **Absence is not "not applicable":** a technique missing
 from this list means no detection in this codebase names it, and ATT&CK has hundreds. And the

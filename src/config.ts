@@ -74,6 +74,27 @@ export interface AgentwallConfig {
    * Consumers resolve it as `config.enforcement?.mode ?? "monitor"`.
    */
   enforcement?: { mode: EnforcementMode };
+  /**
+   * Transparent listener for kernel-redirected egress: the perimeter's data path.
+   *
+   * Absent means the listener does not start, which is the right default because it is only
+   * useful once nftables is redirecting an agent UID's outbound TCP at it. Starting it
+   * unbidden would open a second listening port on every upgraded install for no benefit.
+   *
+   * Optional in the type for the same reason `enforcement` is: a required field would force
+   * every config literal already written against this interface to be edited for a section
+   * that has a perfectly good "off". `host` defaults to 127.0.0.1, matching everything else
+   * this process binds. Consumers resolve it as `config.transparent?.port`.
+   *
+   * `tlsPort` is the port a TLS destination is assumed to be on, default 443. SNI names a
+   * host and nothing else, and the redirect has already replaced the socket's local port with
+   * the proxy's, so the original port is not recoverable from a captured connection — the
+   * listener has to be told. It MUST agree with the ports the nftables ruleset actually
+   * redirects. If the ruleset captures a TLS port this does not name, those connections are
+   * resolved to the right host and then opened against this port instead: the wrong service,
+   * with an allow verdict that was evaluated against a destination the agent never asked for.
+   */
+  transparent?: { port: number; host?: string; tlsPort?: number };
   manifestIntegrity: {
     enabled: boolean;
     approvedHashesPath?: string;

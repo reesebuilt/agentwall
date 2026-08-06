@@ -1,4 +1,4 @@
-# Scan API
+# Probe API
 
 A programmatic way to ask AgentWall for a verdict on content you already hold, without
 routing it through the proxy.
@@ -9,12 +9,12 @@ CI job, a pre-commit hook, or another service often has content it wants judged 
 fetched URL before an agent visits it, a diff before it is committed, tool output before it is
 handed to a model.
 
-Read the [Limits](#limits) section before you build a gate on top of this. A scan verdict is a
+Read the [Limits](#limits) section before you build a gate on top of this. A probe verdict is a
 narrower claim than it looks.
 
 ## Authentication
 
-Every scan route is protected. There is no public path here: send the operator bearer token on
+Every probe route is protected. There is no public path here: send the operator bearer token on
 every request.
 
 ```bash
@@ -32,9 +32,9 @@ Without a valid token, all five endpoints return `401`.
 | Batch items | 100 | `413 Batch too large` |
 | Whole request body | 1 MiB (Fastify default) | `413`, before the route is reached |
 
-256 KiB is the injection scanner's own work cap. A larger field would be scanned only up to
+256 KiB is the injection scanner's own work cap. A larger field would be probed only up to
 that point, and returning a verdict over a prefix while implying it covered the whole input is
-worse than refusing it, so the request is refused. Split the input and scan it in parts.
+worse than refusing it, so the request is refused. Split the input and probe it in parts.
 
 A validation failure returns `400` with the field-level problem:
 
@@ -45,13 +45,13 @@ A validation failure returns `400` with the field-level problem:
 }
 ```
 
-## POST /scan/url
+## POST /probe/url
 
 Inspects a URL for intrinsic target risk: cloud metadata endpoints, private and link-local
 addresses, embedded credentials, and non-HTTPS schemes or ports.
 
 ```bash
-curl -sS localhost:3000/scan/url \
+curl -sS localhost:3000/probe/url \
   -H "Authorization: Bearer $AGENTWALL_TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{"url":"http://169.254.169.254/latest/meta-data/iam/security-credentials/"}'
@@ -87,7 +87,7 @@ curl -sS localhost:3000/scan/url \
 An ordinary link comes back clean:
 
 ```bash
-curl -sS localhost:3000/scan/url \
+curl -sS localhost:3000/probe/url \
   -H "Authorization: Bearer $AGENTWALL_TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{"url":"https://docs.example.com/guide/getting-started"}'
@@ -112,12 +112,12 @@ check it exists to serve. The HTTPS/443 defaults are still applied, because plai
 ports are properties of the target rather than of anyone's allowlist. To ask the allowlist
 question, use `/inspect/network`, which uses the configured egress policy.
 
-## POST /scan/dlp
+## POST /probe/dlp
 
-Scans text for secret material and personal data.
+Probes text for secret material and personal data.
 
 ```bash
-curl -sS localhost:3000/scan/dlp \
+curl -sS localhost:3000/probe/dlp \
   -H "Authorization: Bearer $AGENTWALL_TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{"text":"deploy with AKIAIOSFODNN7EXAMPLE from the build host"}'
@@ -149,7 +149,7 @@ The response names the pattern that matched and never the value that matched it.
 `"redact": true` to get your own text back with each match masked:
 
 ```bash
-curl -sS localhost:3000/scan/dlp \
+curl -sS localhost:3000/probe/dlp \
   -H "Authorization: Bearer $AGENTWALL_TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{"text":"deploy with AKIAIOSFODNN7EXAMPLE from the build host","redact":true}'
@@ -186,12 +186,12 @@ every extra copy of a credential is another thing to rotate after an incident.
 `decision` is `redact` rather than `deny` because masking is the remediation that exists for
 content you already hold. Whether to escalate past that is yours to decide.
 
-## POST /scan/injection
+## POST /probe/injection
 
-Scans text for prompt-injection patterns across every normalization pass.
+Probes text for prompt-injection patterns across every normalization pass.
 
 ```bash
-curl -sS localhost:3000/scan/injection \
+curl -sS localhost:3000/probe/injection \
   -H "Authorization: Bearer $AGENTWALL_TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{"text":"Ignore all previous instructions."}'
@@ -234,13 +234,13 @@ original text and are left exactly as they arrived; the finding is the signal th
 `decision` is advisory on this endpoint. It is `deny` for high and critical findings and
 `approve` for anything lower — no policy rule was consulted.
 
-## POST /scan/tool-call
+## POST /probe/tool-call
 
 Evaluates a proposed tool call through the policy engine on the `tool` plane. Unlike the other
 four, this endpoint returns a real policy outcome, with the rules that produced it.
 
 ```bash
-curl -sS localhost:3000/scan/tool-call \
+curl -sS localhost:3000/probe/tool-call \
   -H "Authorization: Bearer $AGENTWALL_TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{"agentId":"ci-agent","tool":"shell.exec","arguments":{"command":"ls -la"}}'
@@ -265,13 +265,13 @@ call. When no rule matches, the engine's configured default decision applies and
 `reasons` as `Default decision: <decision>`; under the shipped default of `deny` an unmatched
 call is reported flagged. That is the policy speaking, not a detection.
 
-## POST /scan/batch
+## POST /probe/batch
 
-Up to 100 items in one request, each scanned with one of the three detector endpoints and
+Up to 100 items in one request, each probed with one of the three detector endpoints and
 returned keyed by the `id` you supplied.
 
 ```bash
-curl -sS localhost:3000/scan/batch \
+curl -sS localhost:3000/probe/batch \
   -H "Authorization: Bearer $AGENTWALL_TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{"items":[
@@ -283,7 +283,7 @@ curl -sS localhost:3000/scan/batch \
 
 ```json
 {
-  "scanned": 3,
+  "probed": 3,
   "flagged": 2,
   "results": {
     "docs-link": {
@@ -345,8 +345,8 @@ Batch semantics:
 
 - Each entry has the same shape as the corresponding single-item endpoint, plus `id` and
   `kind` so a result is self-describing when it is passed on somewhere else.
-- **Nothing is truncated.** 101 items returns `413` and scans none of them. A caller that sent
-  150 items and received 100 results would hold 50 unscanned inputs it believes are clean, and
+- **Nothing is truncated.** 101 items returns `413` and probes none of them. A caller that sent
+  150 items and received 100 results would hold 50 unprobed inputs it believes are clean, and
   that is a silent failure at exactly the wrong layer.
 - **Ids must be unique.** Duplicates return `400`, because results are keyed by id and a
   collision would report one item's verdict as another's.
@@ -358,9 +358,9 @@ Batch semantics:
 
 ## What lands in the audit chain
 
-Every scan writes one record through the same hash-linked chain as every other decision, so
-scanning activity is as accountable as proxied traffic. The record carries the plane, the
-action (`scan_url`, `scan_dlp`, `scan_injection`, or the tool name), the verdict, the input
+Every probe writes one record through the same hash-linked chain as every other decision, so
+probing activity is as accountable as proxied traffic. The record carries the plane, the
+action (`probe_url`, `probe_dlp`, `probe_injection`, or the tool name), the verdict, the input
 size in bytes, and the finding count.
 
 It does not carry the input. The chain is durable, frequently shipped off-box, and designed to
@@ -370,7 +370,7 @@ credentials. Two consequences worth stating plainly:
 - The detector routes record `matchedRules: []` and `detections: []`, because no policy rule
   was consulted and claiming rule ids that were never evaluated would put a false statement
   into a record whose only value is being true.
-- `/scan/url` records name the target **hostname**, because a network verdict without its
+- `/probe/url` records name the target **hostname**, because a network verdict without its
   target is unactionable. The full URL is never recorded, since query strings routinely carry
   tokens.
 
@@ -378,19 +378,19 @@ credentials. Two consequences worth stating plainly:
 
 Read these as constraints on what a verdict from this API can support, not as caveats.
 
-**A scan is a point-in-time verdict on content you handed over.** It says something about
+**A probe is a point-in-time verdict on content you handed over.** It says something about
 those bytes at that moment. It says nothing about what your agent did, will do, or did with
-the content afterwards. A clean scan followed by an agent exfiltrating the same data through a
+the content afterwards. A clean probe followed by an agent exfiltrating the same data through a
 channel AgentWall does not sit on is entirely consistent. Only the inline paths — the proxy
 and the MCP gates — observe behaviour; this API observes submissions.
 
 **The API sees only what the caller sends.** A caller that submits nothing gets no findings,
 and a caller that submits a summary gets a verdict on the summary. Nothing here can confirm
-that what you scanned is what was used. If the property you need is "everything the agent
-touched was scanned", that property has to come from putting AgentWall in the path, not from
+that what you probed is what was used. If the property you need is "everything the agent
+touched was probed", that property has to come from putting AgentWall in the path, not from
 calling this endpoint more often.
 
-**Results reflect the rules and patterns loaded in that process.** `/scan/tool-call` returns
+**Results reflect the rules and patterns loaded in that process.** `/probe/tool-call` returns
 the decision of the engine as configured right now, including its default decision and any
 declarative rules loaded from disk; the same request against a differently configured
 AgentWall can legitimately return a different verdict. `patternsEvaluated` reports the size of

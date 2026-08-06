@@ -1,8 +1,8 @@
 import { normalizeHostname } from "../planes/network/ssrf";
-import { killSwitchState } from "./kill-switch";
+import { lockdownState } from "./lockdown";
 import type { PolicyEngine } from "../policy/engine";
 import type { AgentContext, Decision, PolicyResult, RiskLevel } from "../types";
-import type { KillSwitchState } from "./kill-switch";
+import type { LockdownState } from "./lockdown";
 
 /**
  * Egress enforcement: the point at which AgentWall stops being only a recorder.
@@ -67,8 +67,8 @@ export interface EgressVerdict {
 
 const EGRESS_ALLOWLIST_RULE_ID = "net:deny-egress-not-allowlisted";
 const EGRESS_BLOCKED_DETECTION_ID = "det.net.egress.blocked";
-const KILL_SWITCH_RULE_ID = "governance:kill-switch";
-const KILL_SWITCH_DETECTION_ID = "det.governance.killswitch.active";
+const LOCKDOWN_RULE_ID = "governance:lockdown";
+const LOCKDOWN_DETECTION_ID = "det.governance.lockdown.active";
 
 const RISK_ORDER: Record<RiskLevel, number> = { low: 0, medium: 1, high: 2, critical: 3 };
 
@@ -108,7 +108,7 @@ function isAllowlisted(host: string): boolean {
 function buildContext(
   attempt: EgressAttempt,
   mode: EnforcementMode,
-  kill: KillSwitchState,
+  lockdown: LockdownState,
   allowlisted: boolean
 ): AgentContext {
   const authority = `${attempt.host}:${attempt.port}`;
@@ -135,7 +135,7 @@ function buildContext(
       // answer. It keeps the rule set free of imports from the runtime that calls it.
       enforcementMode: mode,
       egressAllowlisted: allowlisted ? "true" : "false",
-      killSwitchActive: kill.active ? "true" : "false",
+      lockdownActive: lockdown.active ? "true" : "false",
     },
     flow: { direction: "egress" },
   };
@@ -167,10 +167,10 @@ function pushUnique(target: string[], value: string): void {
   if (!target.includes(value)) target.push(value);
 }
 
-function describeKillSwitch(kill: KillSwitchState): string {
-  const sources = kill.sources.length > 0 ? kill.sources.join(", ") : "unknown";
-  const because = kill.reason ? `: ${kill.reason}` : "";
-  return `kill switch active (sources: ${sources})${because}`;
+function describeLockdown(lockdown: LockdownState): string {
+  const sources = lockdown.sources.length > 0 ? lockdown.sources.join(", ") : "unknown";
+  const because = lockdown.reason ? `: ${lockdown.reason}` : "";
+  return `lockdown active (sources: ${sources})${because}`;
 }
 
 /**
@@ -181,10 +181,10 @@ function enforce(
   attempt: EgressAttempt,
   mode: "guarded" | "strict",
   engine: PolicyEngine,
-  kill: KillSwitchState
+  lockdown: LockdownState
 ): EgressVerdict {
   const allowlisted = isAllowlisted(attempt.host);
-  const result = engine.evaluate(buildContext(attempt, mode, kill, allowlisted));
+  const result = engine.evaluate(buildContext(attempt, mode, lockdown, allowlisted));
 
   const reasons = policyReasons(result);
   const matchedRules = [...result.matchedRules];
@@ -253,14 +253,14 @@ function enforce(
 /**
  * Decide what happens to one egress attempt.
  *
- * The kill switch is checked first and overrides the mode, INCLUDING MONITOR. This is the
+ * The lockdown is checked first and overrides the mode, INCLUDING MONITOR. This is the
  * one place monitor mode does not merely observe, and it is deliberate: an emergency stop
  * that the majority of deployments ignore because they have not finished their adoption
- * path is not an emergency stop, it is a status field. An operator who pulls the switch has
+ * path is not an emergency stop, it is a status field. An operator who engages the lockdown has
  * decided that the blast radius of stopping everything is smaller than the blast radius of
  * continuing, and monitor mode is not entitled to second-guess that. The cost is real and
  * worth naming: enabling AgentWall in monitor mode does hand a component the ability to
- * halt all proxied egress, which is why the switch has an explicit, audited activation
+ * halt all proxied egress, which is why the lockdown has an explicit, audited activation
  * rather than being inferred from health.
  */
 export function decideEgress(
@@ -268,20 +268,20 @@ export function decideEgress(
   mode: EnforcementMode,
   engine: PolicyEngine
 ): EgressVerdict {
-  const kill = killSwitchState();
+  const lockdown = lockdownState();
 
-  if (kill.active) {
+  if (lockdown.active) {
     // Evaluated anyway, so the ledger keeps whatever else was wrong with this destination
     // rather than recording only the stop. The verdict is not derived from the result.
-    const result = engine.evaluate(buildContext(attempt, mode, kill, isAllowlisted(attempt.host)));
+    const result = engine.evaluate(buildContext(attempt, mode, lockdown, isAllowlisted(attempt.host)));
     const matchedRules = [...result.matchedRules];
     const detectionIds = result.detections.map((detection) => detection.id);
-    pushUnique(matchedRules, KILL_SWITCH_RULE_ID);
-    pushUnique(detectionIds, KILL_SWITCH_DETECTION_ID);
+    pushUnique(matchedRules, LOCKDOWN_RULE_ID);
+    pushUnique(detectionIds, LOCKDOWN_DETECTION_ID);
     return {
       decision: "deny",
       riskLevel: "critical",
-      reasons: [describeKillSwitch(kill), ...policyReasons(result)],
+      reasons: [describeLockdown(lockdown), ...policyReasons(result)],
       matchedRules,
       detectionIds,
       mode,
@@ -294,8 +294,8 @@ export function decideEgress(
     // rules, a heuristic on the host — could disagree with what the mode actually does, and
     // a projection an operator cannot trust is worse than none: it invites the switch to
     // strict that takes production down.
-    const guarded = enforce(attempt, "guarded", engine, kill);
-    const strict = enforce(attempt, "strict", engine, kill);
+    const guarded = enforce(attempt, "guarded", engine, lockdown);
+    const strict = enforce(attempt, "strict", engine, lockdown);
     return {
       decision: "allow",
       // Guarded's risk, not the higher of the two. Every rule-driven finding already shows
@@ -323,5 +323,5 @@ export function decideEgress(
     };
   }
 
-  return enforce(attempt, mode, engine, kill);
+  return enforce(attempt, mode, engine, lockdown);
 }

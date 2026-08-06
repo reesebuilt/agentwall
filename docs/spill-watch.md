@@ -1,10 +1,10 @@
-# Filesystem sentinel
+# Spill watch
 
 AgentWall watches egress. An agent that harvests a credential and writes it into a file in
 its own workspace has not sent anything anywhere yet, so nothing in the network plane sees
 it — and that write is the step that happens first. The commit, the upload, or the person who
-later pastes the file into a chat all come after. The filesystem sentinel watches the
-directories you name and reports credential material appearing in them.
+later pastes the file into a chat all come after. Spill watch observes the directories
+you name and reports credential material appearing in them.
 
 It is an observer, not a gate. By the time an event arrives the bytes are already on disk.
 What you get is the write recorded in the audit chain at the moment it happened, instead of
@@ -17,9 +17,9 @@ your home directory.
 ## Starting it
 
 ```ts
-import { startFilesystemSentinel } from "@repsecure/agentwall/dist/sentinel/filesystem";
+import { startSpillWatch } from "@repsecure/agentwall/dist/spill/watch";
 
-const sentinel = await startFilesystemSentinel({
+const watcher = await startSpillWatch({
   paths: ["/srv/agent/workspace", "/srv/agent/scratch"],
   onFinding: (finding) => {
     console.error(`credential written: ${finding.path} (${finding.secretTypes.join(", ")})`);
@@ -27,11 +27,11 @@ const sentinel = await startFilesystemSentinel({
 });
 
 // ... later
-await sentinel.close();
+await watcher.close();
 ```
 
-`startFilesystemSentinel` rejects if a named path does not exist or is not a directory. That
-is deliberate: the sentinel's characteristic failure is being pointed at nothing and saying
+`startSpillWatch` rejects if a named path does not exist or is not a directory. That
+is deliberate: the spill watch's characteristic failure is being pointed at nothing and saying
 nothing about it, so a typo fails at start-up rather than at review time.
 
 ## Options
@@ -39,7 +39,7 @@ nothing about it, so a typo fails at start-up rather than at review time.
 | Option | Default | What it does |
 | --- | --- | --- |
 | `paths` | required | Directories to watch, recursively. |
-| `onFinding` | required | Called once per finding. Throwing from it drops that report, not the sentinel. |
+| `onFinding` | required | Called once per finding. Throwing from it drops that report, not the spill watch. |
 | `ignore` | `[]` | Extra ignores, added to the built-in list. See below. |
 | `maxFileBytes` | `1048576` | Files larger than this are skipped without being read. |
 | `debounceMs` | `100` | Events for one path inside this window collapse into a single scan. |
@@ -76,16 +76,16 @@ removed underneath it. Both cases are detected, and the affected root switches t
 periodic re-scan: a walk that compares each file's size, mtime and inode against the previous
 pass and scans whatever changed.
 
-There is a third case the sentinel cannot detect, and you have to handle yourself. On network
+There is a third case the spill watch cannot detect, and you have to handle yourself. On network
 filesystems (NFS, SMB) and some container bind mounts, inotify never sees a write made by the
 other side of the mount. The native watch reports nothing, forever, while looking perfectly
 healthy. Pass `mode: "rescan"` for roots on those filesystems.
 
-Degradation is visible, because a sentinel that quietly stopped watching is worse than no
-sentinel:
+Degradation is visible, because a watch that quietly stopped watching is worse than no
+watch at all:
 
 ```ts
-const stats = sentinel.stats();
+const stats = watcher.stats();
 // { scanned, skipped, findings, degraded, roots: [{ path, mode, degradedReason, truncated }] }
 ```
 
@@ -95,7 +95,7 @@ const stats = sentinel.stats();
   mode you asked for and is not a fault.
 - `roots[].truncated` means the last re-scan pass hit `rescanEntryCap` and did not see the
   whole tree. Raise the cap or watch a narrower path.
-- `skipped` counts candidates the sentinel declined: too large, binary, vanished before it
+- `skipped` counts candidates the spill watch declined: too large, binary, vanished before it
   could be read, not a regular file, or unreadable. Unreadable directories add one per pass, so
   a `skipped` that climbs while nothing is being written is a permissions problem rather than
   activity. Ignored paths are not counted — they were never candidates.
@@ -113,18 +113,18 @@ const stats = sentinel.stats();
 ```
 
 And what it deliberately does not contain: the file's contents, the matched text, and any
-excerpt around it. A sentinel that quoted the credential it found would copy that credential
+excerpt around it. A spill watch that quoted the credential it found would copy that credential
 into the finding, into the audit chain, and into whatever your handler does with it —
 recreating the exposure it exists to report, in a file that is often more widely readable than
 the original. The type name and the size are enough to find the file and act.
 
 Each finding also joins the audit chain as an event with plane `content`, action
-`fs:secret-written`, decision `deny`, and risk `high`, carrying the same fields and nothing
+`spill:file-write`, decision `deny`, and risk `high`, carrying the same fields and nothing
 more. The decision is a verdict, not an intervention: the write already completed. Recording
 it as an allow would tell an analyst reading the chain that staging a credential on disk was
 considered acceptable.
 
-The event's agent id is the fixed string `filesystem-sentinel`, which names the observer and
+The event's agent id is the fixed string `spill-watch`, which names the observer and
 not the writer — see the limits below.
 
 PII alone is not a finding. The PII patterns include a plain email address, which appears in
@@ -137,7 +137,7 @@ found in a file that also carries a secret is reported alongside it as context.
   is invisible. There is no ambient coverage of the filesystem.
 - **It cannot say who wrote the file.** `fs.watch` reports that a path changed; it does not
   report which process changed it. Per-write process attribution is not something the OS
-  offers through this interface, so the audit record names the sentinel as the observer and
+  offers through this interface, so the audit record names the spill watch as the observer and
   makes no claim about the writer. Correlating a finding with a process is your job, using the
   timestamp and whatever process accounting you already run.
 - **A write followed by a delete faster than `debounceMs` can be missed.** The scan happens

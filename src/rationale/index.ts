@@ -7,7 +7,7 @@ import { builtinRules } from "../policy/rules";
 import { AgentContext, Decision, EgressPolicy, PolicyResult } from "../types";
 
 /**
- * `explain` - which check fired, and the narrowest knob that silences that one
+ * `why` - which check fired, and the narrowest knob that silences that one
  * finding.
  *
  * The failure mode this exists to prevent: a scanner fires on something benign,
@@ -32,7 +32,7 @@ import { AgentContext, Decision, EgressPolicy, PolicyResult } from "../types";
  * evaluated at all from a subject typed on a command line.
  *
  * Limits, stated here because they bound every result this module returns:
- * explain re-runs the scanners in this process against the argument it was
+ * `why` re-runs the scanners in this process against the argument it was
  * given. It shows what WOULD happen to that input under the rules loaded into the
  * engine it was handed, not what did happen to a real request. It never reads
  * your config file, so it does not know your egress allowlist and cannot explain
@@ -41,9 +41,9 @@ import { AgentContext, Decision, EgressPolicy, PolicyResult } from "../types";
  * ruled out.
  */
 
-export type ExplainKind = "url" | "text" | "tool";
+export type RationaleKind = "url" | "text" | "tool";
 
-export interface ExplainFinding {
+export interface RationaleFinding {
   /** Which scanner produced this: "ssrf", "dlp", "injection", or "policy". */
   scanner: string;
   /** Where in the request pipeline that scanner sits. */
@@ -59,10 +59,10 @@ export interface ExplainFinding {
   narrowestKnob: string;
 }
 
-export interface ExplainResult {
+export interface RationaleResult {
   subject: string;
-  kind: ExplainKind;
-  findings: ExplainFinding[];
+  kind: RationaleKind;
+  findings: RationaleFinding[];
   decision: string;
   /** Populated only when nothing matched, listing what was actually checked. */
   cleanReason?: string;
@@ -112,12 +112,12 @@ const PROVENANCE_CAVEAT =
   "trust label, so rules keyed on untrusted or derived content were neither matched nor ruled out";
 
 /**
- * The egress policy explain evaluates against.
+ * The egress policy `why` evaluates against.
  *
  * `defaultDeny` is off, and that is the one deliberate difference from what a
  * server would use. Under the shipped default every host that is not in your
- * allowlist is blocked - and explain does not read your config, so it does not
- * know your allowlist. Leaving default-deny on would make explain answer "not
+ * allowlist is blocked - and `why` does not read your config, so it does not
+ * know your allowlist. Leaving default-deny on would make `why` answer "not
  * allowlisted" for every URL anyone ever asks about, which is both useless and
  * misleading. With it off, the host, scheme, port, and credential checks still
  * run exactly as shipped, and the allowlist question is reported as a check that
@@ -126,10 +126,10 @@ const PROVENANCE_CAVEAT =
  * Callers that do know the deployed policy can pass it in, and the allowlist
  * branch is then reported like any other check.
  */
-const EXPLAIN_EGRESS_BASELINE: EgressPolicy = { ...DEFAULT_EGRESS_POLICY, defaultDeny: false };
+const RATIONALE_EGRESS_BASELINE: EgressPolicy = { ...DEFAULT_EGRESS_POLICY, defaultDeny: false };
 
 interface Scored {
-  finding: ExplainFinding;
+  finding: RationaleFinding;
   /** What this finding alone would drive the decision to. */
   implied: Decision;
 }
@@ -140,12 +140,12 @@ interface Accumulator {
   checks: string[];
 }
 
-function finish(acc: Accumulator, subject: string, kind: ExplainKind, seed: Decision): ExplainResult {
+function finish(acc: Accumulator, subject: string, kind: RationaleKind, seed: Decision): RationaleResult {
   const decision = acc.scored.reduce(
     (best, entry) => (DECISION_PRECEDENCE[entry.implied] > DECISION_PRECEDENCE[best] ? entry.implied : best),
     seed,
   );
-  const result: ExplainResult = {
+  const result: RationaleResult = {
     subject,
     kind,
     findings: acc.scored.map((entry) => entry.finding),
@@ -239,13 +239,13 @@ function egressKnob(
         surface: "url",
         knob:
           "none, and none is wanted: the URL did not parse, so no check has run yet and there is nothing to " +
-          "suppress. Fix the URL and run explain again.",
+          "suppress. Fix the URL and run agentwall why again.",
       };
     default:
       return {
         surface: "url",
         knob:
-          `unknown to explain: the egress inspector reported category "${category}", which this build has no knob ` +
+          `unknown to agentwall why: the egress inspector reported category "${category}", which this build has no knob ` +
           "mapping for. Quote that category verbatim when you report it rather than guessing at a setting.",
       };
   }
@@ -267,7 +267,7 @@ interface DlpHit {
  * PII is reported a step lower than secret material because severity here is not
  * a guess about the pattern's confidence: without a flow, an email address is a
  * fact about the text, while a credential is a fact about what happens if the
- * text moves. The shipped rules escalate secrets on an egress flow, which explain
+ * text moves. The shipped rules escalate secrets on an egress flow, which `why`
  * cannot see.
  */
 function collectDlp(acc: Accumulator, surface: string, text: string, surfaceNote = ""): void {
@@ -349,7 +349,7 @@ function collectPolicy(acc: Accumulator, result: PolicyResult, engine: PolicyEng
     // stays the reliable source for the sentence even if a rule object cannot be
     // read back out of the engine.
     const reason = result.reasons[position] ?? `Rule ${ruleId} matched`;
-    const description = rule?.description ?? "see the rule definition; explain could not read it back from the engine";
+    const description = rule?.description ?? "see the rule definition; agentwall why could not read it back from the engine";
 
     // Why a builtin rule gets "no config knob": the engine is always constructed
     // as [...builtinRules, ...fileRules], and `enabled: false` is honoured only
@@ -405,16 +405,16 @@ function safeDecode(value: string): string {
  * pack tuned for instructions over a path produces noise with no corresponding
  * runtime behaviour. Pass the query string as text if you want it scanned that way.
  */
-export function explainUrl(url: string, engine: PolicyEngine, egress?: Partial<EgressPolicy>): ExplainResult {
+export function rationaleForUrl(url: string, engine: PolicyEngine, egress?: Partial<EgressPolicy>): RationaleResult {
   const acc: Accumulator = { scored: [], checks: [] };
-  const policy: EgressPolicy = { ...EXPLAIN_EGRESS_BASELINE, ...egress };
+  const policy: EgressPolicy = { ...RATIONALE_EGRESS_BASELINE, ...egress };
 
   const inspection = inspectNetworkRequest({ url, method: "GET" }, policy);
   acc.checks.push(
     "the egress inspector checked host, scheme, port, and embedded credentials" +
       (policy.defaultDeny
         ? `, against an allowlist of ${quoteList(policy.allowedHosts)}`
-        : " (the allowlist check was not evaluated: explain does not read your config, so egress.defaultDeny is " +
+        : " (the allowlist check was not evaluated: agentwall why does not read your config, so egress.defaultDeny is " +
           "off here and a live request may still require the host to be allowlisted)"),
   );
 
@@ -476,7 +476,7 @@ export function explainUrl(url: string, engine: PolicyEngine, egress?: Partial<E
   // Direction is egress because an explained URL is by definition an outbound
   // request. Provenance is left off rather than invented - see PROVENANCE_CAVEAT.
   const ctx: AgentContext = {
-    agentId: "explain",
+    agentId: "why",
     plane: "network",
     action: "http_request",
     payload: { url },
@@ -502,7 +502,7 @@ export function explainUrl(url: string, engine: PolicyEngine, egress?: Partial<E
  * content-plane rule to - secrets get redacted, injection gets denied - and not a
  * promise about a specific request.
  */
-export function explainText(text: string): ExplainResult {
+export function rationaleForText(text: string): RationaleResult {
   const acc: Accumulator = { scored: [], checks: [] };
 
   collectDlp(acc, "text", text);
@@ -553,11 +553,11 @@ function flattenStrings(value: unknown, path: string, out: FlatString[]): void {
  * cost is a scan per string, which is the right trade for an operator-driven
  * command: the inline gates are where hostile volume has to be bounded, not here.
  */
-export function explainToolCall(
+export function rationaleForToolCall(
   tool: string,
   args: Record<string, unknown>,
   engine: PolicyEngine,
-): ExplainResult {
+): RationaleResult {
   const acc: Accumulator = { scored: [], checks: [] };
 
   const leaves: FlatString[] = [];
@@ -574,7 +574,7 @@ export function explainToolCall(
   );
 
   const ctx: AgentContext = {
-    agentId: "explain",
+    agentId: "why",
     plane: "tool",
     action: tool,
     payload: args,
@@ -592,10 +592,10 @@ export function explainToolCall(
 
 // --- CLI surface ------------------------------------------------------------
 
-export type ExplainFlags = Record<string, string | boolean>;
+export type RationaleFlags = Record<string, string | boolean>;
 
-export interface ExplainRequest {
-  kind: ExplainKind;
+export interface RationaleRequest {
+  kind: RationaleKind;
   /** The URL, the text, or the tool name. */
   subject: string;
   /** Tool name for the tool kind; equal to `subject` there, empty otherwise. */
@@ -604,8 +604,8 @@ export interface ExplainRequest {
   json: boolean;
 }
 
-export const EXPLAIN_USAGE =
-  "Usage: agentwall explain <subject> [--kind url|text|tool] [--tool <name>] [--args <json>] [--json]";
+export const WHY_USAGE =
+  "Usage: agentwall why <subject> [--kind url|text|tool] [--tool <name>] [--args <json>] [--json]";
 
 /**
  * Infer the kind from the subject.
@@ -617,7 +617,7 @@ export const EXPLAIN_USAGE =
  * like `docs.example.com/guide` is genuinely ambiguous with prose and is treated
  * as text; pass `--kind url`, or include the scheme, when that is not what you meant.
  */
-export function inferExplainKind(subject: string): ExplainKind {
+export function inferRationaleKind(subject: string): RationaleKind {
   if (!/^[a-z][a-z0-9+.\-]*:\/\//i.test(subject)) return "text";
   try {
     new URL(subject);
@@ -629,10 +629,10 @@ export function inferExplainKind(subject: string): ExplainKind {
 
 /**
  * Positionals are joined rather than indexed so that unquoted text works the way
- * a user expects: `explain ignore all previous instructions` arrives as five
+ * a user expects: `why ignore all previous instructions` arrives as five
  * positionals and means one subject.
  */
-export function parseExplainArgs(flags: ExplainFlags, positionals: string[]): ExplainRequest {
+export function parseRationaleArgs(flags: RationaleFlags, positionals: string[]): RationaleRequest {
   const subject = positionals.join(" ").trim();
   const toolFlag = typeof flags.tool === "string" ? flags.tool : "";
 
@@ -643,19 +643,19 @@ export function parseExplainArgs(flags: ExplainFlags, positionals: string[]): Ex
       decoded = JSON.parse(flags.args);
     } catch (error) {
       throw new Error(
-        `--args is not valid JSON: ${error instanceof Error ? error.message : String(error)}\n${EXPLAIN_USAGE}`,
+        `--args is not valid JSON: ${error instanceof Error ? error.message : String(error)}\n${WHY_USAGE}`,
       );
     }
     if (decoded === null || typeof decoded !== "object" || Array.isArray(decoded)) {
-      throw new Error(`--args must be a JSON object of tool arguments.\n${EXPLAIN_USAGE}`);
+      throw new Error(`--args must be a JSON object of tool arguments.\n${WHY_USAGE}`);
     }
     args = decoded as Record<string, unknown>;
   }
 
-  let kind: ExplainKind;
+  let kind: RationaleKind;
   if (typeof flags.kind === "string") {
     if (flags.kind !== "url" && flags.kind !== "text" && flags.kind !== "tool") {
-      throw new Error(`--kind must be url, text, or tool.\n${EXPLAIN_USAGE}`);
+      throw new Error(`--kind must be url, text, or tool.\n${WHY_USAGE}`);
     }
     kind = flags.kind;
   } else if (toolFlag !== "" || typeof flags.args === "string") {
@@ -663,31 +663,31 @@ export function parseExplainArgs(flags: ExplainFlags, positionals: string[]): Ex
     // as inference rather than requiring --kind to be typed twice over.
     kind = "tool";
   } else {
-    kind = inferExplainKind(subject);
+    kind = inferRationaleKind(subject);
   }
 
   if (kind === "tool") {
     const tool = toolFlag !== "" ? toolFlag : subject;
     if (tool === "") {
-      throw new Error(`explain --kind tool needs a tool name, as --tool <name> or as the subject.\n${EXPLAIN_USAGE}`);
+      throw new Error(`why --kind tool needs a tool name, as --tool <name> or as the subject.\n${WHY_USAGE}`);
     }
     return { kind, subject: tool, tool, args, json: flags.json === true };
   }
 
   if (subject === "") {
-    throw new Error(`explain needs a subject.\n${EXPLAIN_USAGE}`);
+    throw new Error(`why needs a subject.\n${WHY_USAGE}`);
   }
   return { kind, subject, tool: "", args, json: flags.json === true };
 }
 
-export function runExplain(request: ExplainRequest, engine: PolicyEngine): ExplainResult {
-  if (request.kind === "url") return explainUrl(request.subject, engine);
-  if (request.kind === "tool") return explainToolCall(request.tool, request.args, engine);
-  return explainText(request.subject);
+export function runRationale(request: RationaleRequest, engine: PolicyEngine): RationaleResult {
+  if (request.kind === "url") return rationaleForUrl(request.subject, engine);
+  if (request.kind === "tool") return rationaleForToolCall(request.tool, request.args, engine);
+  return rationaleForText(request.subject);
 }
 
-/** Non-zero when anything fired, so `explain` is usable as a gate in a script. */
-export function explainExitCode(result: ExplainResult): 0 | 1 {
+/** Non-zero when anything fired, so `why` is usable as a gate in a script. */
+export function rationaleExitCode(result: RationaleResult): 0 | 1 {
   return result.findings.length > 0 ? 1 : 0;
 }
 
@@ -724,8 +724,8 @@ function detailLine(label: string, value: string): string {
  * in the left column, then labelled detail lines under it. The knob is always
  * last because it is the line the reader came for.
  */
-export function formatExplainReport(result: ExplainResult): string {
-  const lines: string[] = [`explain ${result.subject}`];
+export function formatRationaleReport(result: RationaleResult): string {
+  const lines: string[] = [`why ${result.subject}`];
   lines.push(
     `kind ${result.kind} · decision ${result.decision} · ` +
       (result.findings.length === 0 ? "nothing fired" : `${result.findings.length} finding(s)`),

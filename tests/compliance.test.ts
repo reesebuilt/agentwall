@@ -293,7 +293,7 @@ function wellConfigured(): Record<string, unknown> {
       AGENTWALL_AUDIT_FILE: "/var/lib/agentwall/audit.jsonl",
       AGENTWALL_PROXY_PORT: "3128",
       AGENTWALL_PROXY_LEDGER: "/var/lib/agentwall/egress.jsonl",
-      AGENTWALL_KILLSWITCH_FILE: "/var/lib/agentwall/killswitch",
+      AGENTWALL_LOCKDOWN_FILE: "/var/lib/agentwall/lockdown",
     },
     audit: { anchorIntervalMs: 21_600_000 },
     enforcement: { mode: "strict" },

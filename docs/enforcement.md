@@ -152,9 +152,9 @@ Most HTTP clients surface a proxy `403` as a connection error rather than as a r
 expect your agent to report something like "could not reach host", and expect to need the
 ledger to find out why. The header is there for whoever thinks to look at the raw exchange.
 
-## The kill switch overrides the mode, including monitor
+## The lockdown overrides the mode, including monitor
 
-When the operator kill switch is engaged, every proxied egress attempt is denied with risk
+When the operator lockdown is engaged, every proxied egress attempt is denied with risk
 `critical`, in all three modes, with the holding sources named in the reason.
 
 This is the one place monitor mode does not merely observe. An emergency stop that the
@@ -189,7 +189,7 @@ Two detections are specific to enforcement:
 
 - `det.net.egress.blocked` — strict mode refused a non-allowlisted destination.
   MITRE ATT&CK T1071, Application Layer Protocol (Command and Control).
-- `det.governance.killswitch.active` — the emergency stop refused an action.
+- `det.governance.lockdown.active` — the emergency stop refused an action.
   MITRE ATT&CK T1489, Service Stop (Impact).
 
 ## Limits
@@ -198,13 +198,15 @@ Read these before relying on enforcement for anything.
 
 - **Only traffic through the proxy is governed.** Enforcement is a property of the forward
   proxy, not of the host.
-- **Capture is cooperative, and this does not change that.** A process that ignores
-  `HTTP_PROXY` / `HTTPS_PROXY` — because it was written to, because it uses a client that
-  does not read them, or because it was told not to — is neither observed nor blocked. It is
-  not that AgentWall allows it; AgentWall never sees it.
-- **No transparent redirection is installed.** AgentWall does not add iptables or nftables
-  rules, does not create a network namespace, and does not require root. Closing the
-  cooperative-capture gap means doing that yourself at the network layer.
+- **Capture is cooperative here, and enforcement does not change that.** A process that
+  ignores `HTTP_PROXY` / `HTTPS_PROXY` — because it was written to, because it uses a client
+  that does not read them, or because it was told not to — is neither observed nor blocked
+  by the forward proxy. It is not that AgentWall allows it; AgentWall never sees it.
+- **Transparent redirection is available, separately and opt-in.** The forward proxy adds no
+  firewall rules and needs no privilege. A perimeter does: it runs the agent under its own
+  UID and has nftables redirect that UID's outbound TCP into the proxy, which removes the
+  cooperation requirement at the cost of root, Linux, and a deliberate install. It is off
+  unless you set it up, and it does not contain DNS. See [perimeter.md](perimeter.md).
 - **Decisions are made from host, port, and scheme.** The proxy does not terminate TLS, so
   the body, path, and headers of an HTTPS request are not visible and cannot inform the
   decision. Terminating TLS would need a CA in every runtime trust store, which would break

@@ -13,21 +13,21 @@ import { AgentContext, PolicyResult } from "../types";
  * sources are deliberately redundant, not layered.
  *
  *   config    seeded at start-up, for a box that must come up stopped.
- *   api       POST /killswitch/activate, the normal operator path.
+ *   api       POST /lockdown/engage, the normal operator path.
  *   signal    SIGUSR1, which reaches the process from a shell with no network involved.
  *   sentinel  a file on disk, polled; the channel that still works when both the HTTP
  *             surface and the signal path are unavailable to whoever is holding the shell
  *             (a container exec, a config-management run, a cron script, an NFS mount
  *             touched from another host).
  *
- * Release is PER SOURCE and never global. `deactivateKillSwitch("api")` clears the API's
+ * Release is PER SOURCE and never global. `releaseLockdown("api")` clears the API's
  * hold and nothing else, so a config-seeded or file-held stop cannot be lifted by an HTTP
  * call. This is the property that makes the stop trustworthy: whoever engaged it is the
  * only one who can release it, through the same channel they used to engage it.
  *
- * This is NOT the per-agent watchdog kill switch in src/watchdog/heartbeat.ts. That one is
- * derived from a single agent's heartbeat going stale. This one is a global, operator-driven
- * posture for the whole process.
+ * This is NOT the per-agent watchdog stop that `watchdog.killSwitchMode` selects in
+ * src/watchdog/heartbeat.ts. That one is derived from a single agent's heartbeat going
+ * stale. This one is a global, operator-driven posture for the whole process.
  *
  * Limits, honestly: this module holds a flag and records the transitions. It gates what
  * flows through AgentWall's own decision paths and nothing else. It does not kill agent
@@ -45,9 +45,9 @@ import { AgentContext, PolicyResult } from "../types";
  * creation on every platform or across network filesystems, and the one channel that has to
  * work when everything else is broken is the wrong place for a best-effort notification API.
  */
-export const DEFAULT_SENTINEL_POLL_INTERVAL_MS = 1000;
+export const DEFAULT_LOCKDOWN_POLL_INTERVAL_MS = 1000;
 
-export interface KillSwitchState {
+export interface LockdownState {
   active: boolean;
   /** Every source currently holding the stop, sorted for a stable response body. */
   sources: string[];
@@ -57,8 +57,8 @@ export interface KillSwitchState {
   reason?: string;
 }
 
-export interface KillSwitchInitOptions {
-  /** Overrides $AGENTWALL_KILLSWITCH_FILE. Absent on both leaves the sentinel channel off. */
+export interface LockdownInitOptions {
+  /** Overrides $AGENTWALL_LOCKDOWN_FILE. Absent on both leaves the sentinel channel off. */
   sentinelPath?: string;
   /** Come up stopped. Not a release: `false` does not clear an existing config hold. */
   configActive?: boolean;
@@ -80,7 +80,7 @@ const holds = new Map<string, Hold>();
 let periodSince: string | undefined;
 let sentinelPath: string | undefined;
 let sentinelTimer: NodeJS.Timeout | undefined;
-let sentinelPollIntervalMs = DEFAULT_SENTINEL_POLL_INTERVAL_MS;
+let sentinelPollIntervalMs = DEFAULT_LOCKDOWN_POLL_INTERVAL_MS;
 let signalHandler: (() => void) | undefined;
 
 /**
@@ -93,9 +93,9 @@ function normalizeSource(source: string): string {
   return trimmed === "" ? "unspecified" : trimmed;
 }
 
-export function killSwitchState(): KillSwitchState {
+export function lockdownState(): LockdownState {
   const sources = [...holds.keys()].sort();
-  const state: KillSwitchState = { active: sources.length > 0, sources };
+  const state: LockdownState = { active: sources.length > 0, sources };
   if (periodSince !== undefined) {
     state.since = periodSince;
   }
@@ -116,7 +116,7 @@ export function killSwitchState(): KillSwitchState {
  * somebody re-sent the request. A stored reason is therefore immutable for the life of a
  * hold; to correct it, release and engage again.
  */
-export function activateKillSwitch(source: string, reason?: string): void {
+export function engageLockdown(source: string, reason?: string): void {
   const key = normalizeSource(source);
   if (holds.has(key)) {
     return;
@@ -127,7 +127,7 @@ export function activateKillSwitch(source: string, reason?: string): void {
   holds.set(key, { since: now, reason });
   periodSince ??= now;
 
-  record("activate", key, reason);
+  record("engage", key, reason);
 }
 
 /**
@@ -138,7 +138,7 @@ export function activateKillSwitch(source: string, reason?: string): void {
  * ever held the `api` source, and a config-seeded stop must survive any amount of API
  * traffic. Callers that want the stop gone have to go back to each channel that holds it.
  */
-export function deactivateKillSwitch(source: string): void {
+export function releaseLockdown(source: string): void {
   const key = normalizeSource(source);
   const hold = holds.get(key);
   if (hold === undefined) {
@@ -150,7 +150,7 @@ export function deactivateKillSwitch(source: string): void {
     periodSince = undefined;
   }
 
-  record("deactivate", key, hold.reason);
+  record("release", key, hold.reason);
 }
 
 /**
@@ -164,9 +164,9 @@ export function deactivateKillSwitch(source: string): void {
  * mode of a silent release is an agent that resumes acting while an operator believes it is
  * stopped, and the failure mode of a stale hold is a service that is too safe.
  */
-export function initKillSwitch(opts: KillSwitchInitOptions = {}): void {
+export function initLockdown(opts: LockdownInitOptions = {}): void {
   if (opts.configActive === true) {
-    activateKillSwitch("config", "engaged by configuration at start-up");
+    engageLockdown("config", "engaged by configuration at start-up");
   }
 
   if (signalHandler === undefined) {
@@ -183,7 +183,7 @@ export function initKillSwitch(opts: KillSwitchInitOptions = {}): void {
   // at exactly the moment somebody is rebuilding the server to recover.
   const requested =
     trimmedOrUndefined(opts.sentinelPath) ??
-    trimmedOrUndefined(process.env.AGENTWALL_KILLSWITCH_FILE) ??
+    trimmedOrUndefined(process.env.AGENTWALL_LOCKDOWN_FILE) ??
     sentinelPath;
   if (requested === undefined) {
     return;
@@ -209,7 +209,7 @@ export function initKillSwitch(opts: KillSwitchInitOptions = {}): void {
  * TESTS ONLY. This is the one operation that clears every source at once, which is precisely
  * what production must not have; nothing in src/ outside this file calls it.
  */
-export function resetKillSwitch(): void {
+export function resetLockdown(): void {
   if (sentinelTimer !== undefined) {
     clearInterval(sentinelTimer);
     sentinelTimer = undefined;
@@ -221,7 +221,7 @@ export function resetKillSwitch(): void {
   holds.clear();
   periodSince = undefined;
   sentinelPath = undefined;
-  sentinelPollIntervalMs = DEFAULT_SENTINEL_POLL_INTERVAL_MS;
+  sentinelPollIntervalMs = DEFAULT_LOCKDOWN_POLL_INTERVAL_MS;
 }
 
 function trimmedOrUndefined(value: string | undefined): string | undefined {
@@ -238,9 +238,9 @@ function trimmedOrUndefined(value: string | undefined): string | undefined {
  */
 function toggleFromSignal(): void {
   if (holds.has("signal")) {
-    deactivateKillSwitch("signal");
+    releaseLockdown("signal");
   } else {
-    activateKillSwitch("signal", "SIGUSR1 received");
+    engageLockdown("signal", "SIGUSR1 received");
   }
 }
 
@@ -259,9 +259,9 @@ function pollSentinel(): void {
   }
 
   if (present && !holds.has("sentinel")) {
-    activateKillSwitch("sentinel", `sentinel file present at ${sentinelPath}`);
+    engageLockdown("sentinel", `sentinel file present at ${sentinelPath}`);
   } else if (!present && holds.has("sentinel")) {
-    deactivateKillSwitch("sentinel");
+    releaseLockdown("sentinel");
   }
 }
 
@@ -276,37 +276,37 @@ function pollSentinel(): void {
  * Every failure is swallowed. Audit is evidence about the stop, not a precondition for it,
  * and a full disk must not be able to keep an emergency stop from engaging.
  */
-function record(kind: "activate" | "deactivate", source: string, reason: string | undefined): void {
+function record(kind: "engage" | "release", source: string, reason: string | undefined): void {
   try {
-    const state = killSwitchState();
-    const verb = kind === "activate" ? "engaged" : "released";
+    const state = lockdownState();
+    const verb = kind === "engage" ? "engaged" : "released";
 
     const reasons = [
       reason === undefined
-        ? `Kill switch ${verb} by source '${source}'`
-        : `Kill switch ${verb} by source '${source}': ${reason}`,
+        ? `Lockdown ${verb} by source '${source}'`
+        : `Lockdown ${verb} by source '${source}': ${reason}`,
     ];
-    if (kind === "deactivate" && state.active) {
-      reasons.push(`Kill switch remains engaged, held by: ${state.sources.join(", ")}`);
+    if (kind === "release" && state.active) {
+      reasons.push(`Lockdown remains engaged, held by: ${state.sources.join(", ")}`);
     }
 
     const metadata: Record<string, string> = {
-      killSwitchSource: source,
-      killSwitchActive: String(state.active),
-      killSwitchHolders: state.sources.length > 0 ? state.sources.join(",") : "none",
+      lockdownSource: source,
+      lockdownActive: String(state.active),
+      lockdownHolders: state.sources.length > 0 ? state.sources.join(",") : "none",
     };
     if (reason !== undefined) {
-      metadata.killSwitchReason = reason;
+      metadata.lockdownReason = reason;
     }
     if (state.since !== undefined) {
-      metadata.killSwitchSince = state.since;
+      metadata.lockdownSince = state.since;
     }
 
     const ctx: AgentContext = {
       agentId: "agentwall",
-      sessionId: "agentwall:killswitch",
+      sessionId: "agentwall:lockdown",
       plane: "governance",
-      action: kind === "activate" ? "killswitch:activate" : "killswitch:deactivate",
+      action: kind === "engage" ? "lockdown:engage" : "lockdown:release",
       payload: {
         source,
         reason: reason ?? null,

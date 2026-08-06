@@ -112,14 +112,14 @@ const OWASP_LLM: readonly ControlMapping[] = [
     coverage: "strong",
     evidence: [
       "src/planes/identity/dlp.ts",
-      "src/canary/index.ts",
-      "src/sentinel/filesystem.ts",
+      "src/decoy/index.ts",
+      "src/spill/watch.ts",
       "det.content.secret.exfil",
       "det.mcp.input.secret",
       "det.mcp.response.secret",
       "det.net.metadata.access",
-      "det.identity.canary.triggered",
-      "det.content.fs.secret_written",
+      "det.identity.decoy.triggered",
+      "det.content.spill.file_write",
       "content:block-secret-exfil",
       "content:redact-pii",
       "mcp:redact-input-secret",
@@ -127,12 +127,12 @@ const OWASP_LLM: readonly ControlMapping[] = [
       "channel:deny-sensitive-content-egress",
       "channel:redact-pii-content-egress",
       "net:block-metadata-endpoint",
-      "identity:deny-canary-triggered",
-      "content:deny-fs-secret-write",
+      "identity:deny-decoy-triggered",
+      "content:deny-spill-file-write",
     ],
     gap:
       "The scanner is a pattern table, so a secret in a format it does not know — an " +
-      "internal token scheme, a bare high-entropy string — passes. Canary values close part " +
+      "internal token scheme, a bare high-entropy string — passes. Decoy values close part " +
       "of that hole by being synthetic and therefore unmistakable, but only for credentials " +
       "someone planted on purpose. The harder limit is what the scanner is handed: https " +
       "bodies through the forward proxy are opaque because that proxy does not terminate " +
@@ -278,7 +278,7 @@ const OWASP_LLM: readonly ControlMapping[] = [
     evidence: [
       "src/runtime/floodguard.ts",
       "src/watchdog/heartbeat.ts",
-      "src/runtime/kill-switch.ts",
+      "src/runtime/lockdown.ts",
       "governance:deny-watchdog-timeout",
     ],
     gap:
@@ -363,18 +363,18 @@ const OWASP_AGENTIC: readonly ControlMapping[] = [
     coverage: "partial",
     evidence: [
       "src/auth/operator.ts",
-      "src/canary/index.ts",
+      "src/decoy/index.ts",
       "det.identity.credential.access",
       "det.net.metadata.access",
       "det.browser.oauth.approval",
-      "det.identity.canary.triggered",
-      "det.content.fs.secret_written",
+      "det.identity.decoy.triggered",
+      "det.content.spill.file_write",
       "identity:flag-credential-access",
       "browser:require-approval-oauth",
       "net:block-metadata-endpoint",
       "channel:deny-sensitive-data-access",
-      "identity:deny-canary-triggered",
-      "content:deny-fs-secret-write",
+      "identity:deny-decoy-triggered",
+      "content:deny-spill-file-write",
     ],
     gap:
       "Credential acquisition is gated: reads of secret stores need approval, cloud metadata " +
@@ -479,16 +479,16 @@ const OWASP_AGENTIC: readonly ControlMapping[] = [
     evidence: [
       "src/runtime/floodguard.ts",
       "src/watchdog/heartbeat.ts",
-      "src/runtime/kill-switch.ts",
-      "det.governance.killswitch.active",
+      "src/runtime/lockdown.ts",
+      "det.governance.lockdown.active",
       "governance:deny-watchdog-timeout",
-      "governance:kill-switch",
+      "governance:lockdown",
       "governance:log-all",
     ],
     gap:
       "Blast radius is bounded locally: per-session rate and cost caps, a ceiling on pending " +
       "approvals, shield mode to tighten every limit at once, a watchdog that stops " +
-      "governance changes when it fires, and a kill switch that refuses everything at once. " +
+      "governance changes when it fires, and a lockdown that refuses everything at once. " +
       "None of that constitutes an understanding of the system a failure is cascading " +
       "through. AgentWall has no dependency graph, no circuit breaker between agents, and no " +
       "view of an agent whose calls do not pass through it, so it can stop its own agents " +
@@ -526,14 +526,14 @@ const OWASP_AGENTIC: readonly ControlMapping[] = [
     coverage: "partial",
     evidence: [
       "src/watchdog/heartbeat.ts",
-      "src/runtime/kill-switch.ts",
+      "src/runtime/lockdown.ts",
       "src/audit/logger.ts",
       "src/audit/chain.ts",
       "src/proxy/forward-proxy.ts",
-      "det.governance.killswitch.active",
+      "det.governance.lockdown.active",
       "det.net.egress.blocked",
       "governance:deny-watchdog-timeout",
-      "governance:kill-switch",
+      "governance:lockdown",
       "governance:log-all",
       "control:deny-external-actions-answer-only",
       "net:deny-egress-not-allowlisted",
@@ -541,7 +541,7 @@ const OWASP_AGENTIC: readonly ControlMapping[] = [
     gap:
       "An agent that stops heart-beating, trips rules, or reaches an unlisted destination is " +
       "detectable, the audit chain makes the sequence reconstructible afterwards because " +
-      "records cannot be edited without breaking the hash links, and the kill switch refuses " +
+      "records cannot be edited without breaking the hash links, and the lockdown refuses " +
       "every action that reaches it. That is containment of the agent's ACTIONS, not of the " +
       "agent: AgentWall cannot terminate a process, revoke a credential it did not issue, or " +
       "see an agent that was never pointed at it. An operator holding the emergency stop " +

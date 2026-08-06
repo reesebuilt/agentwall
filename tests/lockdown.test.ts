@@ -7,12 +7,12 @@ import type { AuditEvent } from "../src/types";
 import type { AgentwallConfig } from "../src/config";
 import { buildServer } from "../src/server";
 import {
-  activateKillSwitch,
-  deactivateKillSwitch,
-  initKillSwitch,
-  killSwitchState,
-  resetKillSwitch,
-} from "../src/runtime/kill-switch";
+  engageLockdown,
+  initLockdown,
+  lockdownState,
+  releaseLockdown,
+  resetLockdown,
+} from "../src/runtime/lockdown";
 
 /**
  * The emergency stop's contract.
@@ -20,7 +20,7 @@ import {
  * The properties worth defending are the ones that make the stop trustworthy under failure:
  * four channels that each work alone, a release that only clears the channel it belongs to,
  * and no listener or timer left running after the module is torn down. The last one is not
- * cosmetic — an initKillSwitch that stacked a SIGUSR1 listener per server build would leak
+ * cosmetic — an initLockdown that stacked a SIGUSR1 listener per server build would leak
  * silently in a long-lived process and hit Node's max-listeners warning in a test suite.
  *
  * The sentinel channel is driven with fake timers rather than a real short interval and a
@@ -74,90 +74,90 @@ const POLL_MS = 10;
 const tempDirs: string[] = [];
 
 function tempSentinelPath(): string {
-  const dir = mkdtempSync(join(tmpdir(), "agentwall-killswitch-"));
+  const dir = mkdtempSync(join(tmpdir(), "agentwall-lockdown-"));
   tempDirs.push(dir);
   return join(dir, "STOP");
 }
 
 beforeEach(() => {
-  resetKillSwitch();
-  delete process.env.AGENTWALL_KILLSWITCH_FILE;
+  resetLockdown();
+  delete process.env.AGENTWALL_LOCKDOWN_FILE;
 });
 
 afterEach(() => {
-  resetKillSwitch();
-  delete process.env.AGENTWALL_KILLSWITCH_FILE;
+  resetLockdown();
+  delete process.env.AGENTWALL_LOCKDOWN_FILE;
   for (const dir of tempDirs.splice(0)) {
     rmSync(dir, { recursive: true, force: true });
   }
 });
 
-describe("kill switch activation sources", () => {
+describe("lockdown activation sources", () => {
   it("activates from config alone", () => {
-    initKillSwitch({ configActive: true });
+    initLockdown({ configActive: true });
 
-    expect(killSwitchState()).toMatchObject({ active: true, sources: ["config"] });
+    expect(lockdownState()).toMatchObject({ active: true, sources: ["config"] });
   });
 
   it("activates from the api source alone", () => {
-    activateKillSwitch("api", "operator pulled the cord");
+    engageLockdown("api", "operator pulled the cord");
 
-    const state = killSwitchState();
+    const state = lockdownState();
     expect(state.active).toBe(true);
     expect(state.sources).toEqual(["api"]);
     expect(state.reason).toBe("operator pulled the cord");
   });
 
   it("activates from SIGUSR1 alone", () => {
-    initKillSwitch();
+    initLockdown();
 
     process.emit("SIGUSR1", "SIGUSR1");
 
-    expect(killSwitchState()).toMatchObject({ active: true, sources: ["signal"] });
+    expect(lockdownState()).toMatchObject({ active: true, sources: ["signal"] });
   });
 
   it("activates from a sentinel file alone", () => {
     const sentinel = tempSentinelPath();
     jest.useFakeTimers();
     try {
-      initKillSwitch({ sentinelPath: sentinel, pollIntervalMs: POLL_MS });
-      expect(killSwitchState().active).toBe(false);
+      initLockdown({ sentinelPath: sentinel, pollIntervalMs: POLL_MS });
+      expect(lockdownState().active).toBe(false);
 
       writeFileSync(sentinel, "");
       jest.advanceTimersByTime(POLL_MS);
 
-      expect(killSwitchState()).toMatchObject({ active: true, sources: ["sentinel"] });
+      expect(lockdownState()).toMatchObject({ active: true, sources: ["sentinel"] });
     } finally {
       jest.useRealTimers();
     }
   });
 
-  it("reads the sentinel path from AGENTWALL_KILLSWITCH_FILE when none is passed", () => {
+  it("reads the sentinel path from AGENTWALL_LOCKDOWN_FILE when none is passed", () => {
     const sentinel = tempSentinelPath();
     writeFileSync(sentinel, "");
-    process.env.AGENTWALL_KILLSWITCH_FILE = sentinel;
+    process.env.AGENTWALL_LOCKDOWN_FILE = sentinel;
 
-    initKillSwitch({ pollIntervalMs: POLL_MS });
+    initLockdown({ pollIntervalMs: POLL_MS });
 
     // Checked once before the timer is scheduled, so a process that starts with the
     // sentinel already in place comes up stopped rather than running for one interval.
-    expect(killSwitchState()).toMatchObject({ active: true, sources: ["sentinel"] });
+    expect(lockdownState()).toMatchObject({ active: true, sources: ["sentinel"] });
   });
 
   it("lists every holding source, sorted", () => {
-    initKillSwitch({ configActive: true });
-    activateKillSwitch("api");
+    initLockdown({ configActive: true });
+    engageLockdown("api");
     process.emit("SIGUSR1", "SIGUSR1");
 
-    expect(killSwitchState().sources).toEqual(["api", "config", "signal"]);
+    expect(lockdownState().sources).toEqual(["api", "config", "signal"]);
   });
 
   it("treats re-engaging the same source as a no-op rather than a new period", () => {
-    activateKillSwitch("api", "first reason");
-    const first = killSwitchState();
+    engageLockdown("api", "first reason");
+    const first = lockdownState();
 
-    activateKillSwitch("api", "second reason");
-    const second = killSwitchState();
+    engageLockdown("api", "second reason");
+    const second = lockdownState();
 
     expect(second.sources).toEqual(["api"]);
     expect(second.since).toBe(first.since);
@@ -165,58 +165,58 @@ describe("kill switch activation sources", () => {
   });
 });
 
-describe("kill switch per-source release", () => {
+describe("lockdown per-source release", () => {
   it("stays active when one of two sources releases, and names the one still holding", () => {
-    initKillSwitch();
-    activateKillSwitch("api", "operator");
+    initLockdown();
+    engageLockdown("api", "operator");
     process.emit("SIGUSR1", "SIGUSR1");
-    expect(killSwitchState().sources).toEqual(["api", "signal"]);
+    expect(lockdownState().sources).toEqual(["api", "signal"]);
 
-    deactivateKillSwitch("api");
+    releaseLockdown("api");
 
-    expect(killSwitchState()).toMatchObject({ active: true, sources: ["signal"] });
+    expect(lockdownState()).toMatchObject({ active: true, sources: ["signal"] });
   });
 
   it("does NOT let an api release clear a config-held stop", () => {
-    initKillSwitch({ configActive: true });
-    activateKillSwitch("api", "operator");
+    initLockdown({ configActive: true });
+    engageLockdown("api", "operator");
 
-    deactivateKillSwitch("api");
+    releaseLockdown("api");
 
-    expect(killSwitchState()).toMatchObject({ active: true, sources: ["config"] });
+    expect(lockdownState()).toMatchObject({ active: true, sources: ["config"] });
   });
 
   it("ignores a release for a source that holds nothing", () => {
-    initKillSwitch({ configActive: true });
+    initLockdown({ configActive: true });
 
-    deactivateKillSwitch("api");
-    deactivateKillSwitch("sentinel");
+    releaseLockdown("api");
+    releaseLockdown("sentinel");
 
-    expect(killSwitchState()).toMatchObject({ active: true, sources: ["config"] });
+    expect(lockdownState()).toMatchObject({ active: true, sources: ["config"] });
   });
 
   it("sets since on the first activation and clears it when the last source releases", () => {
     // The signal channel only exists once init has wired the handler.
-    initKillSwitch();
+    initLockdown();
 
-    expect(killSwitchState().since).toBeUndefined();
+    expect(lockdownState().since).toBeUndefined();
 
-    activateKillSwitch("api", "operator");
-    const since = killSwitchState().since;
+    engageLockdown("api", "operator");
+    const since = lockdownState().since;
     expect(since).toMatch(/^\d{4}-\d{2}-\d{2}T.*Z$/);
 
     process.emit("SIGUSR1", "SIGUSR1");
-    expect(killSwitchState().since).toBe(since);
+    expect(lockdownState().since).toBe(since);
 
-    deactivateKillSwitch("api");
-    expect(killSwitchState().since).toBe(since);
+    releaseLockdown("api");
+    expect(lockdownState().since).toBe(since);
 
-    deactivateKillSwitch("signal");
-    expect(killSwitchState()).toEqual({ active: false, sources: [] });
+    releaseLockdown("signal");
+    expect(lockdownState()).toEqual({ active: false, sources: [] });
   });
 });
 
-describe("kill switch sentinel channel", () => {
+describe("lockdown sentinel channel", () => {
   beforeEach(() => {
     jest.useFakeTimers();
   });
@@ -228,79 +228,79 @@ describe("kill switch sentinel channel", () => {
   it("releases when the sentinel file is removed", () => {
     const sentinel = tempSentinelPath();
     writeFileSync(sentinel, "");
-    initKillSwitch({ sentinelPath: sentinel, pollIntervalMs: POLL_MS });
-    expect(killSwitchState().active).toBe(true);
+    initLockdown({ sentinelPath: sentinel, pollIntervalMs: POLL_MS });
+    expect(lockdownState().active).toBe(true);
 
     rmSync(sentinel);
     jest.advanceTimersByTime(POLL_MS);
 
-    expect(killSwitchState()).toEqual({ active: false, sources: [] });
+    expect(lockdownState()).toEqual({ active: false, sources: [] });
   });
 
   it("leaves other sources holding when the sentinel file is removed", () => {
     const sentinel = tempSentinelPath();
     writeFileSync(sentinel, "");
-    initKillSwitch({ sentinelPath: sentinel, pollIntervalMs: POLL_MS, configActive: true });
-    expect(killSwitchState().sources).toEqual(["config", "sentinel"]);
+    initLockdown({ sentinelPath: sentinel, pollIntervalMs: POLL_MS, configActive: true });
+    expect(lockdownState().sources).toEqual(["config", "sentinel"]);
 
     rmSync(sentinel);
     jest.advanceTimersByTime(POLL_MS);
 
-    expect(killSwitchState()).toMatchObject({ active: true, sources: ["config"] });
+    expect(lockdownState()).toMatchObject({ active: true, sources: ["config"] });
   });
 
   it("keeps polling the configured path when a later init names none", () => {
     const sentinel = tempSentinelPath();
-    initKillSwitch({ sentinelPath: sentinel, pollIntervalMs: POLL_MS });
+    initLockdown({ sentinelPath: sentinel, pollIntervalMs: POLL_MS });
 
     // A rebuilt server calls init again with nothing to say about the sentinel. Dropping the
     // path there would retire the one channel that works when the API is wedged.
-    initKillSwitch();
+    initLockdown();
     writeFileSync(sentinel, "");
     jest.advanceTimersByTime(POLL_MS);
 
-    expect(killSwitchState()).toMatchObject({ active: true, sources: ["sentinel"] });
+    expect(lockdownState()).toMatchObject({ active: true, sources: ["sentinel"] });
   });
 });
 
-describe("kill switch signal channel", () => {
+describe("lockdown signal channel", () => {
   it("toggles on repeated SIGUSR1", () => {
-    initKillSwitch();
+    initLockdown();
 
     process.emit("SIGUSR1", "SIGUSR1");
-    expect(killSwitchState().active).toBe(true);
+    expect(lockdownState().active).toBe(true);
 
     process.emit("SIGUSR1", "SIGUSR1");
-    expect(killSwitchState()).toEqual({ active: false, sources: [] });
+    expect(lockdownState()).toEqual({ active: false, sources: [] });
 
     process.emit("SIGUSR1", "SIGUSR1");
-    expect(killSwitchState()).toMatchObject({ active: true, sources: ["signal"] });
+    expect(lockdownState()).toMatchObject({ active: true, sources: ["signal"] });
   });
 
   it("does not stack listeners across repeated init", () => {
     expect(process.listenerCount("SIGUSR1")).toBe(0);
 
     for (let i = 0; i < 5; i += 1) {
-      initKillSwitch({ pollIntervalMs: POLL_MS });
+      initLockdown({ pollIntervalMs: POLL_MS });
     }
 
     expect(process.listenerCount("SIGUSR1")).toBe(1);
   });
 });
 
-describe("kill switch teardown", () => {
+describe("lockdown teardown", () => {
   it("leaves no timer and no listener behind after reset", () => {
     const sentinel = tempSentinelPath();
     jest.useFakeTimers();
     try {
-      initKillSwitch({ sentinelPath: sentinel, pollIntervalMs: POLL_MS });
+      initLockdown({ sentinelPath: sentinel, pollIntervalMs: POLL_MS });
       writeFileSync(sentinel, "");
       jest.advanceTimersByTime(POLL_MS);
       // The poll was genuinely running, so the absence proved below means something.
-      expect(killSwitchState().active).toBe(true);
+      expect(lockdownState().active).toBe(true);
       expect(process.listenerCount("SIGUSR1")).toBe(1);
 
-      resetKillSwitch();
+      resetLockdown();
 
       expect(jest.getTimerCount()).toBe(0);
       expect(process.listenerCount("SIGUSR1")).toBe(0);
@@ -308,14 +308,14 @@ describe("kill switch teardown", () => {
       // The sentinel is still on disk; nothing may re-engage from it once torn down.
       expect(existsSync(sentinel)).toBe(true);
       jest.advanceTimersByTime(POLL_MS * 100);
-      expect(killSwitchState()).toEqual({ active: false, sources: [] });
+      expect(lockdownState()).toEqual({ active: false, sources: [] });
     } finally {
       jest.useRealTimers();
     }
   });
 });
 
-describe("kill switch audit evidence", () => {
+describe("lockdown audit evidence", () => {
   let events: AuditEvent[];
 
   beforeEach(() => {
@@ -331,51 +331,51 @@ describe("kill switch audit evidence", () => {
   });
 
   it("records activation as a critical governance deny", () => {
-    activateKillSwitch("api", "runaway agent");
+    engageLockdown("api", "runaway agent");
 
     expect(events).toHaveLength(1);
     expect(events[0]).toMatchObject({
       plane: "governance",
-      action: "killswitch:activate",
+      action: "lockdown:engage",
       decision: "deny",
       riskLevel: "critical",
     });
     expect(events[0].metadata).toMatchObject({
-      killSwitchSource: "api",
-      killSwitchActive: "true",
-      killSwitchReason: "runaway agent",
+      lockdownSource: "api",
+      lockdownActive: "true",
+      lockdownReason: "runaway agent",
     });
   });
 
   it("records a full release as an allow, and a partial release as a still-denied stop", () => {
-    initKillSwitch({ configActive: true });
-    activateKillSwitch("api", "operator");
+    initLockdown({ configActive: true });
+    engageLockdown("api", "operator");
     events.length = 0;
 
-    deactivateKillSwitch("api");
+    releaseLockdown("api");
     expect(events).toHaveLength(1);
     // Still held by config, so the posture recorded is still deny: an `allow` line here
     // would claim traffic resumed at a moment when it had not.
-    expect(events[0]).toMatchObject({ action: "killswitch:deactivate", decision: "deny", riskLevel: "critical" });
-    expect(events[0].reasons).toContain("Kill switch remains engaged, held by: config");
+    expect(events[0]).toMatchObject({ action: "lockdown:release", decision: "deny", riskLevel: "critical" });
+    expect(events[0].reasons).toContain("Lockdown remains engaged, held by: config");
 
-    deactivateKillSwitch("config");
+    releaseLockdown("config");
     expect(events).toHaveLength(2);
-    expect(events[1]).toMatchObject({ action: "killswitch:deactivate", decision: "allow", riskLevel: "low" });
+    expect(events[1]).toMatchObject({ action: "lockdown:release", decision: "allow", riskLevel: "low" });
   });
 });
 
-describe("kill switch routes", () => {
+describe("lockdown routes", () => {
   it("activates, reports, and releases through the operator API", async () => {
     const { app } = await buildServer(config);
     try {
-      const idle = await app.inject({ method: "GET", url: "/killswitch" });
+      const idle = await app.inject({ method: "GET", url: "/lockdown" });
       expect(idle.statusCode).toBe(200);
       expect(idle.json()).toEqual({ active: false, sources: [] });
 
       const engaged = await app.inject({
         method: "POST",
-        url: "/killswitch/activate",
+        url: "/lockdown/engage",
         payload: { reason: "suspected exfiltration" },
       });
       expect(engaged.statusCode).toBe(200);
@@ -386,10 +386,10 @@ describe("kill switch routes", () => {
         reason: "suspected exfiltration",
       });
 
-      const read = await app.inject({ method: "GET", url: "/killswitch" });
+      const read = await app.inject({ method: "GET", url: "/lockdown" });
       expect(read.json()).toMatchObject({ active: true, sources: ["api"] });
 
-      const released = await app.inject({ method: "POST", url: "/killswitch/deactivate", payload: {} });
+      const released = await app.inject({ method: "POST", url: "/lockdown/release", payload: {} });
       expect(released.statusCode).toBe(200);
       expect(released.json()).toMatchObject({ released: "api", active: false, sources: [] });
     } finally {
@@ -400,10 +400,10 @@ describe("kill switch routes", () => {
   it("says so explicitly when a release leaves the stop held by another source", async () => {
     const { app } = await buildServer(config);
     try {
-      initKillSwitch({ configActive: true });
-      await app.inject({ method: "POST", url: "/killswitch/activate", payload: {} });
+      initLockdown({ configActive: true });
+      await app.inject({ method: "POST", url: "/lockdown/engage", payload: {} });
 
-      const released = await app.inject({ method: "POST", url: "/killswitch/deactivate", payload: {} });
+      const released = await app.inject({ method: "POST", url: "/lockdown/release", payload: {} });
 
       const body = released.json();
       expect(body).toMatchObject({ released: "api", active: true, sources: ["config"] });
@@ -420,12 +420,12 @@ describe("kill switch routes", () => {
     try {
       const res = await app.inject({
         method: "POST",
-        url: "/killswitch/activate",
+        url: "/lockdown/engage",
         payload: { reason: 42 },
       });
 
       expect(res.statusCode).toBe(400);
-      expect(killSwitchState().active).toBe(false);
+      expect(lockdownState().active).toBe(false);
     } finally {
       await app.close();
     }
@@ -440,15 +440,20 @@ describe("kill switch routes", () => {
     const { app } = await buildServer(config);
     try {
       for (const route of [
-        { method: "GET" as const, url: "/killswitch" },
-        { method: "POST" as const, url: "/killswitch/activate" },
-        { method: "POST" as const, url: "/killswitch/deactivate" },
+        { method: "GET" as const, url: "/lockdown" },
+        { method: "POST" as const, url: "/lockdown/engage" },
+        { method: "POST" as const, url: "/lockdown/release" },
       ]) {
         const res = await app.inject({ method: route.method, url: route.url, payload: {} });
-        expect(res.statusCode).toBe(401);
+        expect({ url: route.url, status: res.statusCode }).toEqual({ url: route.url, status: 401 });
       }
-      // An unauthenticated caller must not have moved the switch on the way to being refused.
-      expect(killSwitchState().active).toBe(false);
+      // The 401s above mean the allowlist model is working rather than the server being
+      // globally broken: /health is the public path, and the lockdown routes are not on
+      // that list.
+      const health = await app.inject({ method: "GET", url: "/health" });
+      expect(health.statusCode).toBe(200);
+      // An unauthenticated caller must not have engaged the lockdown on the way to being refused.
+      expect(lockdownState().active).toBe(false);
     } finally {
       await app.close();
       if (savedLoopback === undefined) delete process.env.AGENTWALL_ALLOW_LOOPBACK_DEV;

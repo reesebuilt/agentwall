@@ -1,4 +1,4 @@
-# Emergency stop (kill switch)
+# Emergency stop (lockdown)
 
 A global stop for the AgentWall process. While it is engaged, egress decided by AgentWall is
 denied, and every transition is on the audit chain.
@@ -17,10 +17,10 @@ count on.
 
 | Source | Engage | Release |
 | --- | --- | --- |
-| `config` | Start the process with the kill switch seeded on (`initKillSwitch({ configActive: true })`) | `deactivateKillSwitch("config")` in-process |
-| `api` | `POST /killswitch/activate` | `POST /killswitch/deactivate` |
+| `config` | Start the process with the lockdown seeded on (`initLockdown({ configActive: true })`) | `releaseLockdown("config")` in-process |
+| `api` | `POST /lockdown/engage` | `POST /lockdown/release` |
 | `signal` | `kill -USR1 <pid>` | `kill -USR1 <pid>` again — SIGUSR1 toggles |
-| `sentinel` | Create the file named by `AGENTWALL_KILLSWITCH_FILE` | Delete that file |
+| `sentinel` | Create the file named by `AGENTWALL_LOCKDOWN_FILE` | Delete that file |
 
 ### `config`
 
@@ -36,7 +36,7 @@ caller who could engage the stop would have a one-request denial of service agai
 agent on the host.
 
 ```
-curl -sS -X POST http://127.0.0.1:8080/killswitch/activate \
+curl -sS -X POST http://127.0.0.1:8080/lockdown/engage \
   -H "Authorization: Bearer $AGENTWALL_OPERATOR_TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{"reason":"suspected exfiltration from the research agent"}'
@@ -64,7 +64,7 @@ channels are level-triggered instead.
 
 ### `sentinel`
 
-Set `AGENTWALL_KILLSWITCH_FILE=/run/agentwall/STOP` and the process stats that path once a
+Set `AGENTWALL_LOCKDOWN_FILE=/run/agentwall/STOP` and the process stats that path once a
 second. The file existing means stopped; the file being gone means this source is not
 holding. Contents are ignored — a directory at the path counts, which is deliberate: the
 check is "did somebody put a marker here", and being permissive fails safe.
@@ -87,8 +87,8 @@ The price is stated under Limits.
 
 ## Releasing is per source, never global
 
-`POST /killswitch/deactivate` clears the `api` hold and **only** the `api` hold. If the
-sentinel file is still on disk, or the process was configured to boot stopped, the switch
+`POST /lockdown/release` clears the `api` hold and **only** the `api` hold. If the
+sentinel file is still on disk, or the process was configured to boot stopped, the lockdown
 stays engaged and the response says so:
 
 ```json
@@ -98,7 +98,7 @@ stays engaged and the response says so:
   "sources": ["config", "sentinel"],
   "since": "2026-08-05T14:02:11.418Z",
   "reason": "engaged by configuration at start-up",
-  "detail": "Released the 'api' hold, but the kill switch remains ACTIVE, held by: config, sentinel. Each source must be released through the channel that engaged it."
+  "detail": "Released the 'api' hold, but the lockdown remains ACTIVE, held by: config, sentinel. Each source must be released through the channel that engaged it."
 }
 ```
 
@@ -111,7 +111,7 @@ then the weakest channel would set the security of all of them: an HTTP caller c
 stop that a human engaged from a shell, and a config-seeded stop would last only until the
 first API request. Whoever engaged it releases it, through the same door.
 
-`GET /killswitch` reports the whole picture:
+`GET /lockdown` reports the whole picture:
 
 ```json
 {
@@ -133,12 +133,12 @@ not restarted. To change a recorded reason, release and engage again.
 
 ## What callers see while it is engaged
 
-`decideEgress` in `src/runtime/enforcement.ts` checks the switch first, before anything else
-it does. While the switch is active, every egress attempt it decides comes back:
+`decideEgress` in `src/runtime/enforcement.ts` checks the lockdown first, before anything else
+it does. While the lockdown is active, every egress attempt it decides comes back:
 
 - `decision: "deny"`, `riskLevel: "critical"`
 - reasons naming the stop and every source holding it
-- matched rule `governance:kill-switch` and detection `det.governance.killswitch.active`
+- matched rule `governance:lockdown` and detection `det.governance.lockdown.active`
 
 That check sits ahead of the enforcement-mode branch, so **`monitor` mode does not exempt an
 attempt from the stop**. Monitor mode's whole purpose is to observe without blocking, and an
@@ -151,7 +151,7 @@ incident into "stopped".
 ## Evidence
 
 Every transition is emitted through the normal audit path, on the `governance` plane, with
-action `killswitch:activate` or `killswitch:deactivate`, and metadata naming the source, the
+action `lockdown:engage` or `lockdown:release`, and metadata naming the source, the
 reason, and the full set of holders after the change.
 
 The recorded decision is the resulting posture rather than the verb. Releasing one of two
@@ -161,13 +161,13 @@ a moment when it had not.
 
 Recording is wrapped so that it cannot fail the transition. The stop engages first and is
 recorded second: a full disk must not be able to prevent an emergency stop from taking
-effect. The consequence is honest and worth knowing — under a storage fault the switch still
+effect. The consequence is honest and worth knowing — under a storage fault the lockdown still
 works and the record of it may be missing, which the audit chain's own gap accounting
 declares (see [Audit evidence format](audit-format.md)).
 
 ## Limits
 
-Read these before relying on the switch during an incident.
+Read these before relying on the lockdown during an incident.
 
 - **It gates AgentWall's decision paths and nothing else.** It is a flag consulted by code
   inside this process. It does not terminate agent processes, does not revoke API keys or
@@ -180,9 +180,9 @@ Read these before relying on the switch during an incident.
   stop engaging, traffic still flows. If you need it engaged now and the API is reachable,
   use the API; the file is the channel for when it is not.
 - **SIGUSR1 toggles, so a duplicate send un-stops you.** A retry loop or two operators acting
-  at once can land on the wrong state. Confirm with `GET /killswitch` when you can, or prefer
+  at once can land on the wrong state. Confirm with `GET /lockdown` when you can, or prefer
   the sentinel file, which is level-triggered and idempotent.
-- **It is process-local.** Nothing is replicated. Each AgentWall process has its own switch,
+- **It is process-local.** Nothing is replicated. Each AgentWall process has its own lockdown,
   and engaging one does not engage the others; state is not persisted across a restart except
   through the `config` and `sentinel` sources, which are re-read at start-up.
 - **It is not a substitute for policy.** It is a blunt, temporary posture meant to be held for

@@ -10,14 +10,14 @@ import { INJECTION_PATTERN_COUNT, scanInjection } from "../policy/injection";
 import { AgentContext, Decision, NetworkInspection, Plane, PolicyResult, RiskLevel } from "../types";
 
 /**
- * The scan API: ask AgentWall for a verdict on content you already hold.
+ * The Probe API: ask AgentWall for a verdict on content you already hold.
  *
  * Every detector behind these routes already runs inline on the proxy and MCP paths. This
  * surface exists because the inline paths only see traffic that goes through them, and a CI
  * job, a pre-commit hook, or a sibling service has content it wants judged without routing
  * it through a proxy first. Nothing here is a new detector; it is the missing door.
  *
- * The limit that matters, stated once here and again in docs/scan-api.md: a scan is a
+ * The limit that matters, stated once here and again in docs/probe-api.md: a probe is a
  * point-in-time verdict on bytes the caller chose to hand over. It proves nothing about what
  * an agent actually did, because the caller decides what to submit and can submit nothing.
  * Treat a clean verdict as "no loaded rule or pattern objected to this input", never as
@@ -31,7 +31,7 @@ import { AgentContext, Decision, NetworkInspection, Plane, PolicyResult, RiskLev
  * larger field would be silently truncated by that scanner, and returning a verdict over
  * a prefix while implying it covered the whole input is exactly the kind of quiet
  * over-claim this codebase treats as a defect. Above the ceiling the caller gets 413 and
- * decides how to chunk, which keeps the "what was scanned" question answerable.
+ * decides how to chunk, which keeps the "what was probed" question answerable.
  */
 const MAX_FIELD_BYTES = 256 * 1024;
 
@@ -39,7 +39,7 @@ const MAX_FIELD_BYTES = 256 * 1024;
  * Batch ceiling.
  *
  * Rejected rather than truncated: a caller who sends 150 items and receives 100 results has
- * 50 unscanned inputs it believes are clean, and that failure is silent at exactly the wrong
+ * 50 unprobed inputs it believes are clean, and that failure is silent at exactly the wrong
  * layer. Note that Fastify's own 1 MiB body limit binds first for large items, so the
  * practical batch is bounded by total bytes, not just by count.
  */
@@ -47,7 +47,7 @@ const MAX_BATCH_ITEMS = 100;
 
 const RISK_ORDER: Record<RiskLevel, number> = { low: 0, medium: 1, high: 2, critical: 3 };
 
-export type ScanVerdict = "clean" | "flagged";
+export type ProbeVerdict = "clean" | "flagged";
 
 /**
  * One thing a detector objected to.
@@ -56,37 +56,37 @@ export type ScanVerdict = "clean" | "flagged";
  * exception documented at `urlFindings`. Injection findings do not use this shape: they carry
  * the richer per-pattern record the scanner already produces.
  */
-export interface ScanFinding {
+export interface ProbeFinding {
   /** Stable identifier, e.g. "network.cloud_metadata" or "dlp.secret.aws-access-key". */
   id: string;
   severity: RiskLevel;
   detail: string;
 }
 
-interface ScanCore {
-  verdict: ScanVerdict;
+interface ProbeCore {
+  verdict: ProbeVerdict;
   decision: Decision;
   riskLevel: RiskLevel;
   reasons: string[];
 }
 
-export interface UrlScanResult extends ScanCore {
-  findings: ScanFinding[];
+export interface UrlProbeResult extends ProbeCore {
+  findings: ProbeFinding[];
 }
 
-export interface DlpScanApiResult extends ScanCore {
-  findings: ScanFinding[];
+export interface DlpProbeResult extends ProbeCore {
+  findings: ProbeFinding[];
   containsSecrets: boolean;
   secretTypes: string[];
   containsPII: boolean;
   piiTypes: string[];
-  /** Bytes of UTF-8 submitted. Reported so a caller can confirm what was actually scanned. */
+  /** Bytes of UTF-8 submitted. Reported so a caller can confirm what was actually probed. */
   inputBytes: number;
   /** Present only when the caller passed `redact: true`. */
   redactedText?: string;
 }
 
-export interface InjectionScanApiResult extends ScanCore {
+export interface InjectionProbeResult extends ProbeCore {
   findings: InjectionFinding[];
   /** How many patterns were consulted, so a verdict can be tied to a detector version. */
   patternsEvaluated: number;
@@ -95,26 +95,26 @@ export interface InjectionScanApiResult extends ScanCore {
   strippedText?: string;
 }
 
-export type ScanBatchEntry =
-  | ({ id: string; kind: "url"; auditEventId: string } & UrlScanResult)
-  | ({ id: string; kind: "dlp"; auditEventId: string } & DlpScanApiResult)
-  | ({ id: string; kind: "injection"; auditEventId: string } & InjectionScanApiResult);
+export type ProbeBatchEntry =
+  | ({ id: string; kind: "url"; auditEventId: string } & UrlProbeResult)
+  | ({ id: string; kind: "dlp"; auditEventId: string } & DlpProbeResult)
+  | ({ id: string; kind: "injection"; auditEventId: string } & InjectionProbeResult);
 
-const ScanUrlBodySchema = z.object({
+const ProbeUrlBodySchema = z.object({
   url: z.string(),
 });
 
-const ScanDlpBodySchema = z.object({
+const ProbeDlpBodySchema = z.object({
   text: z.string(),
   redact: z.boolean().optional(),
 });
 
-const ScanInjectionBodySchema = z.object({
+const ProbeInjectionBodySchema = z.object({
   text: z.string(),
   strip: z.boolean().optional(),
 });
 
-const ScanToolCallBodySchema = z.object({
+const ProbeToolCallBodySchema = z.object({
   agentId: z.string(),
   tool: z.string(),
   // Key schema explicit for the same reason as AgentContext.payload: tool arguments are
@@ -122,7 +122,7 @@ const ScanToolCallBodySchema = z.object({
   arguments: z.record(z.string(), z.unknown()),
 });
 
-const ScanBatchBodySchema = z.object({
+const ProbeBatchBodySchema = z.object({
   items: z.array(
     z.object({
       id: z.string(),
@@ -135,7 +135,7 @@ const ScanBatchBodySchema = z.object({
 function tooLarge(reply: FastifyReply, field: string, bytes: number): FastifyReply {
   return reply.status(413).send({
     error: "Payload too large",
-    detail: `Field '${field}' is ${bytes} bytes; the per-field ceiling is ${MAX_FIELD_BYTES} bytes. Split the input and scan it in parts.`,
+    detail: `Field '${field}' is ${bytes} bytes; the per-field ceiling is ${MAX_FIELD_BYTES} bytes. Split the input and probe it in parts.`,
   });
 }
 
@@ -154,11 +154,11 @@ function maxSeverity(severities: RiskLevel[]): RiskLevel {
  * the inspector's own reason, which names the target hostname. That is deliberate — a network
  * verdict without its target is unactionable — and it is bounded to the hostname the URL
  * parser produced. The full URL never appears anywhere, here or in the audit record, because
- * query strings routinely carry tokens and an endpoint that scans for secrets must not be a
+ * query strings routinely carry tokens and an endpoint that probes for secrets must not be a
  * place secrets accumulate.
  */
-function urlFindings(result: NetworkInspection): ScanFinding[] {
-  const findings: ScanFinding[] = [];
+function urlFindings(result: NetworkInspection): ProbeFinding[] {
+  const findings: ProbeFinding[] = [];
   if (result.blockedCategory) {
     findings.push({
       id: `network.${result.blockedCategory.replace(/-/g, "_")}`,
@@ -184,17 +184,17 @@ function urlFindings(result: NetworkInspection): ScanFinding[] {
 }
 
 /**
- * Scan a URL for intrinsic target risk.
+ * Probe a URL for intrinsic target risk.
  *
  * `defaultDeny` is turned OFF for this path and only this path. The proxy's egress allowlist
  * answers "may this process reach that host", which is a question about the operator's
- * configuration; a scan answers "is this target dangerous", which is a question about the
+ * configuration; a probe answers "is this target dangerous", which is a question about the
  * target. Leaving default-deny on would flag every ordinary documentation link as an egress
  * violation and make the endpoint useless to the CI job that is the reason it exists. The
  * scheme and port defaults (https/443) are kept, because plaintext and odd ports are
  * properties of the target rather than of anyone's allowlist.
  */
-function scanUrl(url: string): UrlScanResult {
+function probeUrl(url: string): UrlProbeResult {
   const inspection = inspectNetworkRequest({ url }, { defaultDeny: false });
   const findings = urlFindings(inspection);
   return {
@@ -207,16 +207,16 @@ function scanUrl(url: string): UrlScanResult {
 }
 
 /**
- * Scan text for secret and personal data.
+ * Probe text for secret and personal data.
  *
  * Risk mapping mirrors classifyContent: secret material is critical, personal data is high.
  * The decision is `redact` rather than `deny` for both, because masking is the remediation
  * that actually exists for content the caller already holds; whether to escalate past that is
  * the caller's call, not this endpoint's.
  */
-function scanDlp(text: string, redact: boolean): DlpScanApiResult {
+function probeDlp(text: string, redact: boolean): DlpProbeResult {
   const scan = scanText(text, redact);
-  const findings: ScanFinding[] = [
+  const findings: ProbeFinding[] = [
     ...scan.secretTypes.map((type) => ({
       id: `dlp.secret.${type}`,
       severity: "critical" as RiskLevel,
@@ -256,7 +256,7 @@ function scanDlp(text: string, redact: boolean): DlpScanApiResult {
 }
 
 /**
- * Scan text for prompt injection.
+ * Probe text for prompt injection.
  *
  * Findings pass through as the scanner produced them, including the excerpt, which is already
  * bounded to a short window and run through DLP redaction before it leaves the scanner. That
@@ -268,7 +268,7 @@ function scanDlp(text: string, redact: boolean): DlpScanApiResult {
  * that moves credentials or executes a command has no recovery from a successful one, while
  * a medium finding is a real precursor that on its own changes tone, not state.
  */
-function scanInjectionText(text: string, strip: boolean): InjectionScanApiResult {
+function probeInjectionText(text: string, strip: boolean): InjectionProbeResult {
   const scan = scanInjection(text, { strip });
   const riskLevel = maxSeverity(scan.findings.map((finding) => finding.severity));
   const severe = riskLevel === "critical" || riskLevel === "high";
@@ -290,50 +290,50 @@ function scanInjectionText(text: string, strip: boolean): InjectionScanApiResult
 }
 
 /**
- * Write a scan verdict to the audit chain.
+ * Write a probe verdict to the audit chain.
  *
- * Scans are themselves accountable: somebody with a token can ask this service to judge
+ * Probes are themselves accountable: somebody with a token can ask this service to judge
  * arbitrary content, and that activity should be visible in the same evidence stream as
  * everything else. What goes in is the verdict, the plane, and the input SIZE. What never
- * goes in is the input, because the whole point of /scan/dlp is that callers send it their
+ * goes in is the input, because the whole point of /probe/dlp is that callers send it their
  * secrets, and an audit chain is durable, hash-linked, and frequently shipped off-box.
  *
  * `matchedRules` is empty and `detections` is empty on purpose for the detector routes. No
- * policy rule was consulted, and attaching rule ids the scan never evaluated would put a
+ * policy rule was consulted, and attaching rule ids the probe never evaluated would put a
  * false claim into a record whose only value is being true.
  */
-function recordScan(
+function recordProbe(
   runtime: RuntimeState,
-  scan: {
+  probe: {
     plane: Plane;
     action: string;
     kind: string;
-    core: ScanCore;
+    core: ProbeCore;
     inputBytes: number;
     findingCount: number;
   }
 ): string {
   const ctx: AgentContext = {
-    agentId: "scan-api",
-    sessionId: `scan:${scan.kind}`,
-    plane: scan.plane,
-    action: scan.action,
+    agentId: "probe-api",
+    sessionId: `probe:${probe.kind}`,
+    plane: probe.plane,
+    action: probe.action,
     // Empty by construction, not stripped after the fact: there is no code path on which
     // caller text can reach the audit record through this context.
     payload: {},
     metadata: {
-      scanKind: scan.kind,
-      scanVerdict: scan.core.verdict,
-      scanInputBytes: String(scan.inputBytes),
-      scanFindingCount: String(scan.findingCount),
+      probeKind: probe.kind,
+      probeVerdict: probe.core.verdict,
+      probeInputBytes: String(probe.inputBytes),
+      probeFindingCount: String(probe.findingCount),
     },
   };
   const result: PolicyResult = {
-    decision: scan.core.decision,
-    riskLevel: scan.core.riskLevel,
+    decision: probe.core.decision,
+    riskLevel: probe.core.riskLevel,
     matchedRules: [],
-    reasons: scan.core.reasons,
-    requiresApproval: scan.core.decision === "approve",
+    reasons: probe.core.reasons,
+    requiresApproval: probe.core.decision === "approve",
     highRiskFlow: false,
     detections: [],
   };
@@ -342,13 +342,13 @@ function recordScan(
   return event.id;
 }
 
-export async function scanRoutes(
+export async function probeRoutes(
   app: FastifyInstance,
   engine: PolicyEngine,
   runtime: RuntimeState
 ): Promise<void> {
-  app.post("/scan/url", async (req, reply) => {
-    const parsed = ScanUrlBodySchema.safeParse(req.body);
+  app.post("/probe/url", async (req, reply) => {
+    const parsed = ProbeUrlBodySchema.safeParse(req.body);
     if (!parsed.success) {
       return reply.status(400).send({ error: "Invalid request body", details: parsed.error.flatten() });
     }
@@ -358,10 +358,10 @@ export async function scanRoutes(
       return tooLarge(reply, "url", bytes);
     }
 
-    const result = scanUrl(parsed.data.url);
-    const auditEventId = recordScan(runtime, {
+    const result = probeUrl(parsed.data.url);
+    const auditEventId = recordProbe(runtime, {
       plane: "network",
-      action: "scan_url",
+      action: "probe_url",
       kind: "url",
       core: result,
       inputBytes: bytes,
@@ -371,8 +371,8 @@ export async function scanRoutes(
     return reply.send({ ...result, auditEventId });
   });
 
-  app.post("/scan/dlp", async (req, reply) => {
-    const parsed = ScanDlpBodySchema.safeParse(req.body);
+  app.post("/probe/dlp", async (req, reply) => {
+    const parsed = ProbeDlpBodySchema.safeParse(req.body);
     if (!parsed.success) {
       return reply.status(400).send({ error: "Invalid request body", details: parsed.error.flatten() });
     }
@@ -382,10 +382,10 @@ export async function scanRoutes(
       return tooLarge(reply, "text", bytes);
     }
 
-    const result = scanDlp(parsed.data.text, parsed.data.redact === true);
-    const auditEventId = recordScan(runtime, {
+    const result = probeDlp(parsed.data.text, parsed.data.redact === true);
+    const auditEventId = recordProbe(runtime, {
       plane: "content",
-      action: "scan_dlp",
+      action: "probe_dlp",
       kind: "dlp",
       core: result,
       inputBytes: bytes,
@@ -399,8 +399,8 @@ export async function scanRoutes(
     return reply.send({ ...result, auditEventId });
   });
 
-  app.post("/scan/injection", async (req, reply) => {
-    const parsed = ScanInjectionBodySchema.safeParse(req.body);
+  app.post("/probe/injection", async (req, reply) => {
+    const parsed = ProbeInjectionBodySchema.safeParse(req.body);
     if (!parsed.success) {
       return reply.status(400).send({ error: "Invalid request body", details: parsed.error.flatten() });
     }
@@ -410,10 +410,10 @@ export async function scanRoutes(
       return tooLarge(reply, "text", bytes);
     }
 
-    const result = scanInjectionText(parsed.data.text, parsed.data.strip === true);
-    const auditEventId = recordScan(runtime, {
+    const result = probeInjectionText(parsed.data.text, parsed.data.strip === true);
+    const auditEventId = recordProbe(runtime, {
       plane: "content",
-      action: "scan_injection",
+      action: "probe_injection",
       kind: "injection",
       core: result,
       inputBytes: bytes,
@@ -423,8 +423,8 @@ export async function scanRoutes(
     return reply.send({ ...result, auditEventId });
   });
 
-  app.post("/scan/tool-call", async (req, reply) => {
-    const parsed = ScanToolCallBodySchema.safeParse(req.body);
+  app.post("/probe/tool-call", async (req, reply) => {
+    const parsed = ProbeToolCallBodySchema.safeParse(req.body);
     if (!parsed.success) {
       return reply.status(400).send({ error: "Invalid request body", details: parsed.error.flatten() });
     }
@@ -444,15 +444,15 @@ export async function scanRoutes(
     // body — so arguments are visible to the rules and invisible to the evidence stream.
     const ctx: AgentContext = {
       agentId: parsed.data.agentId,
-      sessionId: "scan:tool-call",
+      sessionId: "probe:tool-call",
       plane: "tool",
       // The tool name IS the action: builtin rules match shell, delete, and write verbs
       // against it, so passing it through unchanged is what makes the evaluation real.
       action: parsed.data.tool,
       payload: parsed.data.arguments,
       metadata: {
-        scanKind: "tool-call",
-        scanInputBytes: String(bytes),
+        probeKind: "tool-call",
+        probeInputBytes: String(bytes),
       },
     };
     const result = engine.evaluate(ctx);
@@ -472,8 +472,8 @@ export async function scanRoutes(
     });
   });
 
-  app.post("/scan/batch", async (req, reply) => {
-    const parsed = ScanBatchBodySchema.safeParse(req.body);
+  app.post("/probe/batch", async (req, reply) => {
+    const parsed = ProbeBatchBodySchema.safeParse(req.body);
     if (!parsed.success) {
       return reply.status(400).send({ error: "Invalid request body", details: parsed.error.flatten() });
     }
@@ -482,13 +482,13 @@ export async function scanRoutes(
     if (items.length > MAX_BATCH_ITEMS) {
       return reply.status(413).send({
         error: "Batch too large",
-        detail: `Received ${items.length} items; the ceiling is ${MAX_BATCH_ITEMS}. The batch was rejected rather than truncated, so no item is reported clean without having been scanned.`,
+        detail: `Received ${items.length} items; the ceiling is ${MAX_BATCH_ITEMS}. The batch was rejected rather than truncated, so no item is reported clean without having been probed.`,
       });
     }
 
     // One pass for both preconditions. A full batch can carry 25 MiB of text, and measuring
     // it once for the ceiling and again for the audit record is 25 MiB of pointless work
-    // before any scanning starts.
+    // before any probing starts.
     const sizes: number[] = new Array(items.length);
     const seen = new Set<string>();
     for (let i = 0; i < items.length; i++) {
@@ -499,7 +499,7 @@ export async function scanRoutes(
       }
       // Duplicate ids would silently collapse in the keyed response, and the caller would
       // read one item's verdict as another's. Rejecting is the only answer that cannot
-      // mislead, and it happens before anything is scanned or recorded.
+      // mislead, and it happens before anything is probed or recorded.
       if (seen.has(item.id)) {
         return reply.status(400).send({
           error: "Invalid request body",
@@ -513,15 +513,15 @@ export async function scanRoutes(
     // One audit event per item, not one per batch: a batch is a transport convenience, and
     // collapsing 100 verdicts into a single record would make the evidence stream depend on
     // how the caller chose to group its requests.
-    const results: Record<string, ScanBatchEntry> = {};
+    const results: Record<string, ProbeBatchEntry> = {};
     for (let i = 0; i < items.length; i++) {
       const item = items[i];
       const inputBytes = sizes[i];
       if (item.kind === "url") {
-        const result = scanUrl(item.value);
-        const auditEventId = recordScan(runtime, {
+        const result = probeUrl(item.value);
+        const auditEventId = recordProbe(runtime, {
           plane: "network",
-          action: "scan_url",
+          action: "probe_url",
           kind: "url",
           core: result,
           inputBytes,
@@ -531,10 +531,10 @@ export async function scanRoutes(
       } else if (item.kind === "dlp") {
         // No redaction in batch mode: the request has no per-item redact flag, and returning
         // transformed copies of a hundred inputs is the opposite of what this endpoint is for.
-        const result = scanDlp(item.value, false);
-        const auditEventId = recordScan(runtime, {
+        const result = probeDlp(item.value, false);
+        const auditEventId = recordProbe(runtime, {
           plane: "content",
-          action: "scan_dlp",
+          action: "probe_dlp",
           kind: "dlp",
           core: result,
           inputBytes,
@@ -542,10 +542,10 @@ export async function scanRoutes(
         });
         results[item.id] = { id: item.id, kind: "dlp", auditEventId, ...result };
       } else {
-        const result = scanInjectionText(item.value, false);
-        const auditEventId = recordScan(runtime, {
+        const result = probeInjectionText(item.value, false);
+        const auditEventId = recordProbe(runtime, {
           plane: "content",
-          action: "scan_injection",
+          action: "probe_injection",
           kind: "injection",
           core: result,
           inputBytes,
@@ -557,7 +557,7 @@ export async function scanRoutes(
 
     const flagged = Object.values(results).filter((entry) => entry.verdict === "flagged").length;
     return reply.send({
-      scanned: items.length,
+      probed: items.length,
       flagged,
       results,
     });

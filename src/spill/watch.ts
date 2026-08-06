@@ -7,7 +7,7 @@ import { detectionsForRules } from "../policy/detections";
 import { AgentContext, PolicyResult } from "../types";
 
 /**
- * Filesystem sentinel: the disk half of the exfiltration picture.
+ * Spill watch: the disk half of the exfiltration picture.
  *
  * AgentWall watches egress. An agent that harvests a credential and writes it into a file in
  * its own workspace has not egressed anything yet, so nothing in the network plane sees it -
@@ -46,18 +46,18 @@ const DEFAULT_RESCAN_ENTRY_CAP = 5_000;
 /** A NUL in the first 8 KiB is the cheapest reliable "this is not text" signal available. */
 const BINARY_SNIFF_BYTES = 8 * 1024;
 
-const RULE_ID = "content:deny-fs-secret-write";
-const AUDIT_ACTION = "fs:secret-written";
+const RULE_ID = "content:deny-spill-file-write";
+const AUDIT_ACTION = "spill:file-write";
 
 /**
  * The observer's identity in the audit record.
  *
  * Fixed, not configurable, because it names the thing that saw the write and not the thing
  * that performed it. `fs.watch` reports that a path changed; it does not report which process
- * changed it. An option here would invite an operator to fill in an agent id the sentinel
+ * changed it. An option here would invite an operator to fill in an agent id the spill watch
  * cannot actually verify, turning a known gap into a false attribution.
  */
-const SENTINEL_AGENT_ID = "filesystem-sentinel";
+const SPILL_WATCH_AGENT_ID = "spill-watch";
 
 /**
  * Paths never worth scanning.
@@ -71,7 +71,7 @@ const SENTINEL_AGENT_ID = "filesystem-sentinel";
  * harvested credential lands, and a rule that skipped it would remove the main reason to run
  * this at all.
  */
-export const defaultSentinelIgnores: readonly string[] = [
+export const defaultSpillIgnores: readonly string[] = [
   ".git/",
   "node_modules/",
   "dist/",
@@ -128,13 +128,13 @@ export const defaultSentinelIgnores: readonly string[] = [
 ];
 
 /** How a root is being observed right now. */
-export type SentinelWatchMode = "watch" | "rescan";
+export type SpillWatchMode = "watch" | "rescan";
 
-export interface SentinelOptions {
+export interface SpillWatchOptions {
   /** Directories to watch. Each must exist and be a directory at start-up, or start fails. */
   paths: string[];
   /**
-   * Extra ignores, in the syntax described on `defaultSentinelIgnores`. These ADD to the
+   * Extra ignores, in the syntax described on `defaultSpillIgnores`. These ADD to the
    * defaults; the defaults cannot be switched off. Watching inside `.git/` or `node_modules/`
    * is therefore not possible today - name a path outside them instead.
    */
@@ -155,19 +155,19 @@ export interface SentinelOptions {
   rescanIntervalMs?: number;
   /** Default 5000. Entries one re-scan pass will visit before reporting itself truncated. */
   rescanEntryCap?: number;
-  onFinding: (f: SentinelFinding) => void;
+  onFinding: (f: SpillFinding) => void;
 }
 
 /**
- * What the sentinel says about a file.
+ * What the spill watch says about a file.
  *
- * Note what is absent: the contents, the matched text, and any excerpt around it. A sentinel
+ * Note what is absent: the contents, the matched text, and any excerpt around it. A spill watch
  * that quoted the credential it found would copy that credential into the finding, into the
  * audit chain, and into whatever the operator's `onFinding` does with it - recreating the
  * exposure it exists to report, in a file that is often more widely readable than the
  * original. The type name and the size are enough to find the file and act.
  */
-export interface SentinelFinding {
+export interface SpillFinding {
   path: string;
   secretTypes: string[];
   piiTypes: string[];
@@ -175,9 +175,9 @@ export interface SentinelFinding {
   sizeBytes: number;
 }
 
-export interface SentinelRootStatus {
+export interface SpillRootStatus {
   path: string;
-  mode: SentinelWatchMode;
+  mode: SpillWatchMode;
   /**
    * Why the native watch was abandoned, or null. Non-null means AgentWall wanted a native
    * watch and could not have one: coverage is now only as fresh as `rescanIntervalMs`.
@@ -187,30 +187,30 @@ export interface SentinelRootStatus {
   truncated: boolean;
 }
 
-export interface SentinelStats {
+export interface SpillWatchStats {
   /** Files read and scanned. */
   scanned: number;
   /**
-   * Candidates the sentinel declined: too large, binary, vanished, not a regular file, or
+   * Candidates the spill watch declined: too large, binary, vanished, not a regular file, or
    * unreadable. Also incremented once per unreadable directory per re-scan pass, so a
    * `skipped` that climbs while nothing is being written is a permissions problem rather than
    * activity. Ignored paths are not counted here - they were never candidates.
    */
   skipped: number;
   findings: number;
-  /** True when any root lost its native watch. Check this; a silent sentinel looks identical. */
+  /** True when any root lost its native watch. Check this; a silent spill watch looks identical. */
   degraded: boolean;
-  roots: SentinelRootStatus[];
+  roots: SpillRootStatus[];
 }
 
-export interface SentinelHandle {
+export interface SpillWatchHandle {
   close(): Promise<void>;
-  stats(): SentinelStats;
+  stats(): SpillWatchStats;
 }
 
 interface RootState {
   path: string;
-  mode: SentinelWatchMode;
+  mode: SpillWatchMode;
   degradedReason: string | null;
   truncated: boolean;
   watcher: FSWatcher | null;
@@ -271,7 +271,7 @@ async function readFully(handle: FileHandle, buffer: Buffer, offset: number, len
   return filled;
 }
 
-class FilesystemSentinel implements SentinelHandle {
+class SpillWatch implements SpillWatchHandle {
   private readonly roots: RootState[] = [];
   private readonly ignore: readonly string[];
   private readonly maxFileBytes: number;
@@ -279,7 +279,7 @@ class FilesystemSentinel implements SentinelHandle {
   private readonly rescanIntervalMs: number;
   private readonly rescanEntryCap: number;
   private readonly watchMode: "auto" | "rescan";
-  private readonly onFinding: (finding: SentinelFinding) => void;
+  private readonly onFinding: (finding: SpillFinding) => void;
   private readonly pending = new Map<string, NodeJS.Timeout>();
   private readonly inFlight = new Set<Promise<void>>();
   private readonly startedAtMs = Date.now();
@@ -289,8 +289,8 @@ class FilesystemSentinel implements SentinelHandle {
   private findings = 0;
   private closed = false;
 
-  constructor(options: SentinelOptions) {
-    this.ignore = [...defaultSentinelIgnores, ...(options.ignore ?? [])];
+  constructor(options: SpillWatchOptions) {
+    this.ignore = [...defaultSpillIgnores, ...(options.ignore ?? [])];
     this.maxFileBytes = options.maxFileBytes ?? DEFAULT_MAX_FILE_BYTES;
     this.debounceMs = options.debounceMs ?? DEFAULT_DEBOUNCE_MS;
     this.rescanIntervalMs = options.rescanIntervalMs ?? DEFAULT_RESCAN_INTERVAL_MS;
@@ -302,7 +302,7 @@ class FilesystemSentinel implements SentinelHandle {
   /**
    * Attach to every root, failing loudly if one is unusable.
    *
-   * A path that does not exist is an operator typo, and the sentinel's whole failure mode is
+   * A path that does not exist is an operator typo, and the spill watch's whole failure mode is
    * being silently pointed at nothing, so this throws instead of watching the rest and hoping
    * the mistake is noticed.
    *
@@ -312,7 +312,7 @@ class FilesystemSentinel implements SentinelHandle {
    */
   async start(paths: string[]): Promise<void> {
     if (paths.length === 0) {
-      throw new Error("filesystem sentinel needs at least one path to watch");
+      throw new Error("spill watch needs at least one path to watch");
     }
 
     const rootPaths: string[] = [];
@@ -322,10 +322,10 @@ class FilesystemSentinel implements SentinelHandle {
       try {
         stats = await stat(rootPath);
       } catch (error) {
-        throw new Error(`filesystem sentinel cannot watch ${rootPath}: ${errorMessage(error)}`);
+        throw new Error(`spill watch cannot watch ${rootPath}: ${errorMessage(error)}`);
       }
       if (!stats.isDirectory()) {
-        throw new Error(`filesystem sentinel cannot watch ${rootPath}: not a directory`);
+        throw new Error(`spill watch cannot watch ${rootPath}: not a directory`);
       }
       rootPaths.push(rootPath);
     }
@@ -352,7 +352,7 @@ class FilesystemSentinel implements SentinelHandle {
     }
   }
 
-  stats(): SentinelStats {
+  stats(): SpillWatchStats {
     return {
       scanned: this.scanned,
       skipped: this.skipped,
@@ -448,9 +448,9 @@ class FilesystemSentinel implements SentinelHandle {
   /**
    * One bounded walk of a root, scanning whatever changed since the previous pass.
    *
-   * The first pass seeds state rather than reporting the entire tree, because a sentinel
+   * The first pass seeds state rather than reporting the entire tree, because a spill watch
    * reports writes it observes and the contents of the tree at start-up are not writes it
-   * observed. Files whose mtime is newer than the sentinel's own start are the exception:
+   * observed. Files whose mtime is newer than the spill watch's own start are the exception:
    * those did happen on its watch, and reporting them is what closes the gap when a native
    * watch fails part-way through a run and the fallback has no prior snapshot to compare to.
    */
@@ -473,7 +473,7 @@ class FilesystemSentinel implements SentinelHandle {
         try {
           entries = await readdir(dir, { withFileTypes: true });
         } catch {
-          // A directory the sentinel cannot read is a blind spot, not a non-event.
+          // A directory the spill watch cannot read is a blind spot, not a non-event.
           this.skipped++;
           continue;
         }
@@ -514,7 +514,7 @@ class FilesystemSentinel implements SentinelHandle {
           root.seen.set(absolute, fingerprint);
 
           if (previous === undefined) {
-            // `>=`, not `>`: a file written in the same millisecond the sentinel started is a
+            // `>=`, not `>`: a file written in the same millisecond the spill watch started is a
             // write it should report, and mtime resolution is coarse enough that this happens.
             // The cost of the inclusive bound is re-reporting a file that happened to be
             // touched in that same millisecond before start, which is the safer error.
@@ -568,7 +568,7 @@ class FilesystemSentinel implements SentinelHandle {
    *
    * Everything here races the writer: the file can be deleted between the event and the open,
    * replaced by a directory, or made unreadable. A watcher that threw on any of those would
-   * take down the sentinel on ordinary workspace churn, so every failure lands in `skipped`
+   * take down the spill watch on ordinary workspace churn, so every failure lands in `skipped`
    * where it stays visible without being fatal.
    */
   private async inspect(target: string): Promise<void> {
@@ -612,7 +612,7 @@ class FilesystemSentinel implements SentinelHandle {
       if (!result.containsSecrets) return;
       if (this.closed) return;
 
-      const finding: SentinelFinding = {
+      const finding: SpillFinding = {
         path: target,
         secretTypes: result.secretTypes,
         piiTypes: result.piiTypes,
@@ -625,7 +625,7 @@ class FilesystemSentinel implements SentinelHandle {
       try {
         this.onFinding(finding);
       } catch {
-        // An operator callback that throws stops that one report, not the sentinel.
+        // An operator callback that throws stops that one report, not the spill watch.
       }
     } catch {
       this.skipped++;
@@ -651,9 +651,9 @@ class FilesystemSentinel implements SentinelHandle {
    * carries the path, the type names, and the size. The file's contents never enter this
    * function, so no future change to what `emit` stores can leak them.
    */
-  private record(finding: SentinelFinding): void {
+  private record(finding: SpillFinding): void {
     const context: AgentContext = {
-      agentId: SENTINEL_AGENT_ID,
+      agentId: SPILL_WATCH_AGENT_ID,
       plane: "content",
       action: AUDIT_ACTION,
       payload: {},
@@ -692,8 +692,8 @@ class FilesystemSentinel implements SentinelHandle {
   }
 }
 
-export async function startFilesystemSentinel(opts: SentinelOptions): Promise<SentinelHandle> {
-  const sentinel = new FilesystemSentinel(opts);
-  await sentinel.start(opts.paths);
-  return sentinel;
+export async function startSpillWatch(opts: SpillWatchOptions): Promise<SpillWatchHandle> {
+  const watcher = new SpillWatch(opts);
+  await watcher.start(opts.paths);
+  return watcher;
 }

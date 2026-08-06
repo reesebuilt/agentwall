@@ -170,9 +170,9 @@ export const detectionCatalog: DetectionMapping[] = [
     severity: "high",
   },
   {
-    id: "det.governance.killswitch.active",
-    ruleId: "governance:kill-switch",
-    name: "Action refused by the operator kill switch",
+    id: "det.governance.lockdown.active",
+    ruleId: "governance:lockdown",
+    name: "Action refused by the operator lockdown",
     description:
       "An action was attempted while the emergency stop was engaged and was refused. Expected during an intentional halt; unexpected outside one, which is why it is recorded rather than suppressed.",
     mitreAttack: {
@@ -183,11 +183,11 @@ export const detectionCatalog: DetectionMapping[] = [
     severity: "critical",
   },
   {
-    id: "det.identity.canary.triggered",
-    ruleId: "identity:deny-canary-triggered",
-    name: "Canary token triggered",
+    id: "det.identity.decoy.triggered",
+    ruleId: "identity:deny-decoy-triggered",
+    name: "Decoy token triggered",
     description:
-      "A planted canary credential appeared in inspected content. The value is synthetic and is never legitimately used, so its presence demonstrates exfiltration rather than inferring it.",
+      "A planted decoy credential appeared in inspected content. The value is synthetic and is never legitimately used, so its presence demonstrates exfiltration rather than inferring it.",
     mitreAttack: {
       tactic: "Credential Access",
       technique: "Unsecured Credentials",
@@ -196,11 +196,11 @@ export const detectionCatalog: DetectionMapping[] = [
     severity: "critical",
   },
   {
-    id: "det.content.fs.secret_written",
-    ruleId: "content:deny-fs-secret-write",
+    id: "det.content.spill.file_write",
+    ruleId: "content:deny-spill-file-write",
     name: "Credential written to a watched path",
     description:
-      "The filesystem sentinel observed credential material appear in a file under a watched path. The write itself is the finding: staging a harvested credential on disk precedes the commit or upload that would make it egress, and nothing in the network plane sees that step.",
+      "The spill watch observed credential material appear in a file under a watched path. The write itself is the finding: staging a harvested credential on disk precedes the commit or upload that would make it egress, and nothing in the network plane sees that step.",
     mitreAttack: {
       tactic: "Credential Access",
       technique: "Credentials In Files",

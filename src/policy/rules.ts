@@ -530,60 +530,60 @@ export const builtinRules: PolicyRule[] = [
   /**
    * The emergency stop, expressed as a rule so that a halted action is recorded with the
    * same shape as any other denial: a rule id, a detection, and an ATT&CK mapping an
-   * analyst can pivot on. It matches on the marker rather than reading the kill switch
+   * analyst can pivot on. It matches on the marker rather than reading the lockdown state
    * itself, so evaluating policy stays a pure function of the context handed to it and a
    * replayed context decides the same way it did live.
    *
    * Same trust direction as the gate above: a forged marker can only stop something. The
-   * runtime reads the switch directly, so clearing the marker cannot restart gated activity.
+   * runtime reads the state directly, so clearing the marker cannot restart gated activity.
    */
   {
-    id: "governance:kill-switch",
-    description: "Deny any action attempted while the operator kill switch is engaged",
+    id: "governance:lockdown",
+    description: "Deny any action attempted while the operator lockdown is engaged",
     plane: "governance",
-    match: (ctx: AgentContext) => ctx.metadata?.["killSwitchActive"] === "true",
+    match: (ctx: AgentContext) => ctx.metadata?.["lockdownActive"] === "true",
     decision: "deny",
     riskLevel: "critical",
-    reason: "Operator kill switch is engaged; all gated activity is stopped",
+    reason: "Operator lockdown is engaged; all gated activity is stopped",
   },
   /**
-   * The canary rule, expressed as a marker match for the same reason the kill switch is: the
+   * The decoy rule, expressed as a marker match for the same reason the lockdown rule is: the
    * engine must stay a pure function of the context it is handed, so a replayed context reaches
-   * the same verdict it did live. Nothing here searches for the canary value - it is not in the
+   * the same verdict it did live. Nothing here searches for the decoy value - it is not in the
    * context and must never be put there, because the context is what the audit record is built
    * from. The detection has already happened by the time policy sees this; the rule exists so a
-   * canary hit lands with a rule id, a detection, and an ATT&CK mapping like every other denial.
+   * decoy hit lands with a rule id, a detection, and an ATT&CK mapping like every other denial.
    */
   {
-    id: "identity:deny-canary-triggered",
-    description: "Deny any flow in which a planted canary token was observed",
+    id: "identity:deny-decoy-triggered",
+    description: "Deny any flow in which a planted decoy token was observed",
     plane: "identity",
     match: (ctx: AgentContext) =>
       ctx.plane === "identity" &&
-      (ctx.action === "canary:triggered" || ctx.metadata?.["canaryTriggered"] === "true"),
+      (ctx.action === "decoy:triggered" || ctx.metadata?.["decoyTriggered"] === "true"),
     decision: "deny",
     riskLevel: "critical",
-    reason: "A canary token that is never legitimately used appeared in inspected content",
+    reason: "A decoy token that is never legitimately used appeared in inspected content",
   },
   /**
-   * Credential material observed in a file under a path the filesystem sentinel watches.
+   * Credential material observed in a file under a path the spill watch observes.
    *
    * The decision is a verdict on something already done rather than an intervention: the
-   * sentinel sees the write after the bytes have landed, so nothing here prevents anything.
+   * watch sees the write after the bytes have landed, so nothing here prevents anything.
    * Recording it as an allow would tell an analyst reading the chain that staging a
    * credential on disk was considered acceptable, which is the opposite of the finding.
    *
-   * It matches on the sentinel's own action and on the presence of type names in metadata,
+   * It matches on the spill watch's own action and on the presence of type names in metadata,
    * never on file contents - the contents are deliberately absent from the context, so a
    * rule that tried to re-derive the match here would find nothing to read.
    */
   {
-    id: "content:deny-fs-secret-write",
-    description: "Deny credential material written to a filesystem path under sentinel watch",
+    id: "content:deny-spill-file-write",
+    description: "Deny credential material written to a filesystem path under spill watch",
     plane: "content",
     match: (ctx: AgentContext) => {
       if (ctx.plane !== "content") return false;
-      return ctx.action === "fs:secret-written" && (ctx.metadata?.["secretTypes"] ?? "") !== "";
+      return ctx.action === "spill:file-write" && (ctx.metadata?.["secretTypes"] ?? "") !== "";
     },
     decision: "deny",
     riskLevel: "high",

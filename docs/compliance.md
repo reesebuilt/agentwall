@@ -16,7 +16,7 @@ Read the [Limits](#limits) section before treating a grade as an answer.
 
 `scoreConfig` takes a description of the whole deployment, not just the YAML file. Half of
 AgentWall's posture lives in environment variables — the operator token, the audit file path,
-the proxy port, the kill-switch sentinel — deliberately, because a security product should
+the proxy port, the lockdown sentinel — deliberately, because a security product should
 not invent a location in `$HOME` or bake a credential into a file people commit. A scorer
 that read only the config document would award a clean bill of health to a deployment with no
 authentication and no durable audit trail.
@@ -59,7 +59,7 @@ Fifteen categories, 120 points.
 | `runtime.rate-limits` | `runtimeGuards.enabled` (3), the three ceilings (3) | 6 | Enabled, all three ceilings positive |
 | `dlp.content-scanning` | `dlp.enabled` (4), `dlp.redactSecrets` (2) | 6 | Both on |
 | `telemetry.decision-traces` | `telemetry.enabled` and `telemetry.endpoint` | 4 | Enabled with an endpoint |
-| `killswitch.sentinel` | `env.AGENTWALL_KILLSWITCH_FILE` (4), `watchdog.enabled` (2), `watchdog.killSwitchMode` (2) | 8 | Sentinel path set, watchdog on, mode `deny_all` |
+| `lockdown.sentinel` | `env.AGENTWALL_LOCKDOWN_FILE` (4), `watchdog.enabled` (2), `watchdog.killSwitchMode` (2) | 8 | Sentinel path set, watchdog on, mode `deny_all` |
 | `integrity.manifest` | `manifestIntegrity.enabled` (4), `approvedHashesPath` (2) | 6 | Enabled with a persisted hash file |
 
 The weights are a judgement, and the shape of that judgement is worth stating: enforcement

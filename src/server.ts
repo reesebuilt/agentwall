@@ -17,9 +17,9 @@ import { uiRoutes } from "./routes/ui";
 import { telegramTestBotRoutes } from "./routes/telegram";
 import { communicationChannelRoutes } from "./routes/communication-channel";
 import { damageControlRoutes } from "./routes/damage-control";
-import { killSwitchRoutes } from "./routes/kill-switch";
-import { initKillSwitch } from "./runtime/kill-switch";
-import { scanRoutes } from "./routes/scan";
+import { lockdownRoutes } from "./routes/lockdown";
+import { initLockdown } from "./runtime/lockdown";
+import { probeRoutes } from "./routes/probe";
 import { FileBackedPolicyRuntime, ReloadResult } from "./policy/runtime";
 import { RuntimeFloodGuard } from "./runtime/floodguard";
 import { createDecisionTraceExporter } from "./telemetry/otel";
@@ -72,7 +72,7 @@ export async function buildServer(config: AgentwallConfig): Promise<AgentwallSer
   // audit stream that records them. Idempotent, so rebuilding a server does not stack a
   // second SIGUSR1 listener or a second poll timer. No path in the environment simply
   // leaves the sentinel channel off; the other three sources are unaffected.
-  initKillSwitch({ sentinelPath: process.env.AGENTWALL_KILLSWITCH_FILE });
+  initLockdown({ sentinelPath: process.env.AGENTWALL_LOCKDOWN_FILE });
 
   const policyRuntime = config.policy.configPath
     ? new FileBackedPolicyRuntime(config.policy.configPath, { logger: app.log })
@@ -149,8 +149,8 @@ export async function buildServer(config: AgentwallConfig): Promise<AgentwallSer
   await damageControlRoutes(app, engine, runtime);
   await dashboardRoutes(app, config, engine, gate, runtime, floodGuard, policyRuntime);
   await uiRoutes(app);
-  await killSwitchRoutes(app);
-  await scanRoutes(app, engine, runtime);
+  await lockdownRoutes(app);
+  await probeRoutes(app, engine, runtime);
 
   return { app, engine, gate, runtime, policyRuntime, reloadPolicy };
 }

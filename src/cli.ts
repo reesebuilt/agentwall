@@ -7,13 +7,14 @@ import { loadConfig } from "./config";
 import { defaultConfig, OnboardingMode, writeStarterFiles } from "./onboarding";
 import { runAnchorPass, runVerify, resolvePaths } from "./audit/anchor-service";
 import { runMcpWrap, runMcpHttpWrap } from "./mcp/wrap";
-import { runCanaryCommand } from "./canary";
+import { runDecoyCommand } from "./decoy";
+import { runPerimeterCommand } from "./perimeter";
 import {
-  explainExitCode,
-  formatExplainReport,
-  parseExplainArgs,
-  runExplain,
-} from "./explain";
+  formatRationaleReport,
+  parseRationaleArgs,
+  rationaleExitCode,
+  runRationale,
+} from "./rationale";
 import { PolicyEngine } from "./policy/engine";
 
 type CliFlags = Record<string, string | boolean>;
@@ -111,8 +112,9 @@ Commands:
   pause               Pause one runtime session
   resume              Resume one runtime session
   terminate           Terminate one runtime session
-  canary              Generate and inspect canary tokens
-  explain             Explain which check fires on a URL, some text, or a tool call
+  perimeter           Contain an agent UID behind the transparent proxy
+  decoy               Generate and inspect decoy tokens
+  why                 Explain which check fires on a URL, some text, or a tool call
   version             Print version
   help                Show this message
 
@@ -158,13 +160,21 @@ MCP wrap options:
   --http-host <host>                  Listener interface (default: 127.0.0.1); non-loopback needs a token
   --http-auth-token-file <path>       File holding the bearer token clients must present
 
-Canary options:
-  --kind <kind>                       Canary kind: aws-access-key, github-pat, openai-key, generic-secret, url
-  --label <text>                      Operator label kept with the token and folded into its env var name
-  --out <path>                        Append the generated token to this canary file (written at mode 0600)
-  --file <path>                       Canary file to list; refuses one that group or other can read
+Perimeter options:
+  plan                                Print the nftables ruleset the current spec would install
+  install                             Install that ruleset (requires root)
+  status                              Report whether the redirect and drop rules are present
+  verify                              Check the perimeter end to end from the agent UID
+  run -- <cmd>                        Run a command as the agent UID inside the perimeter
+  rollback                            Remove the ruleset AgentWall installed
 
-Explain options:
+Decoy options:
+  --kind <kind>                       Decoy kind: aws-access-key, github-pat, openai-key, generic-secret, url
+  --label <text>                      Operator label kept with the token and folded into its env var name
+  --out <path>                        Append the generated token to this decoy file (written at mode 0600)
+  --file <path>                       Decoy file to list; refuses one that group or other can read
+
+Why options:
   --kind <url|text|tool>              Subject kind (inferred from the subject when omitted)
   --tool <name>                       Tool name for --kind tool
   --args <json>                       JSON object of tool arguments for --kind tool
@@ -1015,7 +1025,19 @@ async function commandMcp(args: string[]): Promise<void> {
 }
 
 /**
- * `agentwall explain` - re-run the scanners against a subject and print what fired.
+ * `agentwall perimeter` - the kernel-level containment commands.
+ *
+ * Raw argv, and the exit code comes straight back from the perimeter module rather than being
+ * re-derived here. `status` and `verify` are gates a deployment script reads, and `run` has to
+ * pass the contained command's own status through untouched, so wrapping a build in the
+ * perimeter never hides that build failing.
+ */
+async function commandPerimeter(args: string[]): Promise<void> {
+  process.exit(await runPerimeterCommand(args));
+}
+
+/**
+ * `agentwall why` - re-run the scanners against a subject and print what fired.
  *
  * Exits 1 when anything fired and 0 when nothing did, so this works as a gate in a script
  * without parsing the output. Deliberately keyed on findings rather than on the decision: with
@@ -1024,13 +1046,13 @@ async function commandMcp(args: string[]): Promise<void> {
  *
  * The engine is the builtin rule set only. Nothing here loads your policy file, because a
  * partially-loaded policy would make the output look authoritative about a deployment it has
- * not read - see the limits in docs/explain.md.
+ * not read - see the limits in docs/why.md.
  */
-function commandExplain(flags: CliFlags, positionals: string[]): void {
-  const request = parseExplainArgs(flags, positionals);
-  const result = runExplain(request, new PolicyEngine());
-  console.log(request.json ? JSON.stringify(result, null, 2) : formatExplainReport(result));
-  process.exit(explainExitCode(result));
+function commandWhy(flags: CliFlags, positionals: string[]): void {
+  const request = parseRationaleArgs(flags, positionals);
+  const result = runRationale(request, new PolicyEngine());
+  console.log(request.json ? JSON.stringify(result, null, 2) : formatRationaleReport(result));
+  process.exit(rationaleExitCode(result));
 }
 
 
@@ -1099,13 +1121,18 @@ async function main() {
       // parseFlags() has already read them as if they were ours.
       await commandMcp(args);
       return;
-    case "canary":
-      // Raw args for the same reason `mcp` takes them: the subcommand is a positional that
-      // parseFlags() would hand back stripped of the ordering the canary parser needs.
-      runCanaryCommand(args);
+    case "perimeter":
+      // Raw args for the same reason `mcp` takes them: the subcommand is a positional, and
+      // everything after `run --` belongs to the contained command rather than to us.
+      await commandPerimeter(args);
       return;
-    case "explain":
-      commandExplain(flags, positionals);
+    case "decoy":
+      // Raw args for the same reason `mcp` takes them: the subcommand is a positional that
+      // parseFlags() would hand back stripped of the ordering the decoy parser needs.
+      runDecoyCommand(args);
+      return;
+    case "why":
+      commandWhy(flags, positionals);
       return;
     default:
       console.error(`Unknown command: ${command}`);

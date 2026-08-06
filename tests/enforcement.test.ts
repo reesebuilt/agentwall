@@ -12,7 +12,7 @@ import { createForwardProxy } from "../src/proxy/forward-proxy";
 import type { ProxyRecord } from "../src/proxy/forward-proxy";
 import { decideEgress, setEgressAllowlist } from "../src/runtime/enforcement";
 import type { EgressAttempt } from "../src/runtime/enforcement";
-import { activateKillSwitch, resetKillSwitch } from "../src/runtime/kill-switch";
+import { engageLockdown, resetLockdown } from "../src/runtime/lockdown";
 import type { PolicyRule } from "../src/types";
 
 /**
@@ -37,12 +37,12 @@ describe("enforcement modes", () => {
   const engine = new PolicyEngine();
 
   beforeEach(() => {
-    resetKillSwitch();
+    resetLockdown();
     setEgressAllowlist([]);
   });
 
   afterEach(() => {
-    resetKillSwitch();
+    resetLockdown();
     setEgressAllowlist([]);
   });
 
@@ -182,23 +182,23 @@ describe("enforcement modes", () => {
   });
 });
 
-describe("kill switch overrides the enforcement mode", () => {
+describe("lockdown overrides the enforcement mode", () => {
   const engine = new PolicyEngine();
 
   beforeEach(() => {
-    resetKillSwitch();
+    resetLockdown();
     // Allowlisted, so nothing but the stop itself can be responsible for the denial.
     setEgressAllowlist(["api.example.com"]);
   });
 
   afterEach(() => {
-    resetKillSwitch();
+    resetLockdown();
     setEgressAllowlist([]);
   });
 
   for (const mode of ["monitor", "guarded", "strict"] as const) {
     it(`denies in ${mode} mode while the stop is engaged`, () => {
-      activateKillSwitch("operator-cli", "incident 42");
+      engageLockdown("operator-cli", "incident 42");
 
       const verdict = decideEgress(UNMATCHED_TARGET, mode, engine);
 
@@ -207,16 +207,16 @@ describe("kill switch overrides the enforcement mode", () => {
       // The mode is still reported truthfully. Monitor did not stop being monitor; it was
       // overridden, and the ledger has to show both facts.
       expect(verdict.mode).toBe(mode);
-      expect(verdict.matchedRules).toContain("governance:kill-switch");
-      expect(verdict.detectionIds).toContain("det.governance.killswitch.active");
+      expect(verdict.matchedRules).toContain("governance:lockdown");
+      expect(verdict.detectionIds).toContain("det.governance.lockdown.active");
       expect(verdict.reasons[0]).toContain("operator-cli");
       expect(verdict.reasons[0]).toContain("incident 42");
     });
   }
 
   it("names every source holding the stop", () => {
-    activateKillSwitch("operator-cli", "incident 42");
-    activateKillSwitch("watchdog");
+    engageLockdown("operator-cli", "incident 42");
+    engageLockdown("watchdog");
 
     const verdict = decideEgress(UNMATCHED_TARGET, "monitor", engine);
 
@@ -225,8 +225,8 @@ describe("kill switch overrides the enforcement mode", () => {
   });
 
   it("allows again once every hold is released", () => {
-    activateKillSwitch("operator-cli");
-    resetKillSwitch();
+    engageLockdown("operator-cli");
+    resetLockdown();
 
     expect(decideEgress(UNMATCHED_TARGET, "monitor", engine).decision).toBe("allow");
   });
@@ -371,8 +371,8 @@ describe("forward proxy honours a denied verdict", () => {
         host: "127.0.0.1",
         decide: () => ({
           decision: "deny",
-          reasons: ["kill switch active (sources: operator-cli)"],
-          matchedRules: ["governance:kill-switch"],
+          reasons: ["lockdown active (sources: operator-cli)"],
+          matchedRules: ["governance:lockdown"],
           riskLevel: "critical",
         }),
         record: (record) => records.push(record),
@@ -384,7 +384,7 @@ describe("forward proxy honours a denied verdict", () => {
     const response = await connectThrough(proxyPort, `127.0.0.1:${upstreamPort}`);
 
     expect(response).toContain("HTTP/1.1 403 Forbidden");
-    expect(response).toContain("X-Agentwall-Block-Reason: kill switch active (sources: operator-cli)");
+    expect(response).toContain("X-Agentwall-Block-Reason: lockdown active (sources: operator-cli)");
     expect(response).not.toContain("200 Connection Established");
     // The assertion this test exists for: the destination never saw a handshake.
     expect(upstreamConnections).toBe(0);
