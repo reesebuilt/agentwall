@@ -222,10 +222,6 @@ jobs:
       - name: Build
         run: npm run build
 
-      - name: Build verifier
-        run: go build -o agentwall-verify .
-        working-directory: verifier
-
       # rustup ships on the runner image and reads verifier-rs/rust-toolchain.toml, so the
       # pinned 1.90.0 toolchain installs itself and no third-party action is needed here. That
       # matters for more than convenience: every `uses:` in this file has to be SHA pinned, and
@@ -235,6 +231,10 @@ jobs:
       - name: Build the Rust verifier
         run: cargo build --release --locked
         working-directory: verifier-rs
+
+      - name: Build verifier
+        run: go build -o agentwall-verify .
+        working-directory: verifier
 
       # Runs the committed corpus, the bytes a stranger gets from a checkout, through every
       # implementation this checkout contains. The harness exits non-zero on any failure and
