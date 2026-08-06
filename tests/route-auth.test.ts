@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "@jest/globals";
 import { buildServer } from "../src/server";
 import type { AgentwallConfig } from "../src/config";
+import { packageVersion } from "../src/version";
 
 /**
  * Proves the auth gate actually protects routes.
@@ -91,6 +92,19 @@ describe("route authentication", () => {
 		try {
 			const res = await app.inject({ method: "GET", url: "/health" });
 			expect(res.statusCode).not.toBe(401);
+		} finally {
+			await app.close();
+		}
+	});
+
+	// The version here was a string literal that said 0.1.0 while package.json said otherwise,
+	// so a liveness probe reported a release that does not exist. It is the first thing anyone
+	// curls at a running instance, which makes it the worst place to be wrong.
+	it("reports the version this build actually is", async () => {
+		const { app } = await buildServer(config);
+		try {
+			const res = await app.inject({ method: "GET", url: "/health" });
+			expect(res.json()).toMatchObject({ status: "ok", version: packageVersion });
 		} finally {
 			await app.close();
 		}
