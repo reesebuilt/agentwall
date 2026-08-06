@@ -5,6 +5,7 @@ import * as path from "path";
 import { spawnSync } from "child_process";
 import { loadConfig } from "./config";
 import { defaultConfig, OnboardingMode, writeStarterFiles } from "./onboarding";
+import { runOnboardCommand } from "./onboard";
 import { runAnchorPass, runVerify, resolvePaths } from "./audit/anchor-service";
 import { runMcpWrap, runMcpHttpWrap } from "./mcp/wrap";
 import { runDecoyCommand } from "./decoy";
@@ -101,6 +102,7 @@ Usage:
 
 Commands:
   init                Create agentwall.config.yaml and policy.yaml
+  onboard             Mint an identity for one agent runtime and print the env it needs
   start               Start Agentwall server from current directory config
   dev                 Start in ts-node dev mode
   doctor              Validate local install and starter files
@@ -1104,6 +1106,10 @@ async function main() {
     case "init":
       commandInit(flags);
       return;
+    case "onboard":
+      // Raw args: the profile is a positional and the onboard parser reads its own flags,
+      // several of which (--allow, --agent-id) parseFlags() would have already consumed.
+      process.exit(runOnboardCommand(args));
     case "start":
       runNodeScript([path.resolve(process.cwd(), "dist/index.js")]);
       return;
