@@ -85,10 +85,16 @@ fn discover_rotated(audit: &Path) -> Vec<PathBuf> {
         if !path.is_file() {
             continue;
         }
+        // `.lock` is the writer's single-writer lock, not a segment. It sits beside the chain
+        // for the whole life of every live deployment, so a verifier that walks it reports
+        // `chained` FAIL on a healthy host: the pid inside is not a record. The bundled
+        // TypeScript verifier (src/audit/rotation.ts) and the Go verifier (verifier/manifest.go)
+        // both exclude it. Omitting it here meant an auditor running this binary against a live
+        // directory was told the evidence had been edited when nothing had touched it.
         if path
             .file_name()
             .and_then(|s| s.to_str())
-            .is_some_and(|n| n.starts_with(&prefix))
+            .is_some_and(|n| n.starts_with(&prefix) && !n.ends_with(".lock"))
         {
             found.insert(path);
         }

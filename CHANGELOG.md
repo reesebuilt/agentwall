@@ -91,6 +91,51 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
   manifest. One request reads at most 100,000 records and skips a file above 64 MB, stating the cap
   on the page when it bites. Behind the operator bearer token like every other non-health route;
   `AGENTWALL_ALLOW_LOOPBACK_DEV=1` is what makes it openable in a browser.
+- Read-only multi-host evidence aggregation at `/evidence/fleet`, with the same report as JSON at
+  `/api/evidence/fleet` and one page per host. It is the single-host viewer one level up: each
+  host's chain is read from a path and verified independently by the same `runVerify()`, on its
+  own bytes. The chains are deliberately NOT merged: N hosts produce N independently anchored
+  chains, merging them needs a total order across hosts, and nothing an auditor asks requires one.
+  Each host's page prints all four independent verifier implementations against that host's own
+  file, because reproducing the aggregator's verdict without trusting the aggregator is worth more
+  across a fleet than on one laptop. The per-agent rollup answers which agents ran, on which hosts,
+  in which window, what the identity claim rests on, which allowlist judged it, what each attempted
+  by destination, what refused it by rule id, and whether credential material was seen in flight
+  and whether it was redacted; the proxy plane records a class and never a value and never rewrites
+  a body, and the page says so rather than letting a detection read like a removal. Host sources
+  come from a file named by `AGENTWALL_FLEET_EVIDENCE`, re-read per request, with a required
+  `staleAfterSeconds`; a malformed sources file renders no host at all rather than a fleet quietly
+  missing whichever entry had the typo. Read only is structural and has one mechanism more than the
+  single-host viewer: only `GET` handlers exist, every mutating method returns `405`, the page
+  serves no script, and nothing here opens a socket to any host or holds a credential on one.
+- Failure semantics on the fleet view, stated because "no findings" and "could not look" must never
+  render alike. Five host states: `verified`, `broken`, `stale`, `empty`, `unreachable`. An
+  unreachable host shows its last-seen time and NO layer verdict, because a verdict over a file
+  that could not be opened would be invented and would be either a false clean or a false alarm.
+  The aggregate has three states and cannot say clean while anything is unread: any unreachable,
+  stale, or empty host makes it `incomplete`. A chain nobody has anchored off-box is reclassified
+  from the anchored layer's `FAIL` into a counted coverage gap rather than a break, with the layer
+  still shown verbatim beside the CLI's verdict, because an absence of external evidence is not
+  external evidence that disagrees and painting every unanchored deployment as tampered with
+  teaches an operator to ignore red.
+- Coverage gaps as first-class content on both fleet pages, separating three things that are
+  routinely conflated: the limit, which is a property of the controls; whether it can be counted
+  at all; and the count in this evidence, which reads `unmeasured` rather than `0` when there was
+  no population. Eleven rows, including https bodies relayed unread without opt-in interception,
+  the 256 KiB inspection cap, the padding evasion past it and DNS to a named resolver, both of
+  which are permanently unmeasurable and say so instead of reading zero, streams passed through
+  uninspected, deliberate interception bypass, credential material recorded but never removed from
+  a proxied body, monitor-mode allows that blocked nothing, the transparent path carrying no fleet
+  identity, chains with no off-box anchor, and completeness.
+- `EvidenceRecord` carries two named sub-objects read back from the metadata the writers already
+  emit: the fleet attribution (`agentLabel`, `agentMatchedOn`, `agentDeclared`,
+  `egressAllowlistSource`) and the proxied-connection annotation (destination, scheme, enforcement
+  mode, transport mode, `bodyVisibility`, whether a body was read only to the cap, and the classes
+  of secret the scan named). Named keys, never the metadata block. Both the prefixed spelling the
+  plaintext proxy produces and the unprefixed spelling the interception path produces are read: the
+  interception path files one record per inner exchange and never folds two passes together, so a
+  reader that knew only the prefixed form would report a decrypted, scanned https body as carrying
+  no findings, which inverts the meaning of the coverage table.
 
 ### Changed
 - The bundled verifier returns the same verdict as the independent Go verifier on every case in the

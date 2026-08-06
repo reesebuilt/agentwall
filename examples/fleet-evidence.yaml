@@ -1,0 +1,45 @@
+# Agentwall fleet evidence sources: where each host's chain landed on THIS box.
+#
+# Point an aggregator at this file with AGENTWALL_FLEET_EVIDENCE and it serves a read-only
+# view over every chain listed, at /evidence/fleet. Read docs/fleet-evidence.md first: what
+# the aggregate proves is narrower than it looks, and the doc says exactly how.
+#
+# This is not the enforcement config. An aggregator does not need one of those and usually
+# should not have one: it is a reader, it opens no socket to any host, and it holds no
+# credential on one. The evidence gets here by whatever transport you already run, and the
+# aggregator only ever reads a path.
+
+# How old a host's newest record may be before it renders as `stale` rather than `verified`.
+#
+# Required, with no default, because there is no safe silent answer. Set it to a little more
+# than your sync interval. A host whose delivery broke three days ago still verifies every
+# old record it already sent, and without this bound that page shows green for a host nobody
+# has heard from since Tuesday.
+staleAfterSeconds: 900
+
+hosts:
+  # `id` is what a reviewer cites, so keep it stable across restarts and reinstalls.
+  # Alphanumeric with dots, dashes or underscores: it appears in a URL path segment.
+  - id: build-01
+    label: Build runner, us-east
+    # Relative paths resolve against THIS file, not the working directory, so the same
+    # sources file behaves identically from any shell.
+    auditPath: hosts/build-01/audit.jsonl
+
+  - id: support-01
+    label: Support assistant box
+    auditPath: hosts/support-01/audit.jsonl
+
+  # The manifest, anchor log, checkpoint key and proof directory default beside the audit
+  # file, exactly as the CLI resolves them, so a host directory copied whole needs nothing
+  # else. Name them only when your layout differs.
+  - id: edge-07
+    label: Depot edge box
+    auditPath: /srv/agentwall-evidence/edge-07/audit.jsonl
+    manifestPath: /srv/agentwall-evidence/edge-07/segments.jsonl
+    anchorLogPath: /srv/agentwall-evidence/edge-07/anchors.jsonl
+    proofDir: /srv/agentwall-evidence/edge-07/proofs
+
+# A host missing from this list is invisible here. That is not a bug and it is stated on the
+# page: the aggregator reads exactly where it is told to look, and its silence about a host
+# nobody declared is silence, not a clean bill of health.

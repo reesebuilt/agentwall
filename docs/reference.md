@@ -42,6 +42,8 @@ POST /reload              GET /reload                   # config and policy relo
 GET  /api/fleet                                         # declared agents, live budget counters
 GET  /evidence            GET /evidence/session/:id     # read-only evidence viewer, HTML
 GET  /api/evidence        GET /api/evidence/session/:id # the same report as JSON
+GET  /evidence/fleet      GET /evidence/fleet/host/:id  # read-only fleet evidence, HTML
+GET  /api/evidence/fleet  GET /api/evidence/fleet/host/:id # the same report as JSON
 GET  /health              GET /ready                    # liveness; /ready needs the token
 ```
 
@@ -57,6 +59,7 @@ directory, so run Agentwall from the directory you ran `init` in.
 | `AGENTWALL_OPERATOR_TOKEN` | Bearer token for every non-public route. Unset means everything returns `401`. |
 | `AGENTWALL_ALLOW_LOOPBACK_DEV` | `1` accepts loopback callers without a token. Local development only. |
 | `AGENTWALL_AUDIT_FILE` | Path for the hash-chained audit log. No default, by design: a security product should not invent a location in `$HOME`. Unset means stdout only. |
+| `AGENTWALL_FLEET_EVIDENCE` | Path to the fleet evidence sources file, listing each host and where its chain was delivered on this box. Unset means `/evidence/fleet` answers `503` naming this variable. Re-read on every request. See [fleet evidence](fleet-evidence.md) and [examples/fleet-evidence.yaml](../examples/fleet-evidence.yaml). |
 | `AGENTWALL_PROXY_PORT` | Forward proxy port. Unset or `0` means the proxy does not start. |
 | `AGENTWALL_PROXY_HOST` | Proxy bind host. Defaults to `127.0.0.1`. |
 | `AGENTWALL_PROXY_LEDGER` | Flat JSONL view of destinations, for allowlist analysis. No default, same reason as the audit file. Unset means no flat ledger; the audit chain is still the record. |

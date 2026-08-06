@@ -97,6 +97,14 @@ def discover_rotations(paths: Paths) -> list[str]:
     for name in names:
         if not name.startswith(base + "."):
             continue
+        # The writer's single-writer lock, not a segment. It sits beside the chain for the whole
+        # life of every live deployment, so a verifier that walks it reports `chained` FAIL on a
+        # healthy host: it fails to parse the pid inside and calls that an edited record. The
+        # bundled TypeScript verifier (src/audit/rotation.ts) and the Go verifier
+        # (verifier/manifest.go) both exclude it; this omission made an auditor running this
+        # command against a live directory be told the evidence was tampered with.
+        if name.endswith(".lock"):
+            continue
         full = os.path.join(directory, name)
         if os.path.realpath(full) in excluded or not os.path.isfile(full):
             continue

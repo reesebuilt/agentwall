@@ -23,6 +23,10 @@ than a narrative document.
 - [Evidence viewer](evidence-viewer.md): the read-only console at `/evidence`, the per-session
   scorecard, the three verification layers shown inline, why a pending anchor is never rendered
   as verified, and the offline command the page prints so it is not the root of trust.
+- [Fleet evidence](fleet-evidence.md): the read-only aggregator at `/evidence/fleet` over
+  several hosts' chains, each verified independently on its own bytes; why the chains are not
+  merged, what an unreachable host renders as and why that is not a clean one, and the coverage
+  gaps shown as content rather than as a footnote.
 - [FloodGuard](runtime-floodguard.md): runtime rate and burst control, including how
   shield mode changes behaviour.
 - [Wrapping an MCP server](mcp.md): running a local MCP server behind the gates, what each gate
