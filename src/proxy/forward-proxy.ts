@@ -1,13 +1,13 @@
 import { createServer as createHttpServer, IncomingMessage, ServerResponse, request as httpRequest } from "http";
 import type { ClientRequest, IncomingHttpHeaders } from "http";
 import { connect as netConnect, Socket, Server } from "net";
-import { readdirSync, readFileSync, readlinkSync } from "fs";
 import { brotliDecompressSync, constants as zlibConstants, gunzipSync, inflateSync } from "zlib";
 import { MAX_SCAN_CHARS } from "../policy/injection";
 import type { RiskLevel } from "../types";
 import { MAX_CLIENT_HELLO_BYTES, peekClientHello } from "./tls-peek";
 import { parseProxyCredential } from "../fleet/registry";
 import type { Interceptor } from "./tls-intercept";
+import { attributeSocket } from "./socket-attribution";
 
 /**
  * CONNECT-aware forward proxy: the insertion mechanism.
@@ -277,163 +277,6 @@ export interface ForwardProxyOptions {
    * which is the failure this design exists to make impossible.
    */
   interceptor?: Interceptor;
-}
-
-/**
- * Map a proxy client socket back to the process, and the uid, that opened it.
- *
- * This is what lets the ledger name the process that actually made the call, rather than
- * "unknown", WITHOUT harness cooperation, which is the point of a harness-agnostic
- * design. /proc/net/tcp turns a local port into a socket inode; /proc/<pid>/fd finds the
- * owner. Linux-specific and best-effort by design: attribution failing must never break
- * egress.
- *
- * The uid comes out of the SAME /proc/net/tcp line as the inode (column 7), so it costs
- * nothing beyond a second array index and, unlike the pid, survives the case where the fd
- * walk finds nothing. That difference matters for identity: a uid is a kernel fact a process
- * cannot change without privilege, whereas `comm` is a 16-byte label the process writes
- * itself. Measured on this host: Node rewrites its own comm to "MainThread" at startup, and
- * `process.title = "aw-scraper"` sets it to anything the process likes. src/fleet/registry.ts
- * ranks the signals accordingly.
- */
-/**
- * Attribution cost control.
- *
- * Resolving a connection to a process is two steps: read /proc/net/tcp to map the
- * client port to a socket inode (cheap), then find which process holds that inode
- * (expensive: walking every /proc/<pid>/fd measured ~44ms, scaling with total FDs).
- *
- * Caching the inode is useless: every connection has a fresh one, so it never hits.
- * What repeats is the PROCESS. An agent fleet is a handful of long-lived clients
- * opening many connections, so recently-seen pids are checked first; only a
- * genuinely new process pays the full walk.
- *
- * The walk is SYNCHRONOUS and blocks the event loop for its duration (~44ms cold,
- * ~1.6ms warm). An async-fs version was tried and reverted: per-fd awaits made it
- * roughly 4x worse (0.95s vs 0.38s per request) because microtask overhead dominates
- * a walk of thousands of descriptors. The hot-pid cache is what keeps the blocking
- * rare rather than async I/O, so a burst of connections from NEW processes will
- * serialise. That is a known cost, not an oversight.
- */
-const HOT_PID_MAX = 16;
-const hotPids: number[] = [];
-
-function touchHotPid(pid: number): void {
-  const i = hotPids.indexOf(pid);
-  if (i !== -1) hotPids.splice(i, 1);
-  hotPids.unshift(pid);
-  if (hotPids.length > HOT_PID_MAX) hotPids.length = HOT_PID_MAX;
-}
-
-function readComm(pid: number): string | null {
-  try {
-    return readFileSync(`/proc/${pid}/comm`, "utf8").trim();
-  } catch {
-    return null;
-  }
-}
-
-/** Does this pid hold the socket? One readdir of a single process. */
-function pidHoldsInode(pid: number, target: string): boolean {
-  let fds: string[];
-  try {
-    fds = readdirSync(`/proc/${pid}/fd`);
-  } catch {
-    return false;
-  }
-  for (const fd of fds) {
-    try {
-      if (readlinkSync(`/proc/${pid}/fd/${fd}`) === target) return true;
-    } catch {
-      /* fd vanished mid-scan */
-    }
-  }
-  return false;
-}
-
-/**
- * Resolve one connection to the process, and the uid, that opened it.
- *
- * Both ends are required, and the row has to match both. A match on the client's port alone
- * names the wrong process, reliably rather than occasionally: /proc/net/tcp lists LISTENING
- * sockets before established ones, so any process listening on an address whose port happens
- * to equal this client's ephemeral source port is found first, and the ledger attributes the
- * call to it. Ephemeral ports and service ports come out of the same 16 bits, so the collision
- * arrives without anyone arranging it. A wrong pid is worse than no pid: an operator sees a
- * named process that never made the call, and the one that did is invisible.
- *
- * Where the evidence is ambiguous, nothing is named. Two rows can share both ports only if
- * they differ in an address, and addresses are not compared here, so a second candidate means
- * this function cannot tell which socket it was asked about. Declining is the honest answer and
- * it costs nothing: attribution is best-effort and the connection proceeds either way. That
- * covers the uid as well: it is read off the same row as the inode, so an ambiguous row makes
- * the owner as unknowable as the process.
- */
-function attributeSocket(
-  clientPort: number,
-  proxyPort: number
-): { pid: number | null; comm: string | null; uid: number | null } {
-  if (!clientPort || !proxyPort) return { pid: null, comm: null, uid: null };
-  try {
-    const wantLocal = `:${clientPort.toString(16).toUpperCase().padStart(4, "0")}`;
-    const wantRemote = `:${proxyPort.toString(16).toUpperCase().padStart(4, "0")}`;
-    // Dynamic membership, and the count is the decision, so a keyed collection rather than a
-    // lookup table. Inode to uid, because both come off the same row and the uid outlives the
-    // fd walk: a socket whose owning process cannot be found still has an owning user.
-    const candidates = new Map<string, number | null>();
-
-    // Both tables, all the way through. Stopping at the first hit is what let a listening
-    // socket stand in for a connection, and a v4 row and a v6 row that both match are two
-    // candidates, not one answer.
-    for (const table of ["/proc/net/tcp", "/proc/net/tcp6"]) {
-      let content: string;
-      try {
-        content = readFileSync(table, "utf8");
-      } catch {
-        continue;
-      }
-      for (const line of content.split("\n").slice(1)) {
-        const cols = line.trim().split(/\s+/);
-        if (cols.length < 10) continue;
-        if (cols[1].endsWith(wantLocal) && cols[2].endsWith(wantRemote)) {
-          // Column 7 is the socket owner's uid. Parsed defensively rather than trusted: a
-          // malformed row must degrade to "unknown", never to uid 0, which would hand a
-          // root-scoped agent identity to whoever produced the bad line.
-          const parsed = Number(cols[7]);
-          candidates.set(cols[9], Number.isInteger(parsed) && parsed >= 0 ? parsed : null);
-        }
-      }
-    }
-    if (candidates.size !== 1) return { pid: null, comm: null, uid: null };
-    const [[inode, uid]] = candidates;
-
-    const target = `socket:[${inode}]`;
-
-    for (const pid of [...hotPids]) {
-      if (pidHoldsInode(pid, target)) {
-        touchHotPid(pid);
-        return { pid, comm: readComm(pid), uid };
-      }
-    }
-
-    let entries: string[];
-    try {
-      entries = readdirSync("/proc");
-    } catch {
-      return { pid: null, comm: null, uid };
-    }
-    for (const entry of entries) {
-      if (!/^\d+$/.test(entry)) continue;
-      const pid = Number(entry);
-      if (pidHoldsInode(pid, target)) {
-        touchHotPid(pid);
-        return { pid, comm: readComm(pid), uid };
-      }
-    }
-    return { pid: null, comm: null, uid };
-  } catch {
-    return { pid: null, comm: null, uid: null };
-  }
 }
 
 function parseHostPort(authority: string, fallbackPort: number): { host: string; port: number } {
