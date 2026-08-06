@@ -7,6 +7,16 @@ node_modules/
 node_modules
 dist/
 dist
+# The release staging directory. release.yml creates it, and scripts/build-verifier.sh writes
+# binaries into whatever directory it is given, which is this one during a release and during any
+# local rehearsal of it. Ignoring it is not tidiness: neither `dist/` nor `dist` above covers it,
+# because a gitignore pattern matches whole path components and `dist-release` is not `dist`. So a
+# `git add -A` after a local dry run commits five cross-compiled binaries, an npm tarball, and an
+# SBOM. That happened while building this, which is why the rule is here.
+#
+# Both spellings, for the symlink reason given at the top of this file.
+/dist-release/
+/dist-release
 .env
 .env.local
 *.log

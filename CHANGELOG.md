@@ -160,6 +160,44 @@ decision, policy file, or enforcement behavior moved in this release.
 - An independent verifier, `agentwall-verify`, written in Go against `docs/audit-format.md`
   rather than against our source. It uses the Go standard library and nothing else, so
   `go list -m all` prints one line, and it performs no network access and writes no files.
+  Published as binaries for linux/amd64, linux/arm64, darwin/amd64, darwin/arm64, and
+  windows/amd64, attached to the GitHub release alongside `checksums.txt` and
+  `SHA256SUMS-verifier.txt`. Only two of those five are statically linked, and the distinction is
+  security relevant enough not to round up: `file` reports linux/amd64 and linux/arm64 as
+  `statically linked`, while both darwin binaries are Mach-O `DYLDLINK` against
+  `/usr/lib/libSystem.B.dylib` and windows/amd64.exe imports the Windows system DLLs, among them
+  `kernel32.dll`, `advapi32.dll` and `ws2_32.dll`. Go cannot emit a fully static binary on either
+  platform, because libSystem is the only supported syscall interface on macOS and the Windows
+  syscall interface is those DLLs. What is true of all five is the property that matters for
+  running one: `CGO_ENABLED=0` means no cgo and no third-party runtime, so each binary needs only
+  the libraries its own operating system already ships, and never a Go toolchain or a package
+  install.
+  Five binaries is not five equally convenient installs: macOS and
+  Linux have a generated Homebrew formula, `agentwall-verify.rb`, built from those same checksums
+  and attached to the release, while Windows has the `.exe` and nothing else, because Homebrew has
+  no Windows support. The formula is not yet published to a tap, and Homebrew refuses to install a
+  formula that is not in one, so using it means copying it into a local tap first; the three
+  commands are in docs/install.md. The formula was installed and `brew test`ed against real
+  Homebrew, and passes `brew audit --strict`.
+  The builds are reproducible, which is the claim that matters for this artifact specifically:
+  `scripts/build-verifier.sh` is both the script the release runs and the script a stranger runs
+  to rebuild, and the release fails if the binaries do not rebuild byte-identically from a source
+  tree with no `.git`. Reproduction needs the exact Go version that script pins, because a
+  different Go emits different bytes.
+  Version verification is not uniform across the five, and the difference is worth stating:
+  linux/amd64 is verified by execution, since the release runs `--version` on it and fails if the
+  output disagrees with the tag. The other four are correct by construction rather than
+  version-verified: all five come from one invocation of that script passing one `-ldflags` value,
+  and the release additionally confirms statically that each asset embeds the release version
+  string. That static check deliberately claims nothing stronger, because a Go binary contains the
+  version string whether or not the `-X` stamp resolved. No emulation and no macOS runner are used,
+  so `--version` on real darwin or windows hardware is not claimed.
+  Note what each download check buys: `sha256sum -c` against a
+  `checksums.txt` fetched from the same release page proves the download is intact, and proves
+  nothing about whether the release itself is honest, since both files came down the same channel.
+  Verifying the SLSA provenance with `slsa-verifier` raises that to "this workflow built it from
+  this tag", and rebuilding from source removes us from the chain entirely. Full procedure in
+  [docs/install.md](docs/install.md#verify-a-downloaded-verifier-binary).
 - A 26 case conformance corpus covering valid evidence, forgeries, and boundary conditions, run
   through both verifiers on every commit. The two agree on all 26 cases and the harness declares
   no divergences. Four cases diverged when the corpus first shipped, each one a place the bundled

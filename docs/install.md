@@ -51,6 +51,150 @@ agentwall start
 curl http://127.0.0.1:3000/health
 ```
 
+## The `agentwall-verify` binary
+
+`agentwall-verify` is the independent Go implementation of `docs/audit-format.md`. It shares no
+code with the bundled TypeScript verifier, uses only the Go standard library, makes no network
+calls, and writes no files. It exists so that a party who does not trust Agentwall, or us, can
+still check an audit chain. That purpose is defeated if you cannot check the binary itself, so the
+procedure for doing so is below rather than assumed.
+
+Each release attaches five binaries and two manifests:
+
+| Asset | Platform | Linkage | Install path |
+| --- | --- | --- | --- |
+| `agentwall-verify-linux-amd64` | Linux x86-64 | static | Homebrew, or download |
+| `agentwall-verify-linux-arm64` | Linux ARM64 | static | Homebrew, or download |
+| `agentwall-verify-darwin-amd64` | macOS Intel | libSystem | Homebrew, or download |
+| `agentwall-verify-darwin-arm64` | macOS Apple Silicon | libSystem | Homebrew, or download |
+| `agentwall-verify-windows-amd64.exe` | Windows x86-64 | system DLLs | Download only |
+
+Only the Linux binaries are statically linked, and that is stated rather than rounded up because
+"static" is the difference between a binary that runs anywhere and one that depends on its host.
+`file` reports the two Linux binaries as `statically linked`. The darwin binaries are Mach-O
+`DYLDLINK` against `/usr/lib/libSystem.B.dylib`, and the Windows binary imports the usual system
+DLLs including `kernel32.dll`, `advapi32.dll` and `ws2_32.dll`. Go cannot emit a fully static
+binary for macOS or Windows, because those libraries are the syscall interface on those platforms.
+
+In practice this costs you nothing: all five are built `CGO_ENABLED=0`, so none needs a Go
+toolchain, a package install, or any third-party runtime. Each needs only what its own operating
+system already ships.
+
+`checksums.txt` covers every release asset. `SHA256SUMS-verifier.txt` covers the five binaries
+only, and is the file the Homebrew formula's digests are generated from.
+
+Windows has no package-manager path. Homebrew does not support Windows, so a Windows user
+downloads the `.exe` and verifies it by hand with the steps below. That is a real asymmetry and
+not an oversight.
+
+### Verify a downloaded verifier binary
+
+Three checks, in increasing order of how little they ask you to trust us. They are not
+substitutes for one another.
+
+**1. The download is intact.** Cheap, and the weakest of the three.
+
+You will normally have downloaded one binary, not all five. Both manifests list every file, and
+`-c` treats a listed file that is absent as a failure, so checking a whole manifest against a
+single download exits non-zero and prints `FAILED open or read` for the other four. Verify the one
+line you care about:
+
+```bash
+# Linux, and anywhere else with GNU coreutils.
+grep 'agentwall-verify-linux-amd64$' SHA256SUMS-verifier.txt | sha256sum -c -
+
+# macOS ships no sha256sum. shasum is preinstalled and reads the same format.
+grep 'agentwall-verify-darwin-arm64$' SHA256SUMS-verifier.txt | shasum -a 256 -c -
+```
+
+If you did download every asset, check the whole thing. `--ignore-missing` works in both tools if
+you want the manifest to skip what you did not download rather than fail on it:
+
+```bash
+sha256sum -c checksums.txt                                  # all release assets
+sha256sum --ignore-missing -c SHA256SUMS-verifier.txt        # only what is present
+shasum -a 256 --ignore-missing -c SHA256SUMS-verifier.txt    # same, on macOS
+```
+
+Run these from the directory you downloaded into, since both manifests use bare filenames.
+
+Be clear about what this proves. If you fetched the binary and the checksum file from the same
+release page, then anyone who could tamper with the binary could also have edited the checksum
+file to match. This check catches truncated downloads, a corrupting proxy, and a mirror serving
+the wrong bytes. It does not establish that the release is honest, and it is not evidence about
+who built it.
+
+**2. This workflow built it from this tag.** Removes the maintainer, though not the project.
+
+```bash
+slsa-verifier verify-artifact agentwall-verify-linux-amd64 \
+  --provenance-path <the .intoto.jsonl asset from the release> \
+  --source-uri github.com/repsecure/agentwall \
+  --source-tag v0.2.0
+```
+
+The provenance is signed against the release workflow's own OIDC identity, so this fails if the
+binary was built on somebody's laptop and attached by hand, and it fails if the attestation came
+from a different repository or a different tag. It still trusts GitHub's signing infrastructure.
+
+**3. Rebuild it yourself.** Removes us from the chain.
+
+```bash
+git clone --branch v0.2.0 --depth 1 https://github.com/repsecure/agentwall
+cd agentwall
+scripts/build-verifier.sh 0.2.0 /tmp/rebuilt
+cat /tmp/rebuilt/SHA256SUMS-verifier.txt   # compare against the release's copy
+```
+
+The digests should match the release exactly. `scripts/build-verifier.sh` is the same script the
+release workflow runs, which is deliberate: when the build lived inline in the workflow YAML, the
+documented way to reproduce a release was to read that YAML and retype it, and a procedure nobody
+runs is a procedure that quietly stops working.
+
+Two things will make a correct rebuild produce different bytes, both of them expected:
+
+- **A different Go version.** The script pins one exact patch release and refuses to run on
+  another, because Go's output changes between them. `scripts/build-verifier.sh
+  --print-go-version` prints the required version.
+- **Editing the build flags.** `-trimpath` and `-buildvcs=false` are both load-bearing. Without
+  the second, Go stamps the git revision into the binary, and a build from a source tarball with
+  no `.git` can never match a build from a clone. The release enforces this: it rebuilds from a
+  `.git`-less tree at a different path on every run and fails if the digests move.
+
+### Install via Homebrew
+
+Covers macOS and Linux. The formula is generated per release from `SHA256SUMS-verifier.txt`, so
+its digests always match the binaries it installs, and it is attached to the release as
+`agentwall-verify.rb`.
+
+There is no published tap yet. Homebrew refuses to install a formula that is not in a tap, so
+`brew install ./agentwall-verify.rb` does not work and fails with "Homebrew requires formulae to
+be in a tap". Put it in a local tap instead:
+
+```bash
+brew tap-new repsecure/tap --no-git
+cp agentwall-verify.rb "$(brew --repository repsecure/tap)/Formula/"
+brew install repsecure/tap/agentwall-verify
+
+agentwall-verify --version     # agentwall-verify 0.2.0
+```
+
+Homebrew verifies the formula's digest against the binary it downloads, and aborts on a mismatch.
+That inherits the limit from check 1 above: if you took the formula and the binary from the same
+release page, matching digests prove consistency, not provenance. Run check 2 or 3 for that.
+
+To remove the tap afterwards: `brew uninstall agentwall-verify && brew untap repsecure/tap`.
+
+### Use it
+
+```bash
+agentwall-verify --audit /path/to/audit.jsonl --json
+```
+
+Exit status is 0 only when every layer holds. The `--json` output reports the `chained`, `linked`,
+and `anchored` layers separately, so a chain that is internally valid but not yet anchored
+off-box is distinguishable from a chain that has been edited.
+
 ## Container
 
 ### What the image gives you, and what it does not
