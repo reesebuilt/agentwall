@@ -153,6 +153,11 @@ jobs:
       # also pulls in would make two of the implementations one implementation wearing two
       # hats, and the conformance harness would then be comparing a library with itself.
       # `cargo tree` prints one line per package, so the whole dependency graph is this crate.
+      #
+      # Tested against a planted path dependency rather than assumed, and it needs both halves:
+      # with a stale Cargo.lock, --locked refuses and the step dies on cargo's own error; with
+      # the lock refreshed, the line count catches it. Dropping --locked would leave the first
+      # route green, since cargo would silently rewrite the lock it is supposed to be checking.
       - name: No dependencies
         run: |
           lines=$(cargo tree --locked | wc -l)
