@@ -117,6 +117,75 @@ jobs:
           # is the failure mode this step exists to make visible.
           if-no-files-found: error
 
+  verifier-rs:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: verifier-rs
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # No setup action: rustup is on the runner image and rust-toolchain.toml pins the
+      # version, so the toolchain this job uses is the one a contributor gets locally.
+      - name: Toolchain
+        run: cargo --version && rustc --version
+
+      - name: Format
+        run: cargo fmt --check
+
+      - name: Lint
+        run: cargo clippy --all-targets -- -D warnings
+
+      # Runs the unit tests, the published crypto vectors, and the 26 corpus cases in process
+      # against expected.json. The conformance job compares implementations against each other;
+      # this one holds this implementation against the format on its own, so a Rust regression
+      # is attributable here rather than surfacing as an unexplained cross-language mismatch.
+      - name: Test
+        run: cargo test --locked
+
+      # The README says this verifier carries no third-party code, and that is a property
+      # rather than an omission: pulling in a SHA-256 or an Ed25519 crate that another verifier
+      # also pulls in would make two of the implementations one implementation wearing two
+      # hats, and the conformance harness would then be comparing a library with itself.
+      # `cargo tree` prints one line per package, so the whole dependency graph is this crate.
+      - name: No dependencies
+        run: |
+          lines=$(cargo tree --locked | wc -l)
+          if [ "$lines" -ne 1 ]; then
+            echo "verifier-rs must have no dependencies; cargo tree printed $lines lines:" >&2
+            cargo tree --locked >&2
+            exit 1
+          fi
+
+      # The compiler is what actually enforces this, so the first half asserts the attribute is
+      # still there; deleting it is the only way unsafe could ever compile. The grep is the
+      # second half, and it exists because forbid can be scoped away by someone adding an inner
+      # attribute to a module later. Both halves were checked against a planted unsafe block
+      # rather than assumed: a check that has never failed once is a check nobody has tested.
+      #
+      # -qxF and -w rather than a hand-written regex, because BRE and ERE disagree about a bare
+      # `(` and the two spellings then mean different things on different machines. A check that
+      # passes locally and matches nothing in CI is worse than no check.
+      - name: No unsafe
+        run: |
+          grep -qxF '#![forbid(unsafe_code)]' src/lib.rs || {
+            echo "src/lib.rs must keep #![forbid(unsafe_code)] at the crate root" >&2
+            exit 1
+          }
+          found=$(grep -rnw --include='*.rs' unsafe src tests \
+            | grep -vF 'forbid(unsafe_code)' \
+            | grep -vE ':[0-9]+:[[:space:]]*//' || true)
+          if [ -n "$found" ]; then
+            echo "verifier-rs must contain no unsafe code:" >&2
+            echo "$found" >&2
+            exit 1
+          fi
+
   conformance:
     runs-on: ubuntu-latest
     permissions:
@@ -151,6 +220,16 @@ jobs:
       - name: Build verifier
         run: go build -o agentwall-verify .
         working-directory: verifier
+
+      # rustup ships on the runner image and reads verifier-rs/rust-toolchain.toml, so the
+      # pinned 1.90.0 toolchain installs itself and no third-party action is needed here. That
+      # matters for more than convenience: every `uses:` in this file has to be SHA pinned, and
+      # the cheapest way to satisfy a supply-chain rule is to add nothing to the supply chain.
+      # --locked refuses to silently rewrite Cargo.lock, which for a crate that claims zero
+      # dependencies is the assertion that it still has none.
+      - name: Build the Rust verifier
+        run: cargo build --release --locked
+        working-directory: verifier-rs
 
       # Runs the committed corpus, the bytes a stranger gets from a checkout, through both
       # implementations. The harness exits non-zero on any failure and zero when the only
