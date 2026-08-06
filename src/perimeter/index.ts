@@ -1,5 +1,7 @@
 import { spawnSync } from "child_process";
-import { readFileSync } from "fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
+import { tmpdir } from "os";
+import { join } from "path";
 import { parsePerimeterStatus, renderNftables } from "./spec";
 import type { PerimeterSpec } from "./spec";
 
@@ -156,7 +158,7 @@ function commandPlan(resolved: ResolvedSpec): number {
 
 function commandInstall(resolved: ResolvedSpec): number {
   if (!isRoot()) {
-    console.error("perimeter install needs root: it writes host firewall rules through `nft -f -`.");
+    console.error("perimeter install needs root: it writes host firewall rules through `nft -f`.");
     console.error("Run `agentwall perimeter plan` with the same options to print the exact ruleset");
     console.error("without privileges, read it, then apply it as root.");
     return EXIT_FAIL;
@@ -165,7 +167,7 @@ function commandInstall(resolved: ResolvedSpec): number {
   const ruleset = renderNftables(resolved.spec);
   warnAboutPlaceholders(resolved);
 
-  const result = spawnSync("nft", ["-f", "-"], { input: ruleset, encoding: "utf8", shell: false });
+  const result = applyRuleset(ruleset);
   if (result.error !== undefined) {
     console.error(`could not run \`nft\`: ${result.error.message}`);
     console.error("The perimeter is nftables-based, so it exists on Linux only.");
@@ -181,6 +183,53 @@ function commandInstall(resolved: ResolvedSpec): number {
   console.log(`Perimeter installed. uid ${resolved.spec.agentUid} now reaches the network only through`);
   console.log(`the proxy on port ${resolved.spec.proxyPort}. Confirm with \`agentwall perimeter verify\`.`);
   return EXIT_OK;
+}
+
+/**
+ * Write the ruleset where nft can open it, and say how nft should be called.
+ *
+ * Split out from the spawn deliberately, so the delivery contract can be tested without a
+ * test ever running `nft`. `tests/perimeter.test.ts` opens by stating that no test may touch
+ * the host firewall, and a test that shadowed `nft` on PATH to inspect its argv would be one
+ * PATH-resolution surprise away from installing a live perimeter on a root CI runner. This
+ * function touches nothing but a private temp directory, so asserting on it is free.
+ *
+ * Caller owns `dir` and must remove it. That is the cost of making the rest pure.
+ */
+export function stageRuleset(ruleset: string): { dir: string; file: string; argv: string[] } {
+  const dir = mkdtempSync(join(tmpdir(), "agentwall-perimeter-"));
+  const file = join(dir, "perimeter.nft");
+  writeFileSync(file, ruleset, { mode: 0o600 });
+  return { dir, file, argv: ["-f", file] };
+}
+
+/**
+ * Hand the ruleset to nft through a real file, because stdin does not work here.
+ *
+ * This was `spawnSync("nft", ["-f", "-"], { input: ruleset })`, which never once installed a
+ * perimeter on any host. Node does not give a child a pipe for `input`: libuv backs child
+ * stdio with a Unix domain socket, so the child's fd 0 is a socket. nft resolves `-f -` to
+ * /dev/stdin, stats it, finds neither a regular file nor a fifo, and refuses the whole
+ * transaction with `Not a regular file: "/dev/stdin"`. Measured on nftables 1.0.9, kernel
+ * 6.8.0-136-generic: install exited 1 and no table was created.
+ *
+ * `nft -f -` is fine from a shell pipe, where fd 0 really is a fifo, so the documented
+ * `plan | nft -f -` recipe was never broken and the bug hid behind it. Every existing test
+ * either asserted on the rendered string or checked the file with `nft --check --file`, so
+ * nothing exercised the one path an operator actually runs as root.
+ *
+ * A temp file rather than a fifo: nft applies a `-f` file as one transaction either way, and
+ * a file needs no plumbing. The 0700 directory is removed in a finally, so a ruleset naming
+ * the host's uids never lingers in /tmp.
+ */
+function applyRuleset(ruleset: string): { status: number | null; stderr: string; error?: Error } {
+  const staged = stageRuleset(ruleset);
+  try {
+    const run = spawnSync("nft", staged.argv, { encoding: "utf8", shell: false });
+    return { status: run.status, stderr: run.stderr ?? "", error: run.error };
+  } finally {
+    rmSync(staged.dir, { recursive: true, force: true });
+  }
 }
 
 function commandStatus(resolved: ResolvedSpec): number {
