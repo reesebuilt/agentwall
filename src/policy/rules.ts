@@ -498,4 +498,95 @@ export const builtinRules: PolicyRule[] = [
     riskLevel: "high",
     reason: "MCP tool output contains credential material and must be redacted before the agent reads it",
   },
+  /**
+   * Strict-mode egress gate.
+   *
+   * The allowlist question is answered by the enforcement runtime and handed here as a
+   * marker, the same way the MCP gates hand over their scan results. The rule cannot ask it
+   * directly: the allowlist is process configuration, and a rule set that reached into the
+   * runtime that calls it would close an import cycle for no gain.
+   *
+   * Gated on `enforcementMode === "strict"` rather than firing whenever a host is off the
+   * allowlist, because guarded mode's whole contract is that an unmatched destination is
+   * allowed. A rule that ignored the mode would silently promote every guarded deployment
+   * to allowlist-only on the first restart after an upgrade.
+   *
+   * A caller could forge these markers on a hand-built context, and that is safe in the only
+   * direction that matters: forging them produces a denial, never an allow. The enforcement
+   * runtime re-checks the allowlist itself and does not consult this rule for permission.
+   */
+  {
+    id: "net:deny-egress-not-allowlisted",
+    description: "Deny proxied egress to a host outside the configured allowlist in strict enforcement mode",
+    plane: "network",
+    match: (ctx: AgentContext) =>
+      ctx.plane === "network" &&
+      ctx.metadata?.["enforcementMode"] === "strict" &&
+      ctx.metadata?.["egressAllowlisted"] === "false",
+    decision: "deny",
+    riskLevel: "high",
+    reason: "Destination host is not in the configured egress allowlist",
+  },
+  /**
+   * The emergency stop, expressed as a rule so that a halted action is recorded with the
+   * same shape as any other denial: a rule id, a detection, and an ATT&CK mapping an
+   * analyst can pivot on. It matches on the marker rather than reading the kill switch
+   * itself, so evaluating policy stays a pure function of the context handed to it and a
+   * replayed context decides the same way it did live.
+   *
+   * Same trust direction as the gate above: a forged marker can only stop something. The
+   * runtime reads the switch directly, so clearing the marker cannot restart gated activity.
+   */
+  {
+    id: "governance:kill-switch",
+    description: "Deny any action attempted while the operator kill switch is engaged",
+    plane: "governance",
+    match: (ctx: AgentContext) => ctx.metadata?.["killSwitchActive"] === "true",
+    decision: "deny",
+    riskLevel: "critical",
+    reason: "Operator kill switch is engaged; all gated activity is stopped",
+  },
+  /**
+   * The canary rule, expressed as a marker match for the same reason the kill switch is: the
+   * engine must stay a pure function of the context it is handed, so a replayed context reaches
+   * the same verdict it did live. Nothing here searches for the canary value - it is not in the
+   * context and must never be put there, because the context is what the audit record is built
+   * from. The detection has already happened by the time policy sees this; the rule exists so a
+   * canary hit lands with a rule id, a detection, and an ATT&CK mapping like every other denial.
+   */
+  {
+    id: "identity:deny-canary-triggered",
+    description: "Deny any flow in which a planted canary token was observed",
+    plane: "identity",
+    match: (ctx: AgentContext) =>
+      ctx.plane === "identity" &&
+      (ctx.action === "canary:triggered" || ctx.metadata?.["canaryTriggered"] === "true"),
+    decision: "deny",
+    riskLevel: "critical",
+    reason: "A canary token that is never legitimately used appeared in inspected content",
+  },
+  /**
+   * Credential material observed in a file under a path the filesystem sentinel watches.
+   *
+   * The decision is a verdict on something already done rather than an intervention: the
+   * sentinel sees the write after the bytes have landed, so nothing here prevents anything.
+   * Recording it as an allow would tell an analyst reading the chain that staging a
+   * credential on disk was considered acceptable, which is the opposite of the finding.
+   *
+   * It matches on the sentinel's own action and on the presence of type names in metadata,
+   * never on file contents - the contents are deliberately absent from the context, so a
+   * rule that tried to re-derive the match here would find nothing to read.
+   */
+  {
+    id: "content:deny-fs-secret-write",
+    description: "Deny credential material written to a filesystem path under sentinel watch",
+    plane: "content",
+    match: (ctx: AgentContext) => {
+      if (ctx.plane !== "content") return false;
+      return ctx.action === "fs:secret-written" && (ctx.metadata?.["secretTypes"] ?? "") !== "";
+    },
+    decision: "deny",
+    riskLevel: "high",
+    reason: "Credential material was written to a watched filesystem path",
+  },
 ];

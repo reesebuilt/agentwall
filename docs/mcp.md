@@ -10,6 +10,10 @@ gates before it is forwarded, and every decision is recorded in the same hash-ch
 as the rest of the system. The client's own configuration changes by one line; the server itself is
 unmodified and does not know the wrapper is there.
 
+A server the client does not launch at all - one it reaches over a URL - is wrapped a different
+way, by a local listener that speaks the same transport and calls the same gates. That is
+[below](#wrapping-a-remote-server-over-http).
+
 ## The command
 
 ```bash
@@ -67,6 +71,101 @@ frame at it. It speaks newline-delimited JSON-RPC on stdin and stdout:
 echo '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' \
   | agentwall mcp wrap --server-name filesystem -- npx -y @modelcontextprotocol/server-filesystem /tmp
 ```
+
+## Wrapping a remote server over HTTP
+
+A client configured with a URL launches nothing, so there is no child process to sit inside. The
+insertion point that does exist is the URL: AgentWall opens a local listener speaking the same
+Streamable HTTP transport, the client is pointed at that instead of at the remote server, and the
+listener forwards upstream only what the gates allow through.
+
+The gates are the same objects, called from the same place, and the audit record is the same
+record. That is the property worth holding on to: a decision must not depend on which transport
+carried the frame, so a call refused over stdio is refused over HTTP for the same reason and with
+the same evidence.
+
+There is no CLI subcommand for HTTP mode yet. It is reachable from a host process that has
+AgentWall on its module path:
+
+```ts
+import { runMcpHttpWrap } from "@repsecure/agentwall/dist/mcp/wrap";
+
+const listener = await runMcpHttpWrap({
+  upstreamUrl: "https://mcp.example.com/mcp", // --http-upstream
+  listenHost: "127.0.0.1",                    // --http-host
+  listenPort: 8931,                           // --http-port
+  serverName: "example-remote",
+  agentId: "desktop-client",
+});
+
+// The client is now configured with http://127.0.0.1:8931/ instead of the upstream URL.
+// listener.port is the bound port, which matters when listenPort was 0.
+await listener.close();
+```
+
+| Option | Flag the CLI will use | What it does |
+| --- | --- | --- |
+| `upstreamUrl` | `--http-upstream` | Absolute `http:` or `https:` URL of the server being wrapped. Anything else refuses to start. |
+| `listenPort` | `--http-port` | Port for the local listener. `0` takes an ephemeral port. |
+| `listenHost` | `--http-host` | Interface to bind. Defaults to `127.0.0.1`. A non-loopback bind requires a token. |
+| `authToken` | `--http-auth-token-file` | Bearer token clients must present. Optional on loopback, required otherwise. |
+| `maxBodyBytes` | - | Request-body ceiling. Defaults to 8 MiB, the same ceiling the stdio framing uses. |
+| `serverName`, `agentId`, `sessionId`, `onAuditEvent` | - | As on the stdio path. `serverName` defaults to the upstream host. |
+
+### What the listener covers
+
+- A `POST` carrying one JSON-RPC frame, or a JSON array batch. Each frame in a batch is evaluated on
+  its own: a batch of three with one refusal forwards two frames and answers the third with an
+  error. A batch where nothing survives never reaches the upstream at all.
+- The response to that POST, whether it is a JSON body or a `text/event-stream`.
+- The `GET` stream a server uses to push frames the client did not ask for. That traffic is the
+  least prompted thing on this transport, and it goes through the response gates like everything
+  else.
+- The `DELETE` that ends a session.
+
+Any other method is refused with a 405. The listener never emits CORS headers, so a browser cannot
+read its responses cross-origin.
+
+### Authentication, and why a loopback listener still checks `Host`
+
+A listener on a routable interface without a token is an open proxy into the wrapped server for
+anything that can route to it, so binding one refuses to start rather than starting and warning.
+The error names the flag and what to do about it. When a token is set it is required as
+`Authorization: Bearer <token>` and compared in constant time, and it is stripped before anything
+goes upstream - a local credential replayed to a remote server is a leak nothing downstream would
+notice. When no token is set, an `Authorization` header cannot be AgentWall's, so it is treated as
+the operator's own upstream credential and passed through untouched.
+
+A tokenless loopback listener additionally requires the request's `Host` authority to be a loopback
+name on the port it actually bound. This is the DNS-rebinding check. A page in the operator's
+browser can be served from a name the attacker controls whose DNS answer flips to `127.0.0.1` after
+the page loads; the browser then sends requests here while treating them as same-origin with the
+attacker's page. Everything about such a request looks local - the peer address genuinely is
+loopback - except the `Host` header, which still carries the attacker's name. Pinning it is what
+breaks the attack. A configured token defeats the same attack on its own, so the check is not
+applied when one is set, which keeps a deployment behind a reverse proxy working.
+
+Requests carry a size ceiling of 8 MiB by default; a body above it is answered with a 413 and
+nothing is forwarded. A body that is not JSON-RPC at all is refused with a 400, recorded as a
+malformed frame, and not forwarded: bytes AgentWall could not parse are bytes it could not scan,
+and sending them upstream to see what the server makes of them is the delegation this listener
+exists to prevent.
+
+### What a block looks like on HTTP
+
+A blocked frame comes back as the same JSON-RPC error the stdio path produces, on the same id, with
+**HTTP status 200**. The refusal is a valid JSON-RPC response and the transport worked perfectly;
+returning a 4xx or 5xx would tell the client the exchange failed, and clients retry failed
+exchanges - which would mean retrying a decision that will not change, against a server that never
+saw any of it.
+
+On a streaming response the posture is different, and stricter. When a gate refuses an event, the
+error is written and **the stream is ended**. Skipping the offending event and continuing would look
+like enforcement without being any: the events are pieces of one response, so whatever a later event
+completes has usually already been delivered by the earlier ones, and a client that keeps receiving
+a stream reads it as a stream that was fine. Ending it is the only signal this transport has for
+"the rest of this response is not coming". The cost is real: a false positive kills a whole response
+rather than one event of it.
 
 ## What each gate checks
 
@@ -161,6 +260,7 @@ frame on the `content` plane with untrusted tool-output provenance:
     "mcpMethod": "tools/call",
     "mcpTool": "write_file",
     "direction": "client_to_server",
+    "mcpTransport": "stdio",
     "mcpGate": "policy",
     "commandHash": "9f2b..."
   },
@@ -177,6 +277,11 @@ Reading it:
   gate name can never be mistaken for a policy rule id.
 - `commandHash` is the SHA-256 of the executable that was launched. A server whose hash changes
   between runs is a supply-chain event.
+- `mcpTransport` is `stdio` or `http`, and it is on every record because the rest of the metadata
+  means different things on each. An HTTP record carries `mcpUpstream` - the upstream's origin and
+  path, with any userinfo and query string dropped, because that is where a deployment hides a
+  credential - and carries no `commandHash`, since nothing on this side of the connection pins a
+  remote server.
 - One wrap invocation is one `sessionId`, so a server's whole conversation groups without inferring
   it from timestamps.
 
@@ -189,15 +294,33 @@ which is what reconstructing the decision needs.
 
 Read these before relying on wrapping for anything.
 
-- **Stdio transport only.** A server launched as a child process and spoken to over stdin and
-  stdout is wrapped. The HTTP and SSE MCP transports are not: nothing here intercepts them, and a
-  client configured to reach a server over a URL is unwrapped even while another server on the same
-  client is wrapped.
-- **Approval decisions block, they do not prompt.** There is no side channel on a stdio transport
-  to ask a human anything, and holding a frame open until an operator answers would stall the
-  client's stream for as long as the operator is away. A frame policy would route for approval is
-  refused with an error that says so. The approval queue is reachable over the HTTP API; nothing
-  makes an MCP call wait for it.
+- **Stdio and Streamable HTTP are wrapped; no other transport is.** A server launched as a child
+  process and spoken to over stdin and stdout is wrapped. A remote server is wrapped when the client
+  is pointed at the local HTTP listener: the POST of a frame or a batch, the JSON or
+  `text/event-stream` response to it, the GET stream and the DELETE all pass the gates. Two things
+  follow from that. A client still configured with the upstream URL directly is unwrapped, because
+  the listener protects traffic that goes through it rather than traffic that exists; and any other
+  transport, including WebSocket, is not intercepted at all.
+- **HTTP mode has no CLI flag yet.** It is reachable through `runMcpHttpWrap` from a host process.
+  The flag names in this document are the ones the CLI will use; until that wiring lands, there is
+  no shell invocation of HTTP mode.
+- **A remote server is not fingerprinted.** `commandHash` pins a binary this host launched, and
+  nothing on this side of an HTTP connection pins the server at the other end. Wrapping a remote
+  server gives you gating and evidence; it does not tell you the server is the one you configured
+  yesterday. What authenticates the upstream is its TLS certificate and whatever credential you give
+  it, neither of which AgentWall checks on your behalf.
+- **The HTTP listener does not terminate TLS for its own clients.** It speaks plain HTTP on the
+  interface it binds, which is why loopback is the default and why a non-loopback bind demands a
+  token. Exposing it beyond the host means putting a TLS terminator in front of it.
+- **A refused event ends a whole streaming response.** On `text/event-stream` a block terminates the
+  stream rather than dropping the one event, because a stream that keeps flowing after a detection
+  has already delivered the payload the detection was about. The consequence to plan for is that a
+  false positive on event four costs the client events five onward, not just event four.
+- **Approval decisions block, they do not prompt.** Neither MCP transport has a side channel to ask
+  a human anything, and holding a frame open until an operator answers would stall the client for as
+  long as the operator is away. A frame policy would route for approval is refused with an error
+  that says so. The approval queue is reachable over the HTTP API; nothing makes an MCP call wait
+  for it.
 - **Tool-poisoning detection is pattern-based.** The inventory and response gates match known
   phrasings of instruction override, exfiltration directives, role manipulation, tool coercion, and
   state poisoning, across several normalization passes. A novel phrasing that no pattern describes

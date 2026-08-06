@@ -21,6 +21,7 @@
     "test": "node --experimental-vm-modules node_modules/.bin/jest --maxWorkers=50%",
     "test:security-regression": "node scripts/security-regression.js",
     "gen:corpus": "ts-node scripts/gen-corpus.ts",
+    "bench": "ts-node bench/run.ts",
     "conformance": "node scripts/conformance.js",
     "lint": "tsc --noEmit",
     "cli": "node dist/cli.js",

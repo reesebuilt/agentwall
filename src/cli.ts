@@ -6,7 +6,15 @@ import { spawnSync } from "child_process";
 import { loadConfig } from "./config";
 import { defaultConfig, OnboardingMode, writeStarterFiles } from "./onboarding";
 import { runAnchorPass, runVerify, resolvePaths } from "./audit/anchor-service";
-import { runMcpWrap } from "./mcp/wrap";
+import { runMcpWrap, runMcpHttpWrap } from "./mcp/wrap";
+import { runCanaryCommand } from "./canary";
+import {
+  explainExitCode,
+  formatExplainReport,
+  parseExplainArgs,
+  runExplain,
+} from "./explain";
+import { PolicyEngine } from "./policy/engine";
 
 type CliFlags = Record<string, string | boolean>;
 const BOOLEAN_FLAGS = new Set(["lan", "force", "json", "confirm"]);
@@ -103,6 +111,8 @@ Commands:
   pause               Pause one runtime session
   resume              Resume one runtime session
   terminate           Terminate one runtime session
+  canary              Generate and inspect canary tokens
+  explain             Explain which check fires on a URL, some text, or a tool call
   version             Print version
   help                Show this message
 
@@ -143,6 +153,22 @@ MCP wrap options:
   --server-name <name>                Name recorded for the wrapped server (default: command basename)
   --agent-id <id>                     Agent the wrapped traffic is attributed to in the audit chain
   -- <command> [args...]              The MCP server to launch; everything after -- is passed through
+  --http-upstream <url>               Wrap a remote MCP server over Streamable HTTP instead of stdio
+  --http-port <n>                     Port for the local listener clients connect to (0 = ephemeral)
+  --http-host <host>                  Listener interface (default: 127.0.0.1); non-loopback needs a token
+  --http-auth-token-file <path>       File holding the bearer token clients must present
+
+Canary options:
+  --kind <kind>                       Canary kind: aws-access-key, github-pat, openai-key, generic-secret, url
+  --label <text>                      Operator label kept with the token and folded into its env var name
+  --out <path>                        Append the generated token to this canary file (written at mode 0600)
+  --file <path>                       Canary file to list; refuses one that group or other can read
+
+Explain options:
+  --kind <url|text|tool>              Subject kind (inferred from the subject when omitted)
+  --tool <name>                       Tool name for --kind tool
+  --args <json>                       JSON object of tool arguments for --kind tool
+  --json                              Print the whole result as JSON
 `);
 }
 
@@ -821,12 +847,24 @@ async function commandVerify(flags: CliFlags): Promise<void> {
   process.exit(report.ok ? 0 : 1);
 }
 
-const MCP_USAGE = "Usage: agentwall mcp wrap [--server-name <name>] [--agent-id <id>] -- <command> [args...]";
+const MCP_USAGE = [
+  "Usage: agentwall mcp wrap [--server-name <name>] [--agent-id <id>] -- <command> [args...]",
+  "       agentwall mcp wrap --http-upstream <url> --http-port <n> [--http-host <h>]",
+  "                          [--http-auth-token-file <path>] [--server-name <name>] [--agent-id <id>]",
+].join("\n");
 
 export interface McpWrapArgs {
   serverName?: string;
   agentId?: string;
+  /** The server command for the stdio form. Empty when wrapping over HTTP. */
   command: string[];
+  /** Set only for the HTTP form. Its presence is what selects that transport. */
+  http?: {
+    upstreamUrl: string;
+    listenPort: number;
+    listenHost?: string;
+    authTokenFile?: string;
+  };
 }
 
 /**
@@ -848,52 +886,151 @@ export function parseMcpArgs(args: string[]): McpWrapArgs {
   }
 
   const separator = rest.indexOf("--");
-  if (separator === -1) {
-    throw new Error(`mcp wrap needs the server command after --.\n${MCP_USAGE}`);
-  }
-
-  const command = rest.slice(separator + 1);
-  if (command.length === 0) {
-    throw new Error(`no server command after --: there is nothing to wrap.\n${MCP_USAGE}`);
-  }
+  const ours = separator === -1 ? rest : rest.slice(0, separator);
+  const command = separator === -1 ? [] : rest.slice(separator + 1);
 
   const parsed: McpWrapArgs = { command };
-  const ours = rest.slice(0, separator);
+  let upstreamUrl: string | undefined;
+  let listenPort: string | undefined;
+  let listenHost: string | undefined;
+  let authTokenFile: string | undefined;
+
+  const OPTIONS: Record<string, true> = {
+    "--server-name": true,
+    "--agent-id": true,
+    "--http-upstream": true,
+    "--http-port": true,
+    "--http-host": true,
+    "--http-auth-token-file": true,
+  };
+
   for (let i = 0; i < ours.length; i += 1) {
     const token = ours[i];
     const value = ours[i + 1];
-    if (token !== "--server-name" && token !== "--agent-id") {
+    if (!OPTIONS[token]) {
       throw new Error(`Unknown mcp wrap option: ${token}.\n${MCP_USAGE}`);
     }
     if (!value || value.startsWith("--")) {
       throw new Error(`${token} needs a value.\n${MCP_USAGE}`);
     }
-    if (token === "--server-name") {
-      parsed.serverName = value;
-    } else {
-      parsed.agentId = value;
-    }
+    if (token === "--server-name") parsed.serverName = value;
+    else if (token === "--agent-id") parsed.agentId = value;
+    else if (token === "--http-upstream") upstreamUrl = value;
+    else if (token === "--http-port") listenPort = value;
+    else if (token === "--http-host") listenHost = value;
+    else authTokenFile = value;
     i += 1;
+  }
+
+  const wantsHttp = Boolean(upstreamUrl || listenPort || listenHost || authTokenFile);
+
+  // The two forms are exclusive, and saying so beats guessing.
+  //
+  // A command after `--` plus an upstream URL describes two different servers, and picking
+  // one silently would wrap something the operator did not ask for. Refusing costs a retry;
+  // guessing costs an unmonitored server that looks monitored.
+  if (wantsHttp && command.length > 0) {
+    throw new Error(
+      `mcp wrap takes either a server command after -- or the --http-* options, not both.\n${MCP_USAGE}`
+    );
+  }
+
+  if (wantsHttp) {
+    if (!upstreamUrl) {
+      throw new Error(`--http-upstream is required when wrapping over HTTP.\n${MCP_USAGE}`);
+    }
+    if (!listenPort) {
+      throw new Error(`--http-port is required when wrapping over HTTP.\n${MCP_USAGE}`);
+    }
+    const port = Number(listenPort);
+    if (!Number.isInteger(port) || port < 0 || port > 65535) {
+      throw new Error(`--http-port must be an integer between 0 and 65535, got "${listenPort}".`);
+    }
+    parsed.http = { upstreamUrl, listenPort: port, listenHost, authTokenFile };
+    return parsed;
+  }
+
+  if (separator === -1) {
+    throw new Error(`mcp wrap needs the server command after --.\n${MCP_USAGE}`);
+  }
+  if (command.length === 0) {
+    throw new Error(`no server command after --: there is nothing to wrap.\n${MCP_USAGE}`);
   }
 
   return parsed;
 }
 
 /**
- * `agentwall mcp wrap` - run a local MCP server with every JSON-RPC frame gated.
+ * `agentwall mcp wrap` - gate every JSON-RPC frame to and from an MCP server.
  *
- * Exits with the server's own status, so a wrapped server behaves like the server it wraps and a
- * client that watches exit codes cannot tell the difference. That is the property that makes this
- * safe to paste into a client's configuration in place of the original command.
+ * The stdio form exits with the server's own status, so a wrapped server behaves like the
+ * server it wraps and a client watching exit codes cannot tell the difference. That is the
+ * property that makes it safe to paste into a client's configuration in place of the
+ * original command.
+ *
+ * The HTTP form owns a listener instead of a child, so it has no exit status to inherit and
+ * runs until interrupted. It prints the bound port because `--http-port 0` is the useful
+ * form in a test harness and an ephemeral port nobody can discover is not useful.
  */
 async function commandMcp(args: string[]): Promise<void> {
   const parsed = parseMcpArgs(args);
+
+  if (parsed.http) {
+    // Read the token from a file rather than an argument. A token on the command line is
+    // visible in `ps` to every user on the host, which for a credential that gates a
+    // security control is not an acceptable place to put it.
+    let authToken: string | undefined;
+    if (parsed.http.authTokenFile) {
+      authToken = fs.readFileSync(parsed.http.authTokenFile, "utf8").trim();
+      if (!authToken) {
+        throw new Error(`--http-auth-token-file ${parsed.http.authTokenFile} is empty.`);
+      }
+    }
+    const handle = await runMcpHttpWrap({
+      upstreamUrl: parsed.http.upstreamUrl,
+      listenPort: parsed.http.listenPort,
+      listenHost: parsed.http.listenHost,
+      authToken,
+      serverName: parsed.serverName,
+      agentId: parsed.agentId,
+    });
+    console.log(
+      `Agentwall MCP HTTP wrap listening on ${parsed.http.listenHost ?? "127.0.0.1"}:${handle.port}` +
+        ` -> ${parsed.http.upstreamUrl}`
+    );
+    const shutdown = (): void => {
+      void handle.close().then(() => process.exit(0));
+    };
+    process.on("SIGINT", shutdown);
+    process.on("SIGTERM", shutdown);
+    return;
+  }
+
   const exitCode = await runMcpWrap({
     command: parsed.command,
     serverName: parsed.serverName,
     agentId: parsed.agentId,
   });
   process.exit(exitCode);
+}
+
+/**
+ * `agentwall explain` - re-run the scanners against a subject and print what fired.
+ *
+ * Exits 1 when anything fired and 0 when nothing did, so this works as a gate in a script
+ * without parsing the output. Deliberately keyed on findings rather than on the decision: with
+ * a default-deny policy the decision is "deny" even when no check matched, and a script that
+ * treated that as a failure would flag every clean subject it was given.
+ *
+ * The engine is the builtin rule set only. Nothing here loads your policy file, because a
+ * partially-loaded policy would make the output look authoritative about a deployment it has
+ * not read - see the limits in docs/explain.md.
+ */
+function commandExplain(flags: CliFlags, positionals: string[]): void {
+  const request = parseExplainArgs(flags, positionals);
+  const result = runExplain(request, new PolicyEngine());
+  console.log(request.json ? JSON.stringify(result, null, 2) : formatExplainReport(result));
+  process.exit(explainExitCode(result));
 }
 
 
@@ -961,6 +1098,14 @@ async function main() {
       // Raw args, not the parsed flags: the wrapped server's own options are on this line and
       // parseFlags() has already read them as if they were ours.
       await commandMcp(args);
+      return;
+    case "canary":
+      // Raw args for the same reason `mcp` takes them: the subcommand is a positional that
+      // parseFlags() would hand back stripped of the ordering the canary parser needs.
+      runCanaryCommand(args);
+      return;
+    case "explain":
+      commandExplain(flags, positionals);
       return;
     default:
       console.error(`Unknown command: ${command}`);

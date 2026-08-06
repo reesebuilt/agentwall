@@ -2,6 +2,7 @@ import * as fs from "fs";
 import * as path from "path";
 import * as yaml from "js-yaml";
 import { EgressPolicy, HeartbeatConfig } from "./types";
+import type { EnforcementMode } from "./runtime/enforcement";
 
 export interface AgentwallConfig {
   port: number;
@@ -62,6 +63,17 @@ export interface AgentwallConfig {
     redactSecrets: boolean;
   };
   egress: EgressPolicy;
+  /**
+   * Egress enforcement. Absent means `monitor`: upgrading AgentWall must never start
+   * blocking traffic that yesterday's identical configuration allowed.
+   *
+   * Optional in the type and always populated by `loadConfig`. The asymmetry is deliberate:
+   * a required field would force every config literal already written against this
+   * interface to be edited for a section that has one sensible default, and a config a
+   * caller assembled by hand is exactly the case where inheriting `monitor` is right.
+   * Consumers resolve it as `config.enforcement?.mode ?? "monitor"`.
+   */
+  enforcement?: { mode: EnforcementMode };
   manifestIntegrity: {
     enabled: boolean;
     approvedHashesPath?: string;
@@ -161,6 +173,9 @@ const defaults: AgentwallConfig = {
     allowedSchemes: ["https"],
     allowedPorts: [443],
   },
+  enforcement: {
+    mode: "monitor",
+  },
   manifestIntegrity: {
     enabled: true,
   },
@@ -175,6 +190,10 @@ const defaults: AgentwallConfig = {
 
 export function loadConfig(configPath?: string): AgentwallConfig {
   let fileConfig: Partial<AgentwallConfig> = {};
+  // Which file the values came from. Reported in the enforcement-mode error below: a
+  // process that refuses to boot over a config key has to say which of the five candidate
+  // paths it actually read, or the operator fixes the wrong file.
+  let sourcePath = "built-in defaults";
 
   const candidatePaths = [
     configPath,
@@ -189,6 +208,7 @@ export function loadConfig(configPath?: string): AgentwallConfig {
     if (fs.existsSync(resolved)) {
       const raw = fs.readFileSync(resolved, "utf-8");
       fileConfig = yaml.load(raw) as Partial<AgentwallConfig>;
+      sourcePath = resolved;
       break;
     }
   }
@@ -200,6 +220,24 @@ export function loadConfig(configPath?: string): AgentwallConfig {
     merged["egress"] = deepMerge(
       defaults.egress as unknown as Record<string, unknown>,
       ((fileConfig as Record<string, unknown>)["ssrf"] as Record<string, unknown>) ?? {}
+    );
+  }
+
+  // An unrecognised enforcement mode is a startup failure, not a fallback.
+  //
+  // Both fallbacks are worse than refusing to start. Defaulting a typo down to `monitor`
+  // leaves an operator who wrote `strct` believing they are enforcing while nothing is
+  // gated, which is the one outcome a security tool must never produce quietly. Defaulting
+  // it up to `strict` turns a typo into an outage. A process that will not start is a
+  // failure the operator can see and fix in the time it takes to read the message — which
+  // is why the message names the file, the key, the value it rejected, and the whole valid
+  // set. A boot-time throw that makes an operator go hunting is its own outage.
+  const section = merged["enforcement"];
+  const mode = section && typeof section === "object" && "mode" in section ? section.mode : undefined;
+  if (mode !== "monitor" && mode !== "guarded" && mode !== "strict") {
+    throw new Error(
+      `agentwall: invalid enforcement.mode ${JSON.stringify(mode ?? section)} in ${sourcePath}. ` +
+        `Valid modes are "monitor", "guarded", and "strict". Omit the enforcement section entirely to use "monitor".`
     );
   }
 

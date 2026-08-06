@@ -1,6 +1,7 @@
 import { createServer as createHttpServer, IncomingMessage, ServerResponse, request as httpRequest } from "http";
 import { connect as netConnect, Socket, Server } from "net";
 import { readdirSync, readFileSync, readlinkSync } from "fs";
+import type { RiskLevel } from "../types";
 
 /**
  * CONNECT-aware forward proxy: the insertion mechanism.
@@ -15,10 +16,33 @@ import { readdirSync, readFileSync, readlinkSync } from "fs";
  * TLS, so https bodies stay opaque. Deliberate: MITM needs a CA in every runtime trust
  * store, which breaks the harness-agnostic property this exists for.
  *
- * Monitor mode records and always allows. Nothing in this file blocks.
+ * This file does not decide anything: `decide` is authoritative, and whatever it returns is
+ * what happens to the connection. What this file guarantees is that a "deny" costs the
+ * destination nothing — no upstream socket is opened, on either path — and that the client
+ * is told why rather than being handed an unexplained failure.
  */
 
 export type ProxyDecision = "allow" | "deny";
+
+/**
+ * What `decide` may return instead of a bare decision.
+ *
+ * Only `decision` and `reasons[0]` change what the proxy does; the rest is carried verbatim
+ * onto the record. That exists so the caller's audit sink can write the evidence it already
+ * computed instead of evaluating policy a second time on the record path, where it would be
+ * working from a copy of the event and could reach a different answer than the one that was
+ * actually enforced. Rule ids and risk are here because neither can be recovered from the
+ * event; detections are not, because they follow from the rule ids.
+ */
+export interface ProxyVerdict {
+  decision: ProxyDecision;
+  /** Operator-facing explanation. The first entry becomes the block-reason header. */
+  reasons?: readonly string[];
+  matchedRules?: readonly string[];
+  riskLevel?: RiskLevel;
+}
+
+export type ProxyDecideResult = ProxyDecision | ProxyVerdict;
 
 export interface ProxyEvent {
   host: string;
@@ -32,6 +56,10 @@ export interface ProxyEvent {
 
 export interface ProxyRecord extends ProxyEvent {
   decision: ProxyDecision;
+  /** Why, as returned by `decide`. Empty when the decision came back as a bare string. */
+  reasons: readonly string[];
+  matchedRules: readonly string[];
+  riskLevel?: RiskLevel;
   durationMs: number;
   bytesUp: number;
   bytesDown: number;
@@ -40,8 +68,12 @@ export interface ProxyRecord extends ProxyEvent {
 export interface ForwardProxyOptions {
   port: number;
   host: string;
-  /** Return "deny" to refuse. Monitor mode always returns "allow". */
-  decide: (event: ProxyEvent) => ProxyDecision;
+  /**
+   * Called once per connection, before anything is opened upstream. Return "deny", or a
+   * verdict whose decision is "deny", to refuse. A bare string is accepted for callers that
+   * have nothing to explain; a verdict carries the reason the client is shown.
+   */
+  decide: (event: ProxyEvent) => ProxyDecideResult;
   record: (record: ProxyRecord) => void;
   onError?: (err: Error, context: string) => void;
 }
@@ -176,6 +208,44 @@ function parseHostPort(authority: string, fallbackPort: number): { host: string;
   return { host: authority.replace(/^\[|\]$/g, ""), port: fallbackPort };
 }
 
+const NO_STRINGS: readonly string[] = [];
+
+/** A `decide` result with its optional parts filled in, ready to spread onto a record. */
+interface ResolvedVerdict {
+  decision: ProxyDecision;
+  reasons: readonly string[];
+  matchedRules: readonly string[];
+  riskLevel?: RiskLevel;
+}
+
+function resolveVerdict(result: ProxyDecideResult): ResolvedVerdict {
+  if (typeof result === "string") {
+    return { decision: result, reasons: NO_STRINGS, matchedRules: NO_STRINGS };
+  }
+  return {
+    decision: result.decision,
+    reasons: result.reasons ?? NO_STRINGS,
+    matchedRules: result.matchedRules ?? NO_STRINGS,
+    riskLevel: result.riskLevel,
+  };
+}
+
+/**
+ * A block reason, made safe to put in a header.
+ *
+ * The reason is built downstream from a destination the agent chose, so a bare CR or LF in
+ * it would let that agent inject headers into the proxy's own 403 — and on the CONNECT path,
+ * where the response is written to the socket by hand rather than through Node's header
+ * encoder, an entire second response. Everything outside printable ASCII is collapsed to a
+ * space, which also loses the punctuation the reason strings use; that is the right trade
+ * for a debugging aid. The cap keeps a long chain of matched rules from pushing a client
+ * past its own header size limit and turning a clear 403 into a connection reset.
+ */
+function headerSafe(reason: string): string {
+  const cleaned = reason.replace(/[^\x20-\x7e]+/g, " ").replace(/ {2,}/g, " ").trim();
+  return cleaned.length > 200 ? `${cleaned.slice(0, 197)}...` : cleaned;
+}
+
 export function createForwardProxy(opts: ForwardProxyOptions): Server {
   const server = createHttpServer();
 
@@ -196,14 +266,17 @@ export function createForwardProxy(opts: ForwardProxyOptions): Server {
       startedAt: Date.now(),
     };
     const clientPort = clientSocket.remotePort ?? 0;
-    let decision: ProxyDecision = "allow";
+    // Defaulted rather than left unset: the catch-all below can reach finish() before
+    // decide() has run, and a record with no decision at all is worse evidence than one
+    // that says the connection was never gated.
+    let verdict: ResolvedVerdict = { decision: "allow", reasons: NO_STRINGS, matchedRules: NO_STRINGS };
     let bytesUp = 0;
     let bytesDown = 0;
     let recorded = false;
     const finish = () => {
       if (recorded) return;
       recorded = true;
-      opts.record({ ...event, decision, durationMs: Date.now() - event.startedAt, bytesUp, bytesDown });
+      opts.record({ ...event, ...verdict, durationMs: Date.now() - event.startedAt, bytesUp, bytesDown });
     };
 
     void (async () => {
@@ -215,11 +288,25 @@ export function createForwardProxy(opts: ForwardProxyOptions): Server {
     } catch {
       event.client = { pid: null, comm: null };
     }
-    decision = opts.decide(event);
+    verdict = resolveVerdict(opts.decide(event));
 
-    if (decision === "deny") {
-      clientSocket.write("HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n");
-      clientSocket.destroy();
+    if (verdict.decision === "deny") {
+      // No upstream socket is opened: netConnect is below this return, so a denied CONNECT
+      // costs the destination nothing, not even a TCP handshake it could log.
+      //
+      // end() rather than write()+destroy(): destroy() tears the socket down without any
+      // guarantee that buffered bytes reached the wire, and the entire value of the 403 and
+      // its reason header is that a developer staring at a broken agent actually sees them.
+      // The error listener is attached first because a client that gave up mid-denial emits
+      // 'error' on a socket that has no other listener yet, which would take the process
+      // down over a request that was already refused.
+      clientSocket.on("error", () => { /* the client hung up on its own refusal */ });
+      const reason = verdict.reasons[0] ? headerSafe(verdict.reasons[0]) : "";
+      clientSocket.end(
+        "HTTP/1.1 403 Forbidden\r\n" +
+          (reason ? `X-Agentwall-Block-Reason: ${reason}\r\n` : "") +
+          "Connection: close\r\n\r\n"
+      );
       finish();
       return;
     }
@@ -273,12 +360,15 @@ export function createForwardProxy(opts: ForwardProxyOptions): Server {
       client: attributeSocket(req.socket.remotePort ?? 0),
       startedAt: Date.now(),
     };
-    const decision = opts.decide(event);
+    const verdict = resolveVerdict(opts.decide(event));
     let bytesDown = 0;
 
-    if (decision === "deny") {
-      res.writeHead(403).end("agentwall: destination not allowed\n");
-      opts.record({ ...event, decision, durationMs: Date.now() - event.startedAt, bytesUp: 0, bytesDown: 0 });
+    if (verdict.decision === "deny") {
+      const reason = verdict.reasons[0] ? headerSafe(verdict.reasons[0]) : "";
+      const headers: Record<string, string> = {};
+      if (reason) headers["x-agentwall-block-reason"] = reason;
+      res.writeHead(403, headers).end("agentwall: destination not allowed\n");
+      opts.record({ ...event, ...verdict, durationMs: Date.now() - event.startedAt, bytesUp: 0, bytesDown: 0 });
       return;
     }
 
@@ -295,7 +385,7 @@ export function createForwardProxy(opts: ForwardProxyOptions): Server {
         upRes.on("data", (c) => (bytesDown += c.length));
         upRes.pipe(res);
         upRes.on("end", () =>
-          opts.record({ ...event, decision, durationMs: Date.now() - event.startedAt, bytesUp: 0, bytesDown })
+          opts.record({ ...event, ...verdict, durationMs: Date.now() - event.startedAt, bytesUp: 0, bytesDown })
         );
       }
     );
@@ -303,7 +393,7 @@ export function createForwardProxy(opts: ForwardProxyOptions): Server {
       opts.onError?.(err as Error, `upstream ${parsed.hostname}:${port}`);
       if (!res.headersSent) res.writeHead(502);
       res.end();
-      opts.record({ ...event, decision, durationMs: Date.now() - event.startedAt, bytesUp: 0, bytesDown });
+      opts.record({ ...event, ...verdict, durationMs: Date.now() - event.startedAt, bytesUp: 0, bytesDown });
     });
     req.pipe(upstream);
   });

@@ -8,6 +8,7 @@ import { DetectionMapping, detectionCatalog } from "../policy/detections";
 import { PolicyEngine } from "../policy/engine";
 import { AgentContext, DetectionMatch, PolicyResult, ProvenanceTag } from "../types";
 import { GateContext, evaluateFrame, recordToolInventory } from "./gates";
+import { McpHttpHandle, startMcpHttpListener } from "./http";
 import { runStdioWrapper } from "./stdio";
 import {
   FrameAction,
@@ -341,31 +342,58 @@ function blockAction(evaluation: McpEvaluation, message: string): FrameAction {
 }
 
 /**
- * Wrap a local MCP server: launch it, gate every frame, record every decision.
+ * Which transport carried a frame.
  *
- * Resolves with the server's exit code once it has exited, so a wrapped server is a drop-in
- * replacement for the server in a client's configuration - the client sees the status it would
- * have seen without the wrapper.
+ * Recorded on every audit event because the two transports fail in different places: a stdio
+ * decision belongs to a child process this host launched, an HTTP decision belongs to a listener
+ * a remote server answered. An operator reading a chain that mixes both needs to know which one
+ * they are looking at before any of the other metadata means what they think it means.
  */
-export async function runMcpWrap(opts: WrapOptions): Promise<number> {
-  const server = buildServerIdentity(opts.command, opts.serverName);
-  const agentId = opts.agentId ?? DEFAULT_AGENT_ID;
+export type McpTransport = "stdio" | "http";
+
+/** The per-frame work both transports share. */
+interface FrameHandling {
+  /** Gate one frame and record the verdict. Returns what the transport should do with it. */
+  handleFrame(frame: JsonRpcFrame, direction: FrameDirection): Promise<FrameAction>;
+  /** Record a payload that never became a frame, so a transport-level refusal is still evidence. */
+  recordMalformed(raw: string, direction: FrameDirection): void;
+}
+
+/**
+ * Build the gate-and-record pipeline for one wrapped session.
+ *
+ * Both transports call this and neither adds to it. That is the property worth protecting: if the
+ * HTTP path had its own copy of the gate call or its own audit metadata, the two would drift, and
+ * the first sign of it would be a frame that stdio refuses and HTTP forwards. A decision has to be
+ * a property of the frame, not of the socket it arrived on.
+ */
+function createFrameHandling(args: {
+  server: McpServerIdentity;
+  transport: McpTransport;
+  agentId?: string;
+  sessionId?: string;
+  onAuditEvent?: (event: unknown) => void;
+  /** Extra metadata stamped on every record, for facts that are true of the whole session. */
+  baseMetadata?: Record<string, string>;
+}): FrameHandling {
+  const { server, transport } = args;
+  const agentId = args.agentId ?? DEFAULT_AGENT_ID;
   // One wrap invocation is one session. Every frame it evaluates shares this id, which is how a
   // reader groups one server's traffic in the chain instead of inferring it from timestamps.
-  const sessionId = opts.sessionId ?? randomUUID();
+  const sessionId = args.sessionId ?? randomUUID();
 
   // The chain has to be wired up here, not inherited.
   //
-  // The HTTP server registers the durable file sink during its own boot, and `mcp wrap` never
-  // boots it: the wrapper is a standalone process whose only job is the stdio stream. Without
-  // this block `emit()` still chains every decision, and every one of them goes nowhere - the
-  // gates would report blocks the audit file has no record of, which is the precise failure a
+  // The HTTP API server registers the durable file sink during its own boot, and `mcp wrap` never
+  // boots it: the wrapper is a standalone process whose only job is the transport. Without this
+  // block `emit()` still chains every decision, and every one of them goes nowhere - the gates
+  // would report blocks the audit file has no record of, which is the precise failure a
   // tamper-evident log exists to prevent.
   //
-  // Deliberately no stdout sink. On this path stdout IS the MCP protocol channel, so writing
+  // Deliberately no stdout sink. On the stdio path stdout IS the MCP protocol channel, so writing
   // audit JSON to it would interleave records into the client's JSON-RPC stream and corrupt the
-  // session. The file is the record; unset means this wrap produces no durable evidence, and
-  // that is the operator's choice to make explicitly.
+  // session. The file is the record; unset means this wrap produces no durable evidence, and that
+  // is the operator's choice to make explicitly.
   const auditPath = process.env.AGENTWALL_AUDIT_FILE;
   if (auditPath) {
     const resumed = resumeChainState(auditPath);
@@ -390,7 +418,7 @@ export async function runMcpWrap(opts: WrapOptions): Promise<number> {
   // sequence a poisoned tool would use to walk past a drift check.
   const advertised = new Map<string, McpToolDescriptor>();
 
-  const record = (args: {
+  const record = (recordArgs: {
     /** Audit action, `mcp:<method>` for an evaluated frame. */
     action: string;
     /** Recorded as `mcpMethod`; the method of the frame, or "unknown" when it could not be established. */
@@ -404,20 +432,22 @@ export async function runMcpWrap(opts: WrapOptions): Promise<number> {
     try {
       const metadata: Record<string, string> = {
         mcpServer: server.serverName,
-        mcpMethod: args.method,
-        direction: args.direction,
-        ...args.extraMetadata,
+        mcpMethod: recordArgs.method,
+        mcpTransport: transport,
+        direction: recordArgs.direction,
+        ...args.baseMetadata,
+        ...recordArgs.extraMetadata,
       };
-      if (args.toolName !== undefined) metadata.mcpTool = args.toolName;
+      if (recordArgs.toolName !== undefined) metadata.mcpTool = recordArgs.toolName;
       if (server.commandHash !== undefined) metadata.commandHash = server.commandHash;
-      if (args.gate !== undefined) metadata.mcpGate = args.gate;
+      if (recordArgs.gate !== undefined) metadata.mcpGate = recordArgs.gate;
 
       // Untrusted tool output is the label that makes the rest of the system treat an MCP result
       // correctly. A file the server read, or text it fetched, is content an attacker may
       // control, and it reaches the agent with the same standing as anything else it reads
       // unless the record says otherwise.
       const provenance: ProvenanceTag[] | undefined =
-        args.direction === "server_to_client"
+        recordArgs.direction === "server_to_client"
           ? [{ source: "tool_output", trustLabel: "untrusted" }]
           : undefined;
 
@@ -425,8 +455,8 @@ export async function runMcpWrap(opts: WrapOptions): Promise<number> {
         agentId,
         sessionId,
         // Client frames are tool intent; server frames are content the agent will act on.
-        plane: args.direction === "client_to_server" ? "tool" : "content",
-        action: args.action,
+        plane: recordArgs.direction === "client_to_server" ? "tool" : "content",
+        action: recordArgs.action,
         // The frame stays out of the record. emit() does not persist payload today, and the
         // metadata above is what actually lands in the chain; putting params and results here
         // would leave the audit file one refactor away from quoting the file contents and tokens
@@ -436,8 +466,8 @@ export async function runMcpWrap(opts: WrapOptions): Promise<number> {
         ...(provenance === undefined ? {} : { provenance }),
       };
 
-      const event = emit(context, args.result);
-      opts.onAuditEvent?.(event);
+      const event = emit(context, recordArgs.result);
+      args.onAuditEvent?.(event);
     } catch {
       // Neither the chain nor an observer may break the session, matching the forward proxy's
       // posture: the decision was already made and enforced, and losing its record must not
@@ -445,63 +475,60 @@ export async function runMcpWrap(opts: WrapOptions): Promise<number> {
     }
   };
 
-  const handleFrame = async (frame: JsonRpcFrame, direction: FrameDirection): Promise<FrameAction> => {
-    const call = classifyFrame(frame, inFlight);
-    const evaluation = evaluateFrame(frame, direction, ctx);
-    record({
-      action: `mcp:${call.method}`,
-      method: call.method,
-      direction,
-      result: toPolicyResult(evaluation),
-      toolName: call.toolName,
-      gate: evaluation.blockingGate,
-    });
+  return {
+    async handleFrame(frame: JsonRpcFrame, direction: FrameDirection): Promise<FrameAction> {
+      const call = classifyFrame(frame, inFlight);
+      const evaluation = evaluateFrame(frame, direction, ctx);
+      record({
+        action: `mcp:${call.method}`,
+        method: call.method,
+        direction,
+        result: toPolicyResult(evaluation),
+        toolName: call.toolName,
+        gate: evaluation.blockingGate,
+      });
 
-    if (evaluation.decision === "deny") {
-      return blockAction(evaluation, blockReason(evaluation, `MCP ${call.method} blocked by AgentWall.`));
-    }
-
-    // An `approve` verdict blocks.
-    //
-    // Interactive approval over stdio is not implemented. The transport is one JSON-RPC stream in
-    // each direction with no side channel to ask a human anything, and holding the frame open
-    // until an operator answers would stall the client's stream for as long as the operator is
-    // away. The approval queue is reachable over the HTTP API; until an stdio approval channel
-    // exists, refusing is the honest answer. Forwarding the call, or telling the client it was
-    // approved, would be a claim the client then acts on.
-    if (evaluation.decision === "approve") {
-      const reason = blockReason(evaluation, "policy holds this call for a human.");
-      return blockAction(evaluation, `MCP ${call.method} requires operator approval: ${reason}`);
-    }
-
-    const forwarded =
-      evaluation.decision === "redact" && evaluation.redactedFrame !== undefined
-        ? evaluation.redactedFrame
-        : frame;
-
-    if (direction === "server_to_client") {
-      // Baselined only from a frame we are actually forwarding, and only after the gates have
-      // judged it. Recording a denied or held inventory would launder it: the next tools/list
-      // would be compared against the poisoned list and come back clean.
-      const tools = parseToolDescriptors(forwarded.result);
-      if (tools.length > 0) {
-        for (const tool of tools) advertised.set(tool.name, tool);
-        recordToolInventory(ctx, [...advertised.values()]);
+      if (evaluation.decision === "deny") {
+        return blockAction(evaluation, blockReason(evaluation, `MCP ${call.method} blocked by AgentWall.`));
       }
-    }
 
-    return { kind: "forward", frame: forwarded };
-  };
+      // An `approve` verdict blocks.
+      //
+      // Interactive approval is not implemented on either transport. Neither has a side channel to
+      // ask a human anything, and holding the frame open until an operator answers would stall the
+      // client for as long as the operator is away. The approval queue is reachable over the HTTP
+      // API; until an approval channel exists on the MCP transports, refusing is the honest answer.
+      // Forwarding the call, or telling the client it was approved, would be a claim the client
+      // then acts on.
+      if (evaluation.decision === "approve") {
+        const reason = blockReason(evaluation, "policy holds this call for a human.");
+        return blockAction(evaluation, `MCP ${call.method} requires operator approval: ${reason}`);
+      }
 
-  return runStdioWrapper({
-    command: opts.command,
-    onClientFrame: (frame) => handleFrame(frame, "client_to_server"),
-    onServerFrame: (frame) => handleFrame(frame, "server_to_client"),
-    onMalformed: (raw, direction) => {
-      // A frame that does not parse cannot be evaluated, so the transport does not forward it and
-      // the record says deny rather than leaving a silent hole where a frame went missing. Only
-      // the byte count is kept: the bytes themselves are unvalidated input that may carry exactly
-      // the material the rest of this file keeps out of the audit file.
+      const forwarded =
+        evaluation.decision === "redact" && evaluation.redactedFrame !== undefined
+          ? evaluation.redactedFrame
+          : frame;
+
+      if (direction === "server_to_client") {
+        // Baselined only from a frame we are actually forwarding, and only after the gates have
+        // judged it. Recording a denied or held inventory would launder it: the next tools/list
+        // would be compared against the poisoned list and come back clean.
+        const tools = parseToolDescriptors(forwarded.result);
+        if (tools.length > 0) {
+          for (const tool of tools) advertised.set(tool.name, tool);
+          recordToolInventory(ctx, [...advertised.values()]);
+        }
+      }
+
+      return { kind: "forward", frame: forwarded };
+    },
+
+    recordMalformed(raw: string, direction: FrameDirection): void {
+      // A payload that does not parse cannot be evaluated, so the transport does not forward it and
+      // the record says deny rather than leaving a silent hole where a frame went missing. Only the
+      // byte count is kept: the bytes themselves are unvalidated input that may carry exactly the
+      // material the rest of this file keeps out of the audit file.
       record({
         action: "mcp:malformed",
         method: UNKNOWN_METHOD,
@@ -519,8 +546,111 @@ export async function runMcpWrap(opts: WrapOptions): Promise<number> {
         },
       });
     },
+  };
+}
+
+/**
+ * Wrap a local MCP server: launch it, gate every frame, record every decision.
+ *
+ * Resolves with the server's exit code once it has exited, so a wrapped server is a drop-in
+ * replacement for the server in a client's configuration - the client sees the status it would
+ * have seen without the wrapper.
+ */
+export async function runMcpWrap(opts: WrapOptions): Promise<number> {
+  const server = buildServerIdentity(opts.command, opts.serverName);
+  const handling = createFrameHandling({
+    server,
+    transport: "stdio",
+    agentId: opts.agentId,
+    sessionId: opts.sessionId,
+    onAuditEvent: opts.onAuditEvent,
+  });
+
+  return runStdioWrapper({
+    command: opts.command,
+    onClientFrame: (frame) => handling.handleFrame(frame, "client_to_server"),
+    onServerFrame: (frame) => handling.handleFrame(frame, "server_to_client"),
+    onMalformed: (raw, direction) => handling.recordMalformed(raw, direction),
     stdin: opts.stdin,
     stdout: opts.stdout,
     stderr: opts.stderr,
+  });
+}
+
+export interface HttpWrapOptions {
+  /** Absolute `http:` or `https:` URL of the MCP server to wrap. */
+  upstreamUrl: string;
+  /** Port for the local listener clients are pointed at. 0 takes an ephemeral port. */
+  listenPort: number;
+  /** Interface for the local listener. Defaults to loopback; anything else requires `authToken`. */
+  listenHost?: string;
+  /** Bearer token clients must present. Required unless the listener is on loopback. */
+  authToken?: string;
+  /** Request-body ceiling in bytes. Defaults to 8 MiB. */
+  maxBodyBytes?: number;
+  /** Name recorded for this server. Defaults to the upstream host. */
+  serverName?: string;
+  /** Agent the wrapped traffic is attributed to in the audit chain. */
+  agentId?: string;
+  /** Session the wrapped traffic is grouped under. One listener is one session by default. */
+  sessionId?: string;
+  /** Called with every audit event this wrap produced, after it joined the chain. */
+  onAuditEvent?: (event: unknown) => void;
+}
+
+/**
+ * Wrap a remote MCP server: listen locally, gate every frame, record every decision.
+ *
+ * A separate entry point from runMcpWrap rather than a flag on it, because the two have different
+ * lifecycles and pretending otherwise would produce a function whose return value means two things.
+ * A stdio wrap owns a child process and is finished when that child exits, which is why it resolves
+ * with an exit code; an HTTP wrap owns a socket that stays up until someone closes it, and has no
+ * exit code to report. What the two do share - the gates, the audit metadata, the session state -
+ * is shared for real, through createFrameHandling, which is the part that had to be identical.
+ *
+ * There is no command to hash here. `commandHash` exists to pin a binary this host launched, and
+ * nothing about a remote server is pinned by anything on this side of the connection: the operator
+ * is trusting a URL and whatever authenticates it. The record says so by carrying `mcpUpstream`
+ * and no hash, rather than by leaving a field that looks like a supply-chain guarantee it is not.
+ */
+export async function runMcpHttpWrap(opts: HttpWrapOptions): Promise<McpHttpHandle> {
+  let upstream: URL;
+  try {
+    upstream = new URL(opts.upstreamUrl);
+  } catch {
+    throw new Error(`MCP HTTP wrap: --http-upstream "${opts.upstreamUrl}" is not an absolute URL.`);
+  }
+  if (upstream.protocol !== "http:" && upstream.protocol !== "https:") {
+    throw new Error(`MCP HTTP wrap: --http-upstream must be http: or https:, got "${upstream.protocol}".`);
+  }
+
+  const named = opts.serverName === undefined ? "" : opts.serverName.trim();
+  const server: McpServerIdentity = {
+    serverName: named.length > 0 ? named : upstream.host,
+    // Nothing was launched, and an argv that was never executed would be a fabrication. Empty is
+    // the accurate answer, and `mcpUpstream` below is where the identifying detail actually lives.
+    command: [],
+  };
+
+  const handling = createFrameHandling({
+    server,
+    transport: "http",
+    agentId: opts.agentId,
+    sessionId: opts.sessionId,
+    onAuditEvent: opts.onAuditEvent,
+    // Origin and path only. A URL's userinfo and query string are exactly where a deployment hides
+    // a credential, and the audit file is the last place one should reappear.
+    baseMetadata: { mcpUpstream: `${upstream.protocol}//${upstream.host}${upstream.pathname}` },
+  });
+
+  return startMcpHttpListener({
+    listenPort: opts.listenPort,
+    listenHost: opts.listenHost,
+    upstreamUrl: opts.upstreamUrl,
+    authToken: opts.authToken,
+    maxBodyBytes: opts.maxBodyBytes,
+    onClientFrame: (frame) => handling.handleFrame(frame, "client_to_server"),
+    onServerFrame: (frame) => handling.handleFrame(frame, "server_to_client"),
+    onMalformed: (raw, direction) => handling.recordMalformed(raw, direction),
   });
 }

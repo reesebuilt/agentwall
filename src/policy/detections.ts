@@ -156,6 +156,58 @@ export const detectionCatalog: DetectionMapping[] = [
     },
     severity: "high",
   },
+  {
+    id: "det.net.egress.blocked",
+    ruleId: "net:deny-egress-not-allowlisted",
+    name: "Blocked egress to a non-allowlisted destination",
+    description:
+      "A proxied agent tried to reach a host outside the configured egress allowlist while strict enforcement was active, and the connection was refused.",
+    mitreAttack: {
+      tactic: "Command and Control",
+      technique: "Application Layer Protocol",
+      techniqueId: "T1071",
+    },
+    severity: "high",
+  },
+  {
+    id: "det.governance.killswitch.active",
+    ruleId: "governance:kill-switch",
+    name: "Action refused by the operator kill switch",
+    description:
+      "An action was attempted while the emergency stop was engaged and was refused. Expected during an intentional halt; unexpected outside one, which is why it is recorded rather than suppressed.",
+    mitreAttack: {
+      tactic: "Impact",
+      technique: "Service Stop",
+      techniqueId: "T1489",
+    },
+    severity: "critical",
+  },
+  {
+    id: "det.identity.canary.triggered",
+    ruleId: "identity:deny-canary-triggered",
+    name: "Canary token triggered",
+    description:
+      "A planted canary credential appeared in inspected content. The value is synthetic and is never legitimately used, so its presence demonstrates exfiltration rather than inferring it.",
+    mitreAttack: {
+      tactic: "Credential Access",
+      technique: "Unsecured Credentials",
+      techniqueId: "T1552",
+    },
+    severity: "critical",
+  },
+  {
+    id: "det.content.fs.secret_written",
+    ruleId: "content:deny-fs-secret-write",
+    name: "Credential written to a watched path",
+    description:
+      "The filesystem sentinel observed credential material appear in a file under a watched path. The write itself is the finding: staging a harvested credential on disk precedes the commit or upload that would make it egress, and nothing in the network plane sees that step.",
+    mitreAttack: {
+      tactic: "Credential Access",
+      technique: "Credentials In Files",
+      techniqueId: "T1552.001",
+    },
+    severity: "high",
+  },
 ];
 
 const detectionByRule = new Map<string, DetectionMapping[]>(

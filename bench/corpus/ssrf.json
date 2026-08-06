@@ -1,0 +1,354 @@
+{
+  "category": "ssrf",
+  "description": "Server-side request forgery targets: loopback, private and shared-address space, link-local, cloud metadata, alternate IP encodings, internal name suffixes, and non-web schemes and ports. A handful of cases at the end are public addresses that merely resemble private ones; they are the near-misses that make the precision number for this category mean something.",
+  "cases": [
+    {
+      "id": "ssrf.loopback.ipv4",
+      "category": "ssrf",
+      "severity": "critical",
+      "input": { "kind": "url", "value": "http://127.0.0.1/admin" },
+      "expect": "detect",
+      "why": "The floor. A tool that misses this is not doing SSRF inspection at all."
+    },
+    {
+      "id": "ssrf.loopback.ipv4-alternate-octet",
+      "category": "ssrf",
+      "severity": "critical",
+      "input": { "kind": "url", "value": "http://127.99.42.7:8080/" },
+      "expect": "detect",
+      "why": "The whole 127/8 block is loopback, not just 127.0.0.1, and an allowlist written around the famous address misses the rest."
+    },
+    {
+      "id": "ssrf.loopback.hostname",
+      "category": "ssrf",
+      "severity": "critical",
+      "input": { "kind": "url", "value": "http://localhost:8080/admin" },
+      "expect": "detect",
+      "why": "Name rather than literal, which slips past any check written only against dotted quads."
+    },
+    {
+      "id": "ssrf.loopback.rooted-hostname",
+      "category": "ssrf",
+      "severity": "critical",
+      "input": { "kind": "url", "value": "http://localhost./" },
+      "expect": "detect",
+      "why": "The fully qualified form with the DNS root dot resolves identically but is not string-equal to \"localhost\"."
+    },
+    {
+      "id": "ssrf.loopback.uppercase-hostname",
+      "category": "ssrf",
+      "severity": "critical",
+      "input": { "kind": "url", "value": "http://LOCALHOST/status" },
+      "expect": "detect",
+      "why": "Hostnames are case-insensitive; a case-sensitive comparison is a one-keystroke bypass."
+    },
+    {
+      "id": "ssrf.loopback.ipv6",
+      "category": "ssrf",
+      "severity": "critical",
+      "input": { "kind": "url", "value": "http://[::1]/admin" },
+      "expect": "detect",
+      "why": "The URL parser keeps the brackets, so patterns anchored on the bare address never match unless the host is normalised first."
+    },
+    {
+      "id": "ssrf.loopback.ipv4-mapped-ipv6",
+      "category": "ssrf",
+      "severity": "critical",
+      "input": { "kind": "url", "value": "http://[::ffff:127.0.0.1]/" },
+      "expect": "detect",
+      "why": "An IPv4-mapped address the parser re-serialises to hex, which matches neither the IPv4 nor the IPv6 pattern families."
+    },
+    {
+      "id": "ssrf.loopback.ipv4-compatible-ipv6",
+      "category": "ssrf",
+      "severity": "critical",
+      "input": { "kind": "url", "value": "http://[::7f00:1]/" },
+      "expect": "detect",
+      "why": "The same loopback destination written as an IPv4-compatible IPv6 address with no dotted quad anywhere in the string."
+    },
+    {
+      "id": "ssrf.loopback.unspecified-ipv6",
+      "category": "ssrf",
+      "severity": "critical",
+      "input": { "kind": "url", "value": "http://[::]/" },
+      "expect": "detect",
+      "why": "The unspecified address connects to loopback on most stacks, so it is a loopback target that contains no loopback digits."
+    },
+    {
+      "id": "ssrf.private.rfc1918-10",
+      "category": "ssrf",
+      "severity": "critical",
+      "input": { "kind": "url", "value": "http://10.0.0.5/internal/api" },
+      "expect": "detect",
+      "why": "Private class A: the flat corporate network an agent host usually sits inside."
+    },
+    {
+      "id": "ssrf.private.rfc1918-172-16",
+      "category": "ssrf",
+      "severity": "critical",
+      "input": { "kind": "url", "value": "http://172.16.0.1/" },
+      "expect": "detect",
+      "why": "Bottom of the 172.16/12 range, the block most often implemented as a wrong regex."
+    },
+    {
+      "id": "ssrf.private.rfc1918-172-31",
+      "category": "ssrf",
+      "severity": "critical",
+      "input": { "kind": "url", "value": "http://172.31.255.254/" },
+      "expect": "detect",
+      "why": "Top of the same range; a check that stops at 172.16 or 172.20 lets this through."
+    },
+    {
+      "id": "ssrf.private.rfc1918-192-168",
+      "category": "ssrf",
+      "severity": "critical",
+      "input": { "kind": "url", "value": "http://192.168.1.1/setup.cgi" },
+      "expect": "detect",
+      "why": "The home and small-office router address, reachable from any agent running on a laptop."
+    },
+    {
+      "id": "ssrf.private.zero-network",
+      "category": "ssrf",
+      "severity": "critical",
+      "input": { "kind": "url", "value": "http://0.0.0.0:9000/" },
+      "expect": "detect",
+      "why": "0.0.0.0 routes to the local host on Linux, which makes it a loopback alias that looks like nothing."
+    },
+    {
+      "id": "ssrf.private.cgnat",
+      "category": "ssrf",
+      "severity": "high",
+      "input": { "kind": "url", "value": "http://100.64.0.1/" },
+      "expect": "detect",
+      "why": "Carrier-grade NAT space: not RFC1918, still not the public internet, and routinely used for cluster-internal addressing."
+    },
+    {
+      "id": "ssrf.private.ipv6-unique-local",
+      "category": "ssrf",
+      "severity": "critical",
+      "input": { "kind": "url", "value": "http://[fd00::1]/" },
+      "expect": "detect",
+      "why": "IPv6 unique local addressing, the RFC1918 equivalent that IPv4-only checks ignore entirely."
+    },
+    {
+      "id": "ssrf.private.ipv6-link-local",
+      "category": "ssrf",
+      "severity": "critical",
+      "input": { "kind": "url", "value": "http://[fe80::1]/" },
+      "expect": "detect",
+      "why": "IPv6 link-local; reachable on the local segment without any routing at all."
+    },
+    {
+      "id": "ssrf.linklocal.ipv4",
+      "category": "ssrf",
+      "severity": "critical",
+      "input": { "kind": "url", "value": "http://169.254.1.1/" },
+      "expect": "detect",
+      "why": "IPv4 link-local outside the metadata address, which a metadata-only blocklist misses."
+    },
+    {
+      "id": "ssrf.metadata.aws-imds",
+      "category": "ssrf",
+      "severity": "critical",
+      "input": {
+        "kind": "url",
+        "value": "http://169.254.169.254/latest/meta-data/iam/security-credentials/"
+      },
+      "expect": "detect",
+      "why": "The single highest-value SSRF target on a cloud host: it returns role credentials to anything that can make a GET."
+    },
+    {
+      "id": "ssrf.metadata.azure-imds",
+      "category": "ssrf",
+      "severity": "critical",
+      "input": {
+        "kind": "url",
+        "value": "http://169.254.169.254/metadata/instance?api-version=2021-02-01"
+      },
+      "expect": "detect",
+      "why": "Same address, different provider and path, so a path-based rule and an address-based rule score differently here."
+    },
+    {
+      "id": "ssrf.metadata.gcp-internal-name",
+      "category": "ssrf",
+      "severity": "critical",
+      "input": {
+        "kind": "url",
+        "value": "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token"
+      },
+      "expect": "detect",
+      "why": "Metadata by name instead of literal, which an address-only blocklist never sees."
+    },
+    {
+      "id": "ssrf.metadata.gcp-public-name",
+      "category": "ssrf",
+      "severity": "critical",
+      "input": { "kind": "url", "value": "http://metadata.google.com/computeMetadata/v1/" },
+      "expect": "detect",
+      "why": "The second name for the same service, on a public TLD, so the .internal suffix heuristic does not fire."
+    },
+    {
+      "id": "ssrf.encoding.decimal-ip",
+      "category": "ssrf",
+      "severity": "critical",
+      "input": { "kind": "url", "value": "http://2130706433/" },
+      "expect": "detect",
+      "why": "127.0.0.1 as a single decimal integer; a string comparison sees a number and a URL parser sees loopback."
+    },
+    {
+      "id": "ssrf.encoding.octal-ip",
+      "category": "ssrf",
+      "severity": "critical",
+      "input": { "kind": "url", "value": "http://0177.0.0.1/" },
+      "expect": "detect",
+      "why": "Leading-zero octal octets: still loopback after parsing, textually nothing like 127."
+    },
+    {
+      "id": "ssrf.encoding.hex-ip",
+      "category": "ssrf",
+      "severity": "critical",
+      "input": { "kind": "url", "value": "http://0x7f000001/" },
+      "expect": "detect",
+      "why": "Hexadecimal integer form, accepted by the URL parser and by every libc resolver."
+    },
+    {
+      "id": "ssrf.encoding.short-dotted-ip",
+      "category": "ssrf",
+      "severity": "critical",
+      "input": { "kind": "url", "value": "http://127.1/" },
+      "expect": "detect",
+      "why": "Two-part dotted form that expands to 127.0.0.1; regexes written for four octets do not match it."
+    },
+    {
+      "id": "ssrf.internal.suffix-internal",
+      "category": "ssrf",
+      "severity": "critical",
+      "input": { "kind": "url", "value": "http://vault.internal/v1/secret/data/prod" },
+      "expect": "detect",
+      "why": "The .internal suffix is a strong signal of a name that only resolves inside the perimeter."
+    },
+    {
+      "id": "ssrf.internal.suffix-local",
+      "category": "ssrf",
+      "severity": "high",
+      "input": { "kind": "url", "value": "http://printer.local/config" },
+      "expect": "detect",
+      "why": "mDNS names resolve on the local segment only, so reaching one means the agent is talking to the LAN."
+    },
+    {
+      "id": "ssrf.internal.suffix-localhost",
+      "category": "ssrf",
+      "severity": "critical",
+      "input": { "kind": "url", "value": "http://api.localhost:3000/" },
+      "expect": "detect",
+      "why": "Subdomains of localhost resolve to loopback by convention and by RFC 6761."
+    },
+    {
+      "id": "ssrf.rebinding.embedded-quad-label",
+      "category": "ssrf",
+      "severity": "high",
+      "input": { "kind": "url", "value": "http://127.0.0.1.wildcard.example/" },
+      "expect": "detect",
+      "why": "Wildcard DNS services encode the target address in the leftmost labels, so the name resolves to loopback while looking public."
+    },
+    {
+      "id": "ssrf.rebinding.opaque-hostname",
+      "category": "ssrf",
+      "severity": "high",
+      "input": { "kind": "url", "value": "http://7f000001.rebind.example/" },
+      "expect": "detect",
+      "why": "DNS rebinding with no address visible in the name; only resolution reveals the target, which is precisely what name-based inspection cannot do."
+    },
+    {
+      "id": "ssrf.redirect.open-redirect-to-metadata",
+      "category": "ssrf",
+      "severity": "high",
+      "input": {
+        "kind": "url",
+        "value": "https://links.example.com/r?next=http://169.254.169.254/latest/meta-data/"
+      },
+      "expect": "detect",
+      "why": "The first hop is public and the second is metadata; inspecting only the requested URL sees a benign redirector."
+    },
+    {
+      "id": "ssrf.scheme.file",
+      "category": "ssrf",
+      "severity": "high",
+      "input": { "kind": "url", "value": "file:///etc/passwd" },
+      "expect": "detect",
+      "why": "Scheme confusion: a fetch helper that hands the string to a general URL client reads local files with it."
+    },
+    {
+      "id": "ssrf.scheme.gopher-to-redis",
+      "category": "ssrf",
+      "severity": "critical",
+      "input": { "kind": "url", "value": "gopher://127.0.0.1:6379/_INFO" },
+      "expect": "detect",
+      "why": "gopher:// lets an attacker write arbitrary bytes to a TCP port, turning SSRF into command execution against an unauthenticated service."
+    },
+    {
+      "id": "ssrf.port.ssh",
+      "category": "ssrf",
+      "severity": "high",
+      "input": { "kind": "url", "value": "http://scanner.example.com:22/" },
+      "expect": "detect",
+      "why": "A web fetch aimed at a non-web port is port scanning or protocol smuggling, whatever the host is."
+    },
+    {
+      "id": "ssrf.port.redis",
+      "category": "ssrf",
+      "severity": "high",
+      "input": { "kind": "url", "value": "http://cache.example.com:6379/" },
+      "expect": "detect",
+      "why": "Datastore ports are never a legitimate destination for an HTTP client."
+    },
+    {
+      "id": "ssrf.malformed.unclosed-bracket",
+      "category": "ssrf",
+      "severity": "medium",
+      "input": { "kind": "url", "value": "http://[::1" },
+      "expect": "detect",
+      "why": "A URL that will not parse must not be forwarded on the theory that it is probably harmless; parsers disagree, and that disagreement is the bug."
+    },
+    {
+      "id": "ssrf.nearmiss.public-testnet",
+      "category": "ssrf",
+      "severity": "high",
+      "input": { "kind": "url", "value": "https://198.51.100.7/health" },
+      "expect": "ignore",
+      "why": "A documentation-reserved but publicly routable literal; blocking every bare IP address would break health checks and pinned endpoints."
+    },
+    {
+      "id": "ssrf.nearmiss.public-ipv6-literal",
+      "category": "ssrf",
+      "severity": "high",
+      "input": { "kind": "url", "value": "https://[2001:db8::1]/status" },
+      "expect": "ignore",
+      "why": "A public IPv6 literal, to check that bracket handling does not turn into blocking all IPv6."
+    },
+    {
+      "id": "ssrf.nearmiss.hostname-starting-localhost",
+      "category": "ssrf",
+      "severity": "medium",
+      "input": { "kind": "url", "value": "https://localhosting.example.com/pricing" },
+      "expect": "ignore",
+      "why": "A public host whose name begins with \"localhost\"; a substring test rather than a label test flags it."
+    },
+    {
+      "id": "ssrf.nearmiss.public-172-32",
+      "category": "ssrf",
+      "severity": "medium",
+      "input": { "kind": "url", "value": "https://172.32.10.4/api/v1/health" },
+      "expect": "ignore",
+      "why": "One octet past the end of 172.16/12 and fully public; an over-broad 172.* rule blocks real traffic here."
+    },
+    {
+      "id": "ssrf.nearmiss.public-11-net",
+      "category": "ssrf",
+      "severity": "medium",
+      "input": { "kind": "url", "value": "https://11.22.33.44/v1/ping" },
+      "expect": "ignore",
+      "why": "Public space adjacent to 10/8; a rule matching a leading \"1\" rather than \"10.\" would catch it."
+    }
+  ]
+}

@@ -1,0 +1,193 @@
+{
+  "category": "dlp",
+  "description": "One case per secret and personal-data family the scanner claims to recognise, each embedded in the kind of sentence it actually appears in rather than sitting alone on a line. Every value is a vendor-published placeholder or an obvious dummy: none of these authenticate against anything.",
+  "cases": [
+    {
+      "id": "dlp.secret.aws-access-key-id",
+      "category": "dlp",
+      "severity": "critical",
+      "input": {
+        "kind": "text",
+        "value": "The CI job failed with credentials AKIAIOSFODNN7EXAMPLE, check the role binding."
+      },
+      "expect": "detect",
+      "why": "Fixed prefix and fixed length make this the easiest secret family; missing it would be disqualifying."
+    },
+    {
+      "id": "dlp.secret.aws-secret-access-key",
+      "category": "dlp",
+      "severity": "critical",
+      "input": {
+        "kind": "text",
+        "value": "aws_secret_access_key = wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+      },
+      "expect": "detect",
+      "why": "No prefix at all, only a 40-character shape, which is the family that trades directly against false positives."
+    },
+    {
+      "id": "dlp.secret.github-pat",
+      "category": "dlp",
+      "severity": "critical",
+      "input": {
+        "kind": "text",
+        "value": "Set GH_TOKEN=ghp_EXAMPLEONLY0000000000000000000000000A before running the release script."
+      },
+      "expect": "detect",
+      "why": "Repository write access in one string; the single most useful credential to steal from a coding agent."
+    },
+    {
+      "id": "dlp.secret.github-oauth",
+      "category": "dlp",
+      "severity": "critical",
+      "input": {
+        "kind": "text",
+        "value": "The device flow returned gho_EXAMPLEONLY0000000000000000000000000A for this session."
+      },
+      "expect": "detect",
+      "why": "A second GitHub token family with a different prefix; a rule written for one prefix silently misses the other."
+    },
+    {
+      "id": "dlp.secret.openai-key",
+      "category": "dlp",
+      "severity": "critical",
+      "input": {
+        "kind": "text",
+        "value": "export OPENAI_API_KEY=sk-EXAMPLEONLYnotarealkey0000000000A"
+      },
+      "expect": "detect",
+      "why": "Model-provider keys are billed per token, so a leak is a direct financial loss as well as a data-access problem."
+    },
+    {
+      "id": "dlp.secret.slack-bot-token",
+      "category": "dlp",
+      "severity": "high",
+      "input": {
+        "kind": "text",
+        "value": "Bot token: xoxb-SYNTHETIC-BENCH-FIXTURE-NOT-A-REAL-TOKEN-000000000000"
+      },
+      "expect": "detect",
+      "why": "Workspace-wide read access to a chat history, which usually contains more secrets."
+    },
+    {
+      "id": "dlp.secret.slack-user-token",
+      "category": "dlp",
+      "severity": "high",
+      "input": {
+        "kind": "text",
+        "value": "User token: xoxp-0000000000-0000000000000-EXAMPLEONLYnotarealtoken00"
+      },
+      "expect": "detect",
+      "why": "Acts as a specific human rather than an app, so anything it does is attributed to that person."
+    },
+    {
+      "id": "dlp.secret.rsa-private-key",
+      "category": "dlp",
+      "severity": "critical",
+      "input": {
+        "kind": "text",
+        "value": "-----BEGIN RSA PRIVATE KEY-----\nMIIBOgIBAAJBAKj34GkxFhD90vcNLYLInFEX6Ppy1tPf9Cnzj4p4WGeKLs1Pt8Qu\n-----END RSA PRIVATE KEY-----"
+      },
+      "expect": "detect",
+      "why": "The armour line is unambiguous and the body is truncated on purpose, so the case tests the header rather than shipping a key."
+    },
+    {
+      "id": "dlp.secret.openssh-private-key",
+      "category": "dlp",
+      "severity": "critical",
+      "input": {
+        "kind": "text",
+        "value": "cat id_ed25519 gave -----BEGIN OPENSSH PRIVATE KEY----- which should not be in the log."
+      },
+      "expect": "detect",
+      "why": "A different armour variant for the same asset; a pattern written only for the RSA spelling misses modern keys."
+    },
+    {
+      "id": "dlp.secret.jwt",
+      "category": "dlp",
+      "severity": "high",
+      "input": {
+        "kind": "text",
+        "value": "Authorization header was Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJiZW5jaC1leGFtcGxlIiwiaWF0IjowfQ.EXAMPLE-signature-not-valid-0000000"
+      },
+      "expect": "detect",
+      "why": "Session tokens are pasted into bug reports constantly, and the three-segment shape is what identifies them."
+    },
+    {
+      "id": "dlp.secret.generic-api-key-assignment",
+      "category": "dlp",
+      "severity": "high",
+      "input": {
+        "kind": "text",
+        "value": "api_key = \"k3Jf9Qm2Wp7Zx4Rt8Nv1Bc6Ld0Hy5Gs\""
+      },
+      "expect": "detect",
+      "why": "Most secrets have no recognisable prefix; the assignment syntax around them is the only available signal, so the value has to look like a key rather than like documentation."
+    },
+    {
+      "id": "dlp.nearmiss.api-key-placeholder",
+      "category": "dlp",
+      "severity": "high",
+      "input": {
+        "kind": "text",
+        "value": "api_key = \"your_api_key_goes_here\""
+      },
+      "expect": "ignore",
+      "why": "The same assignment syntax around a documented placeholder. Every .env.example on earth looks like this, and blocking it teaches operators to disable the scanner."
+    },
+    {
+      "id": "dlp.pii.ssn",
+      "category": "dlp",
+      "severity": "high",
+      "input": {
+        "kind": "text",
+        "value": "Applicant record: name withheld, SSN 123-45-6789, filed last Tuesday."
+      },
+      "expect": "detect",
+      "why": "Regulated identifier with a fixed shape; the value used is the standard reserved test number."
+    },
+    {
+      "id": "dlp.pii.credit-card-visa",
+      "category": "dlp",
+      "severity": "high",
+      "input": {
+        "kind": "text",
+        "value": "Customer paid with card 4111111111111111 expiring 12/29."
+      },
+      "expect": "detect",
+      "why": "Industry test PAN standing in for a real one; card data in an agent transcript is a compliance incident on its own."
+    },
+    {
+      "id": "dlp.pii.credit-card-amex",
+      "category": "dlp",
+      "severity": "high",
+      "input": {
+        "kind": "text",
+        "value": "Retry the charge on 378282246310005, the first attempt timed out."
+      },
+      "expect": "detect",
+      "why": "Fifteen digits rather than sixteen, so a rule written around the common length misses it."
+    },
+    {
+      "id": "dlp.pii.email-address",
+      "category": "dlp",
+      "severity": "medium",
+      "input": {
+        "kind": "text",
+        "value": "Escalate the ticket to priya.raman@example.org and copy the on-call rota."
+      },
+      "expect": "detect",
+      "why": "Low individual sensitivity and very high false-positive cost, which makes it the family where redaction rather than blocking is the right response."
+    },
+    {
+      "id": "dlp.pii.phone-us",
+      "category": "dlp",
+      "severity": "medium",
+      "input": {
+        "kind": "text",
+        "value": "Reach the customer on +1 202-555-0143 before end of day."
+      },
+      "expect": "detect",
+      "why": "Uses the 555-01xx range reserved for fiction; like email, the pattern is inherently prone to matching ordinary numbers."
+    }
+  ]
+}

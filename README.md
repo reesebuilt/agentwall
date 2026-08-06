@@ -14,9 +14,12 @@ agent as the untrusted party.
 
 Two limits matter more than any feature below.
 
-**It observes. It does not block.** Egress through the proxy is recorded and allowed. The
-allow decision is hard-coded at [`src/index.ts:29`](src/index.ts). Blocking is a posture you
-move to later, once your own ledger shows what your agents legitimately reach.
+**It defaults to observing.** Enforcement exists and is real, but `monitor` is the default:
+egress is evaluated and recorded, and allowed. You opt in with `enforcement.mode` — `guarded`
+enforces the deny rules that match, `strict` is allowlist-only. Monitor mode reports what the
+other two would have done, so you build the allowlist by reading your own ledger rather than
+by breaking your tooling to find out. A firewall that starts by breaking your tooling gets
+switched off, and a switched-off firewall protects nothing.
 
 **Capture is cooperative.** The proxy is found through standard proxy environment variables. A
 process that ignores them egresses unseen. Nothing here installs iptables or nftables
@@ -114,6 +117,18 @@ Full detail, including the conformance corpus and what verification does not pro
 
 ## What it does
 
+- **Egress enforcement, in three modes.** `monitor` evaluates and allows while reporting what
+  the stricter modes would have done; `guarded` enforces matched deny rules; `strict` is
+  allowlist-only. A blocked request gets a `403` and an `X-Agentwall-Block-Reason` header, so a
+  broken agent is a diagnosis rather than a mystery.
+- **MCP servers wrapped, stdio and Streamable HTTP.** `agentwall mcp wrap` puts every JSON-RPC
+  frame through ordered gates: tool-poisoning and drift on the advertised inventory, secrets
+  and injection in tool arguments, your policy rules, and injection in the tool output the
+  agent is about to read. Same engine, same audit chain, either transport.
+- **An emergency stop with four independent sources.** Config, API, `SIGUSR1`, or a sentinel
+  file. Any one engages it, each releases only its own hold, and it overrides every mode
+  including monitor. The file channel is the one that still works when the HTTP surface is
+  wedged.
 - **Egress capture with observed identity.** A CONNECT-aware forward proxy maps the client
   socket back to its owning process through `/proc/net/tcp` and `/proc/<pid>/fd`, so a record
   carries the real `pid` and `comm` even if the agent lies about who it is. Linux only.
@@ -149,7 +164,8 @@ Stated plainly, because a security tool that oversells itself is worse than no t
 
 | Limit | What it means |
 | --- | --- |
-| Monitor-first, no blocking | The proxy records and allows. `decide` is hard-coded to `allow` at [`src/index.ts:29`](src/index.ts). Enforcement is a posture you build toward, not something installing this gives you. |
+| Monitor by default | Enforcement is real but opt-in. Out of the box the proxy evaluates, records, and allows; `guarded` and `strict` are configured, not automatic. Installing this does not block anything until you say so. See [docs/enforcement.md](docs/enforcement.md). |
+| Only `deny` is enforceable on a socket | `approve` and `redact` verdicts are recorded and the request is allowed. A proxy has nowhere to put a held request and no way to rewrite a CONNECT body, so pretending otherwise would be worse than saying it. |
 | Cooperative capture | Proxy environment variables are honoured voluntarily. A process that ignores them egresses unobserved. No iptables or nftables redirection is installed. |
 | Anchoring is pending, not instant | An OpenTimestamps anchor stays `pending` until a Bitcoin block confirms, roughly one to six hours. Pending is not proof. |
 | Anchoring proves no alteration, not completeness | An anchor shows that what was written was not altered afterwards. It cannot show that everything which should have been written was. |
@@ -173,9 +189,14 @@ this project declines.
 
 ## Docs
 
-[Install](docs/install.md) · [Architecture](docs/architecture.md) ·
-[Threat model](docs/threat-model.md) · [Verification](docs/verification.md) ·
-[Audit format](docs/audit-format.md) · [API and configuration](docs/reference.md) ·
+[Install](docs/install.md) · [Enforcement](docs/enforcement.md) ·
+[MCP](docs/mcp.md) · [Kill switch](docs/kill-switch.md) ·
+[Architecture](docs/architecture.md) · [Threat model](docs/threat-model.md) ·
+[Verification](docs/verification.md) · [Audit format](docs/audit-format.md) ·
+[API and configuration](docs/reference.md) · [Scan API](docs/scan-api.md) ·
+[Explain](docs/explain.md) · [Benchmark](docs/benchmark.md) ·
+[Compliance](docs/compliance.md) · [Canary tokens](docs/canary.md) ·
+[Filesystem sentinel](docs/filesystem-sentinel.md) ·
 [FloodGuard](docs/runtime-floodguard.md) · [Tutorials](docs/tutorials/README.md) ·
 [Changelog](CHANGELOG.md)
 
