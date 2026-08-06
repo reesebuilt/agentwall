@@ -37,6 +37,22 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
   size, fork depth, operation count, and working message length, because the file being verified is
   attacker-influenced by definition. RIPEMD-160 and Keccak-256 operations are declined rather than
   evaluated, matching the independent Go verifier.
+- A read-only evidence viewer at `/evidence`, with the same report as JSON at `/api/evidence`. It
+  projects the existing audit chain rather than recording anything new: a per-session scorecard of
+  what an agent did, what was allowed, denied, sent to approval or redacted, which detections fired
+  and which rules matched; the `chained`, `linked` and `anchored` layers shown inline with the state
+  and the verdict `agentwall verify` prints side by side; a signed receipt timeline naming the
+  highest record index each anchor demonstrably commits to, re-derived from disk rather than read
+  off the record; and the offline verify command printed on the page, because a console over signed
+  evidence must not be the root of trust for it. Read only is structural: only `GET` handlers
+  exist, every mutating method returns `405`, and the page serves no script. A pending anchor
+  renders as `pending`, and an anchor whose record claims `confirmed` while its proof carries only
+  a calendar attestation also renders as `pending` with the overclaim named, which is stricter than
+  the layer counter and never looser. Layers with no supporting evidence for a span render
+  `absent`, so a session still in the unsealed live file is not shown as covered by the rotation
+  manifest. One request reads at most 100,000 records and skips a file above 64 MB, stating the cap
+  on the page when it bites. Behind the operator bearer token like every other non-health route;
+  `AGENTWALL_ALLOW_LOOPBACK_DEV=1` is what makes it openable in a browser.
 
 ### Changed
 - The bundled verifier returns the same verdict as the independent Go verifier on every case in the

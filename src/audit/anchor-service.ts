@@ -194,11 +194,23 @@ function compositeDigest(manifestHead: string | null, segments: number, liveTail
  * produces a different hash at that count and reproduces from nothing eligible. That is
  * the only condition this reports.
  */
+interface LiveTailCandidate {
+	/** Exactly the members the composite is computed over. Nothing may be added here. */
+	tail: LiveTail;
+	/**
+	 * Highest record chainIndex the tail reaches, or null when the candidate came from a
+	 * manifest entry whose file is gone. Carried alongside rather than inside `tail`
+	 * because `tail` is hashed: an extra member there would change every composite ever
+	 * signed and report every honest checkpoint as tampered.
+	 */
+	reachIndex: number | null;
+}
+
 function liveTailCandidates(
 	r: ResolvedPaths,
 	entries: readonly SegmentRecord[],
 	segments: number,
-): LiveTail[] {
+): LiveTailCandidate[] {
 	const alreadyClosed = new Set<string>(
 		entries.slice(0, segments).map((e) => resolveSegmentPath(r.manifestPath, e.path)),
 	);
@@ -210,12 +222,12 @@ function liveTailCandidates(
 	for (const e of entries.slice(segments)) eligible.add(resolveSegmentPath(r.manifestPath, e.path));
 
 	const seen = new Set<string>();
-	const out: LiveTail[] = [];
-	const offer = (t: LiveTail): void => {
-		const key = `${t.count}:${t.finalHash}`;
+	const out: LiveTailCandidate[] = [];
+	const offer = (tail: LiveTail, reachIndex: number | null): void => {
+		const key = `${tail.count}:${tail.finalHash}`;
 		if (seen.has(key)) return;
 		seen.add(key);
-		out.push(t);
+		out.push({ tail, reachIndex });
 	};
 
 	for (const file of eligible) {
@@ -237,10 +249,10 @@ function liveTailCandidates(
 			}
 			if (!ev.integrity) continue;
 			count++;
-			offer({ finalHash: ev.integrity.hash, count });
+			offer({ finalHash: ev.integrity.hash, count }, ev.integrity.chainIndex);
 		}
 	}
-	for (const e of entries.slice(segments)) offer({ finalHash: e.finalHash, count: e.count });
+	for (const e of entries.slice(segments)) offer({ finalHash: e.finalHash, count: e.count }, e.lastIndex);
 	return out;
 }
 
@@ -443,7 +455,7 @@ export function runVerify(paths: AnchorPaths): VerifyReport {
 			const head = segments === 0 ? null : manifestEntries[segments - 1].finalHash;
 			const set = new Set<string>([compositeDigest(head, segments, null)]);
 			for (const c of liveTailCandidates(r, manifestEntries, segments)) {
-				set.add(compositeDigest(head, segments, c));
+				set.add(compositeDigest(head, segments, c.tail));
 			}
 			compositesBySegmentCount.set(segments, set);
 			return set;
@@ -561,6 +573,204 @@ export function runVerify(paths: AnchorPaths): VerifyReport {
 	});
 
 	return { ok: layers.every((l) => l.ok), layers, pending, confirmed, failed };
+}
+
+/**
+ * One anchor log line, reduced to the facts a reader needs and nothing more.
+ *
+ * Deliberately verdict-free. runVerify() is the verdict, and a second function phrasing
+ * its own PASS/FAIL over the same bytes is how two readers of one evidence set end up
+ * disagreeing on screen. Everything here is copied from the record, counted out of the
+ * proof bytes, or re-derived from disk, so a caller can present it beside the layer verdict
+ * without contradicting it.
+ */
+export interface AnchorReach {
+	/** 1-based line in the anchor log. */
+	line: number;
+	/** Sealed segments the checkpoint committed. NOT a record index. */
+	segments: number | null;
+	submittedAt: string | null;
+	/** Calendar the submission reached. Empty when none did. */
+	reference: string;
+	/** What the record says about itself. Not a verification result. */
+	statusClaimed: string;
+	/** Set when the submission never reached a calendar. */
+	error: string | null;
+	/** Whether the submitted digest recomputes from the checkpoint the record embeds. */
+	digestMatchesCheckpoint: boolean;
+	/**
+	 * Highest record chainIndex this anchor demonstrably commits to, re-derived from disk.
+	 *
+	 * A checkpoint commits a manifest head plus a live tail, and the tail is inside a hash,
+	 * so the reach is not readable off the record. It is recovered by finding which candidate
+	 * reproduces the signed composite. null means none did, which is the same condition
+	 * runVerify reports as live-tail-mismatch, and it means the reach is UNKNOWN rather than
+	 * zero: naming the sealed span alone would claim coverage the bytes no longer support.
+	 */
+	coveredThroughIndex: number | null;
+	proofPath: string | null;
+	proofBytes: number;
+	/** The parser's own message, or null when the proof parsed. */
+	proofProblem: string | null;
+	/** Attestation kinds the proof bytes actually carry, not what the record claims. */
+	pendingAttestations: number;
+	bitcoinAttestations: number;
+	pendingUris: string[];
+	bitcoinHeights: number[];
+}
+
+/**
+ * Project the anchor log into per-anchor reach, for a reader that has to say which records
+ * an off-box timestamp actually covers.
+ *
+ * Exists because the layer verdict is file-wide while a reviewer asks something narrower:
+ * are THESE records anchored, and is that anchor in a block or still waiting for one. The
+ * re-derivation is shared with runVerify through liveTailCandidates and compositeDigest, so
+ * the two cannot drift apart about what a checkpoint committed.
+ */
+export function anchorReach(paths: AnchorPaths): AnchorReach[] {
+	const r = resolvePaths(paths);
+	if (!existsSync(r.anchorLogPath)) return [];
+	const entries = readManifest(r.manifestPath);
+
+	// Same per-rotation cache runVerify keeps, for the same reason: every checkpoint signed
+	// between two rotations shares a sealed-segment count, so the eligible files are read
+	// once per count rather than once per anchor.
+	const candidatesBySegmentCount = new Map<number, LiveTailCandidate[]>();
+	const candidatesFor = (segments: number): LiveTailCandidate[] => {
+		const cached = candidatesBySegmentCount.get(segments);
+		if (cached) return cached;
+		const fresh = liveTailCandidates(r, entries, segments);
+		candidatesBySegmentCount.set(segments, fresh);
+		return fresh;
+	};
+
+	const out: AnchorReach[] = [];
+	let line = 0;
+	for (const raw of readFileSync(r.anchorLogPath, "utf8").split("\n")) {
+		line++;
+		if (!raw.trim()) continue;
+		let rec: AnchorRecord & { checkpoint?: Checkpoint };
+		try {
+			rec = JSON.parse(raw) as AnchorRecord & { checkpoint?: Checkpoint };
+		} catch {
+			// Already a problem on the anchored layer. Carried here so a reader sees that the
+			// line exists rather than a silently shorter timeline.
+			out.push({
+				line,
+				segments: null,
+				submittedAt: null,
+				reference: "",
+				statusClaimed: "unparseable",
+				error: "this anchor log line does not parse",
+				digestMatchesCheckpoint: false,
+				coveredThroughIndex: null,
+				proofPath: null,
+				proofBytes: 0,
+				proofProblem: null,
+				pendingAttestations: 0,
+				bitcoinAttestations: 0,
+				pendingUris: [],
+				bitcoinHeights: [],
+			});
+			continue;
+		}
+
+		const cp = rec.checkpoint;
+		const segments = cp ? cp.chainIndex : null;
+		const digestMatchesCheckpoint = cp ? rec.digest === anchorDigest(cp) : false;
+
+		let coveredThroughIndex: number | null = null;
+		if (cp && segments !== null && segments <= entries.length) {
+			const head = segments === 0 ? null : entries[segments - 1].finalHash;
+			// The sealed part of the reach is readable straight off the manifest.
+			const sealedThrough = segments === 0 ? null : entries[segments - 1].lastIndex;
+			if (compositeDigest(head, segments, null) === cp.hash) {
+				// It committed no live tail, so the sealed span is the whole reach.
+				coveredThroughIndex = sealedThrough;
+			} else {
+				const match = candidatesFor(segments).find(
+					(c) => compositeDigest(head, segments, c.tail) === cp.hash,
+				);
+				const reaches = match
+					? [sealedThrough, match.reachIndex].filter((v): v is number => v !== null)
+					: [];
+				coveredThroughIndex = reaches.length ? Math.max(...reaches) : null;
+			}
+		}
+
+		out.push(reachRecord(line, rec, segments, digestMatchesCheckpoint, coveredThroughIndex, r));
+	}
+	return out;
+}
+
+/** Read the proof bytes an anchor names and count what they lead to. */
+function reachRecord(
+	line: number,
+	rec: AnchorRecord & { checkpoint?: Checkpoint },
+	segments: number | null,
+	digestMatchesCheckpoint: boolean,
+	coveredThroughIndex: number | null,
+	r: ResolvedPaths,
+): AnchorReach {
+	const named = typeof rec.proofPath === "string" ? rec.proofPath : "";
+	const found = named ? resolveProofPath(named, r) : null;
+	let proofBytes = 0;
+	let proofProblem: string | null = null;
+	const pendingUris: string[] = [];
+	const bitcoinHeights: number[] = [];
+	let pendingAttestations = 0;
+	let bitcoinAttestations = 0;
+
+	if (rec.error) {
+		// A submission that never reached a calendar has no proof to point at, so naming the
+		// proof missing as well would report two faults for one event.
+		proofProblem = null;
+	} else if (!found) {
+		proofProblem = named
+			? `the proof it names (${basename(named)}) is not on disk`
+			: "it names no proof file";
+	} else {
+		proofBytes = statSync(found).size;
+		if (proofBytes === 0) {
+			proofProblem = "the proof file is empty";
+		} else {
+			try {
+				const attestations = parseOtsProofFile(found, Buffer.from(String(rec.digest), "hex"));
+				if (attestations.length === 0) proofProblem = "it parses but reaches no attestation";
+				for (const a of attestations) {
+					if (a.kind === "pending") {
+						pendingAttestations++;
+						pendingUris.push(a.uri);
+					} else {
+						bitcoinAttestations++;
+						bitcoinHeights.push(a.height);
+					}
+				}
+			} catch (err) {
+				proofProblem =
+					err instanceof OtsParseError ? err.message : `unreadable: ${(err as Error).message}`;
+			}
+		}
+	}
+
+	return {
+		line,
+		segments,
+		submittedAt: typeof rec.submittedAt === "string" ? rec.submittedAt : null,
+		reference: typeof rec.reference === "string" ? rec.reference : "",
+		statusClaimed: typeof rec.status === "string" ? rec.status : "unstated",
+		error: rec.error ?? null,
+		digestMatchesCheckpoint,
+		coveredThroughIndex,
+		proofPath: found,
+		proofBytes,
+		proofProblem,
+		pendingAttestations,
+		bitcoinAttestations,
+		pendingUris,
+		bitcoinHeights,
+	};
 }
 
 /**

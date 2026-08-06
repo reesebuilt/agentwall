@@ -20,6 +20,9 @@ than a narrative document.
 - [Audit evidence format](audit-format.md): the normative on-disk spec. Record hashing,
   canonicalization, rotation manifest, checkpoints, and OpenTimestamps proofs, with worked
   examples and a statement of what the format does not prove.
+- [Evidence viewer](evidence-viewer.md): the read-only console at `/evidence`, the per-session
+  scorecard, the three verification layers shown inline, why a pending anchor is never rendered
+  as verified, and the offline command the page prints so it is not the root of trust.
 - [FloodGuard](runtime-floodguard.md): runtime rate and burst control, including how
   shield mode changes behaviour.
 - [Wrapping an MCP server](mcp.md): running a local MCP server behind the gates, what each gate

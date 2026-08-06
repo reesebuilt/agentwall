@@ -40,6 +40,8 @@ GET  /api/dashboard/state GET /api/dashboard/events      # operator console stat
 GET  /api/org/summary                                   # multi-instance summary
 POST /reload              GET /reload                   # config and policy reload, see docs/reload.md
 GET  /api/fleet                                         # declared agents, live budget counters
+GET  /evidence            GET /evidence/session/:id     # read-only evidence viewer, HTML
+GET  /api/evidence        GET /api/evidence/session/:id # the same report as JSON
 GET  /health              GET /ready                    # liveness; /ready needs the token
 ```
 
