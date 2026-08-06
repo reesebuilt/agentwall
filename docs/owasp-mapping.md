@@ -381,6 +381,7 @@ through. Downgrading is the only direction that cannot mislead.
 | `T1489` | Service Stop | `strong` | `governance:lockdown` (deny) |
 | `T1552.001` | Credentials In Files | `strong` | `content:deny-spill-file-write` (deny) |
 | `T1036` | Masquerading | `strong` | `fleet:deny-undeclared-agent` (deny) |
+| `T1078` | Valid Accounts | `strong` | `fleet:deny-refused-agent-identity` (deny) |
 
 Two things this table does not mean. **Absence is not "not applicable":** a technique missing
 from this list means no detection in this codebase names it, and ATT&CK has hundreds. And the

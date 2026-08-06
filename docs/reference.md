@@ -77,11 +77,13 @@ everything.
 | Key | Effect |
 | --- | --- |
 | `fleet.unmatched` | `global` (default) judges unattributed egress by the process-wide allowlist. `deny` refuses it in guarded and strict. Monitor still only records. |
+| `fleet.minimumMatchTier` | `any` (default), `uid`, or `credential`. The weakest binding this instance accepts from a connection that claims a declared agent. Judges how a claim was proven; a connection nobody claims is governed by `fleet.unmatched`. |
+| `fleet.credentialStore` | Path to the issued-credential store, relative to this config file. Defaults to `fleet-credentials.json` beside it. Managed by `agentwall fleet`, never hand-edited. |
 | `fleet.agents[].id` | The principal recorded as `agentId`, and what `match.subject.agentId` in a declarative rule binds to. |
 | `fleet.agents[].label` | Human name for the console. Defaults to the id. |
 | `fleet.agents[].match.uid` | Socket owner from `/proc/net/tcp`. The only signal an agent cannot assert about itself. |
 | `fleet.agents[].match.comm` | Process names to accept. Self-declared by the process; see [fleet.md](fleet.md). |
-| `fleet.agents[].match.credential` | `sha256:<64 hex>` or `env:<VAR>`. Matched against `Proxy-Authorization`, which is stripped before the request reaches the destination. A literal secret is rejected at start-up. |
+| `fleet.agents[].match.credential` | `sha256:<64 hex>`, `env:<VAR>`, or `issued` (the digest comes from the credential store, so it can be rotated with an overlap and revoked without a restart). Matched against `Proxy-Authorization`, which is stripped before the request reaches the destination. A literal secret is rejected at start-up, and so is declaring a config digest for an agent that also holds an issued credential. |
 | `fleet.agents[].egress.allowedHosts` | Replaces the global host allowlist for this agent. Omit to inherit it. |
 | `fleet.agents[].egress.allowedPorts` | Replaces the global port allowlist for this agent. Omit to inherit it. |
 | `fleet.agents[].budget.windowSeconds` | Sliding window the counters are measured over. |

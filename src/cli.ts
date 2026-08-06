@@ -11,6 +11,7 @@ import { runDecoyCommand } from "./decoy";
 import { runPerimeterCommand } from "./perimeter";
 import { runSandboxCommand } from "./sandbox";
 import { runInterceptCommand } from "./intercept";
+import { fleetDoctorLines, runFleetCommand } from "./fleet/command";
 import {
   formatRationaleReport,
   parseRationaleArgs,
@@ -115,6 +116,7 @@ Commands:
   pause               Pause one runtime session
   resume              Resume one runtime session
   terminate           Terminate one runtime session
+  fleet               Issue, rotate, and revoke fleet agent credentials
   perimeter           Contain an agent UID behind the transparent proxy
   sandbox             Confine one process with Landlock and seccomp (Linux, no root needed)
   intercept           Manage the local TLS interception CA (opt-in, off by default)
@@ -189,6 +191,12 @@ Decoy options:
   --label <text>                      Operator label kept with the token and folded into its env var name
   --out <path>                        Append the generated token to this decoy file (written at mode 0600)
   --file <path>                       Decoy file to list; refuses one that group or other can read
+
+Fleet credential options (see \`agentwall fleet\` for the full list):
+  --agent <id>                        Declared agent the credential speaks for
+  --credential <id>                   One issued credential, for revoke
+  --overlap <duration>                rotate: how long the old credential keeps working (15m default)
+  --reason <text>                     revoke: recorded beside the tombstone
 
 Why options:
   --kind <url|text|tool>              Subject kind (inferred from the subject when omitted)
@@ -267,7 +275,7 @@ function commandInit(flags: CliFlags) {
   console.log(`\nRun: agentwall start  (dashboard: http://${config.host}:${config.port})`);
 }
 
-function commandDoctor() {
+function commandDoctor(flags: CliFlags) {
   const checks = [
     {
       name: `Node version >= ${nodeFloor}`,
@@ -298,6 +306,23 @@ function commandDoctor() {
     } else {
       failures += 1;
       console.log(`❌ ${check.name} (hint: ${check.detail})`);
+    }
+  }
+
+  // Fleet credential lifecycle, when a fleet is declared. Silent otherwise, because a
+  // single-agent install should not grow four lines about a feature nobody turned on.
+  //
+  // A rotation window is a WARN rather than a pass: it is a stated, bounded period during
+  // which two secrets both work, and an operator reading doctor during one needs to see how
+  // long is left. It does not fail the command, because a rotation in progress is not a
+  // broken install. A store that cannot be parsed does fail: nothing can be changed until it
+  // is fixed, including a revocation somebody may be trying to make right now.
+  for (const line of fleetDoctorLines(typeof flags.config === "string" ? flags.config : undefined)) {
+    if (line.level === "fail") {
+      failures += 1;
+      console.log(`❌ ${line.text}`);
+    } else {
+      console.log(`${line.level === "warn" ? "⚠️ " : "✅"} ${line.text}`);
     }
   }
 
@@ -1099,7 +1124,7 @@ async function main() {
       runNodeScript([path.resolve(process.cwd(), "node_modules/ts-node/dist/bin.js"), "src/index.ts"]);
       return;
     case "doctor":
-      commandDoctor();
+      commandDoctor(flags);
       return;
     case "status":
       await commandStatus(flags);
@@ -1128,6 +1153,11 @@ async function main() {
     case "terminate":
       await commandSessionControl("terminate", flags, positionals);
       return;
+    case "fleet":
+      // Raw args for the same reason `intercept` takes them: the subcommand is a positional,
+      // and parseFlags() would read `--overlap 15m` as one of ours and hand back the rest in
+      // an order the fleet parser cannot reconstruct.
+      process.exit(runFleetCommand(args));
     case "anchor":
       await commandAnchor(flags);
       return;

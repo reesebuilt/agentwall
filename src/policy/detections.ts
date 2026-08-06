@@ -312,6 +312,33 @@ export const detectionCatalog: DetectionMapping[] = [
     },
     severity: "high",
   },
+  {
+    id: "det.fleet.identity.refused",
+    ruleId: "fleet:deny-refused-agent-identity",
+    name: "Refused fleet identity",
+    description:
+      "A connection presented a fleet credential the operator had withdrawn (revoked, or past its rotation overlap), or claimed a declared agent on a weaker signal while that agent's credential exists and was not presented. The second case is impersonation: a process name is chosen by the process. The first is INDETERMINATE by construction and the record says so, because a deployment that missed the change and a copy of the credential in someone else's hands present identical bytes. Confirm who holds it before closing this.",
+    mitreAttack: {
+      tactic: "Defense Evasion",
+      technique: "Valid Accounts",
+      techniqueId: "T1078",
+    },
+    severity: "high",
+  },
+  {
+    id: "det.fleet.identity.unconfigured",
+    ruleId: "fleet:deny-unconfigured-agent-identity",
+    name: "Agent cannot satisfy the fleet minimum binding tier",
+    description:
+      "A declared agent was refused because it cannot meet the fleet's configured minimum binding tier, or because its credential names an agent this instance no longer declares. Every connection it makes is refused identically, whoever makes it. This is the expected state while an operator raises the floor across a fleet, and `agentwall fleet list` names the agents in it.",
+    // Deliberately unmapped, on the same principle as det.net.sni.connect-mismatch. The
+    // nearest technique is T1078, and it is the wrong one: nothing here indicates an
+    // adversary. Publishing an ATT&CK coverage row for an operator's own migration would put
+    // a threat label on a config change and teach whoever reads the coverage table to
+    // discount it. `unmappedDetections()` is the honest home for a real finding with no
+    // accurate framework row.
+    severity: "medium",
+  },
 ];
 
 const detectionByRule = new Map<string, DetectionMapping[]>(
