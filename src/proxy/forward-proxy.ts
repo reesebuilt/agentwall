@@ -263,7 +263,7 @@ const PEEK_TIMEOUT_MS = 5000;
 const SNI_MISMATCH_RULE = "net:sni-connect-mismatch";
 
 /** A `decide` result with its optional parts filled in, ready to spread onto a record. */
-interface ResolvedVerdict {
+export interface ResolvedVerdict {
   decision: ProxyDecision;
   reasons: readonly string[];
   matchedRules: readonly string[];
@@ -279,6 +279,71 @@ function resolveVerdict(result: ProxyDecideResult): ResolvedVerdict {
     reasons: result.reasons ?? NO_STRINGS,
     matchedRules: result.matchedRules ?? NO_STRINGS,
     riskLevel: result.riskLevel,
+  };
+}
+
+/** What the cross-check concluded, and whether the caller has to refuse. */
+export interface NegotiatedNameCheck {
+  /** The verdict to record, already merged with whatever `decide` said about the new name. */
+  verdict: ResolvedVerdict;
+  /** True when policy refused the negotiated name. HOW to refuse is the caller's business. */
+  refuse: boolean;
+}
+
+/**
+ * Cross-check the name a client actually negotiated against the one it named to the proxy.
+ *
+ * THE SINGLE IMPLEMENTATION OF THIS CHECK. Any path that learns a negotiated server name has
+ * to call this rather than repeat it: two sites deciding the same fact is how one rule id
+ * ends up meaning two different things, and this rule id is what an operator greps for. Today
+ * the caller is the ClientHello peek on the tunnel path. An interception path learns the same
+ * name from its TLS servername callback and belongs here too.
+ *
+ * It deliberately does NOT refuse anything itself. It reports `refuse` and leaves the
+ * mechanism to the caller, because the mechanism is genuinely different and neither is
+ * substitutable: on a tunnel the 200 has already gone out and all that is left is to destroy
+ * both sockets, while a path that terminates TLS can fail the handshake before any session
+ * exists and never spend the upstream connection at all.
+ *
+ * Both names are normalised here rather than being trusted to arrive that way, so a caller
+ * that forgets cannot turn a difference in spelling into a reported bypass.
+ *
+ * `event` is mutated: `sni` is recorded whenever a name was read, and `sniMismatch` only when
+ * it actually differs. That is deliberate, because the record is built from this object later
+ * and the observation belongs to the connection, not to the verdict.
+ */
+export function crossCheckNegotiatedName(
+  negotiated: string,
+  connectAuthority: string,
+  event: ProxyEvent,
+  current: ResolvedVerdict,
+  decide: (event: ProxyEvent) => ProxyDecideResult
+): NegotiatedNameCheck {
+  const observed = negotiated.toLowerCase();
+  event.sni = observed;
+  // Case-folded on both sides: SNI is lowercased on the way out of the parser, so a CONNECT
+  // line that shouted its authority is a spelling difference and not a bypass.
+  if (observed === connectAuthority.toLowerCase()) return { verdict: current, refuse: false };
+
+  event.sniMismatch = true;
+  // Re-decided against the name the client actually negotiated. `decide` stays the single
+  // authority and is now being asked about the better-sourced of the two hostnames rather
+  // than only the typed one. This can only ever ADD a denial: it runs after an allow, so it
+  // can refuse what the CONNECT line was permitted and can never permit what it was refused.
+  // Monitor mode is unaffected, because monitor mode's `decide` returns allow.
+  const negotiatedVerdict = resolveVerdict(decide({ ...event, host: observed }));
+  return {
+    verdict: {
+      decision: negotiatedVerdict.decision,
+      reasons: [
+        `CONNECT named ${connectAuthority.toLowerCase()} but the ClientHello negotiated ${observed}`,
+        ...current.reasons,
+        ...negotiatedVerdict.reasons,
+      ],
+      matchedRules: [SNI_MISMATCH_RULE, ...current.matchedRules, ...negotiatedVerdict.matchedRules],
+      riskLevel: negotiatedVerdict.riskLevel ?? current.riskLevel,
+    },
+    refuse: negotiatedVerdict.decision === "deny",
   };
 }
 
@@ -465,37 +530,18 @@ export function createForwardProxy(opts: ForwardProxyOptions): Server {
 
         try {
           if (sni !== null) {
-            event.sni = sni;
-            // The CONNECT authority is compared case-folded because SNI is lowercased on
-            // the way out of the parser; a case difference is a spelling, not a bypass.
-            if (sni !== host.toLowerCase()) {
-              event.sniMismatch = true;
-              // Re-decided against the name the client actually negotiated. This is the
-              // whole point: `decide` stays the single authority, and it is now being asked
-              // about the better-sourced of the two hostnames rather than only the typed one.
-              // Monitor mode is unaffected, because monitor mode's `decide` returns allow.
-              const negotiated = resolveVerdict(opts.decide({ ...event, host: sni }));
-              verdict = {
-                decision: negotiated.decision,
-                reasons: [
-                  `CONNECT named ${host.toLowerCase()} but the ClientHello negotiated ${sni}`,
-                  ...verdict.reasons,
-                  ...negotiated.reasons,
-                ],
-                matchedRules: [SNI_MISMATCH_RULE, ...verdict.matchedRules, ...negotiated.matchedRules],
-                riskLevel: negotiated.riskLevel ?? verdict.riskLevel,
-              };
-              if (negotiated.decision === "deny") {
-                // Torn down rather than refused politely: the 200 has already gone out, so
-                // there is no status line left to send. The honest cost of deciding this
-                // late is that the destination saw a TCP handshake, which a CONNECT-level
-                // deny never spends. Zero payload bytes reach it either way, because the
-                // hello that triggered this is still sitting in `peeked`, unforwarded.
-                clientSocket.destroy();
-                upstream.destroy();
-                finish();
-                return;
-              }
+            const checked = crossCheckNegotiatedName(sni, host, event, verdict, opts.decide);
+            verdict = checked.verdict;
+            if (checked.refuse) {
+              // Torn down rather than refused politely: the 200 has already gone out, so
+              // there is no status line left to send. The honest cost of deciding this late
+              // is that the destination saw a TCP handshake, which a CONNECT-level deny never
+              // spends. Zero payload bytes reach it either way, because the hello that
+              // triggered this is still sitting in `peeked`, unforwarded.
+              clientSocket.destroy();
+              upstream.destroy();
+              finish();
+              return;
             }
           }
         } catch (err) {
