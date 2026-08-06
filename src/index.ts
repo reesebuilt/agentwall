@@ -9,6 +9,8 @@ import { decideEgress, setEgressPolicy, setFleet } from "./runtime/enforcement";
 import type { EnforcementMode, EgressVerdict } from "./runtime/enforcement";
 import { AgentRegistry } from "./fleet/registry";
 import { AgentBudgetLedger } from "./fleet/budget";
+import { resolveInterceptor } from "./proxy/tls-intercept";
+import type { Interceptor } from "./proxy/tls-intercept";
 
 /**
  * What each mode does, in the startup log, in words an operator can act on.
@@ -195,12 +197,55 @@ async function main() {
     return fields;
   };
 
+  // Forward proxy: the insertion mechanism. Opt-in via env so it never starts unexpectedly, and
+  // bound to loopback like everything else on this host.
+  const proxyPort = Number(process.env.AGENTWALL_PROXY_PORT ?? 0);
+
+  /**
+   * TLS interception, resolved before ANYTHING is bound.
+   *
+   * Ordering is the whole design here, in two layers. Every precondition (openssl on PATH, a CA
+   * on disk, a key no wider than 0600, an unexpired certificate, something on this host that
+   * actually trusts it) is checked before the first connection, and a failure exits with the
+   * reason and the fix. And it is checked before `app.listen`, so a process that is going to
+   * refuse never opens a socket first: an operator who sees "listening" in the log has a process
+   * that is actually going to serve.
+   *
+   * The alternative, resolving lazily and tunnelling when it does not work out, is the failure
+   * this project has already shipped twice: an nftables ruleset that never loaded because
+   * `redirect` is a reserved word, and a gitleaks config that reported a clean tree because it
+   * inherited no rules. Both looked like controls that were passing. An operator who turned
+   * interception on and got blind tunnelling would be the third, and the worst of the three,
+   * because the evidence it produced would be a clean DLP history over traffic nobody read.
+   */
+  let interceptor: Interceptor | undefined;
+  if (proxyPort > 0 && config.interception?.enabled) {
+    const resolved = await resolveInterceptor(config.interception);
+    if (!resolved.ok) {
+      // console.error, not app.log.error: this is a startup refusal an operator is watching for
+      // in a terminal, and the structured logger's one-line JSON buries the remedy that is the
+      // entire point of the message.
+      console.error(`agentwall: interception is enabled but cannot start.\n\n  ${resolved.reason}\n`);
+      for (const step of resolved.remedy) console.error(`  - ${step}`);
+      console.error(
+        "\nRefusing to start rather than tunnelling blind. Interception that silently degrades to a " +
+          "pass-through would give you a clean DLP history over traffic nothing read.\n" +
+          "To run without it, remove the `interception` section or set interception.enabled to false."
+      );
+      process.exit(1);
+    }
+    interceptor = resolved.interceptor;
+    app.log.warn(
+      { caDir: config.interception.caDir ?? "default", bypassHosts: config.interception.bypassHosts ?? [] },
+      `TLS interception is ON. AgentWall is terminating TLS for every https host not on the bypass list, ` +
+        `so request and response bodies are readable and are being scanned. ${resolved.notes.join("; ")}. ` +
+        `Anyone who can read the CA private key can impersonate every site to this host.`
+    );
+  }
+
   try {
     await app.listen({ port: config.port, host: config.host });
 
-    // Forward proxy: the insertion mechanism. Opt-in via env so it never starts
-    // unexpectedly, and bound to loopback like everything else on this host.
-    const proxyPort = Number(process.env.AGENTWALL_PROXY_PORT ?? 0);
     if (proxyPort > 0) {
       const { appendFileSync, mkdirSync } = await import("fs");
       const { dirname } = await import("path");
@@ -282,9 +327,14 @@ async function main() {
             }
           }
         },
-        onError: () => {
-          /* upstream failures are the client's to see, not ours to crash on */
+        onError: (err, where) => {
+          // Upstream failures are the client's to see, not ours to crash on. Interception
+          // failures are different and are logged: a client that rejected a minted certificate
+          // is a pinned endpoint that needs to go on interception.bypassHosts, and an operator
+          // staring at a broken agent has no other way to learn that.
+          if (where.startsWith("tls-intercept")) app.log.warn({ err: err.message, where }, "TLS interception failed for a connection");
         },
+        ...(interceptor ? { interceptor } : {}),
       });
       app.log.info(
         // Both allowlists, because strict now gates on host AND port. A boot line that names

@@ -112,6 +112,31 @@ export interface AgentwallConfig {
    * with an allow verdict that was evaluated against a destination the agent never asked for.
    */
   transparent?: { port: number; host?: string; tlsPort?: number };
+  /**
+   * TLS interception: the only thing in AgentWall that can read an https body.
+   *
+   * Absent means OFF, and absent is the default. Not off in the sense of a conservative value a
+   * config file might drift past: with no section here there is no CA, nothing is minted, and
+   * the CONNECT path tunnels exactly as it always has. A security tool that decrypted its
+   * operator's traffic because it shipped that way would not have earned the trust it is asking
+   * for, so enabling this is a deliberate act with a stated cost.
+   *
+   * The cost, in one sentence, because it belongs beside the switch and not only in the docs:
+   * whoever holds the CA private key can impersonate every site to this host. See
+   * `docs/tls-interception.md` before turning this on.
+   *
+   * `enabled: true` with a missing `openssl`, a missing CA, a CA key wider than 0600, an expired
+   * CA, or a CA nothing trusts is a startup REFUSAL, not a warning. Falling back to blind
+   * tunnelling while the operator believes bodies are being inspected is the one outcome this
+   * must never produce, and it is the outcome this project has already shipped twice by
+   * accident: an nftables ruleset that never loaded because `redirect` is a reserved word, and a
+   * gitleaks config that reported a clean tree because it inherited no rules.
+   *
+   * `bypassHosts` is the escape hatch for certificate-pinned clients, which WILL break under
+   * interception. Exact match after normalisation, no wildcards, matching the egress allowlist
+   * convention rather than inventing a looser second one beside it.
+   */
+  interception?: { enabled: boolean; caDir?: string; bypassHosts?: string[]; trustInstalledFor?: string[] };
   manifestIntegrity: {
     enabled: boolean;
     approvedHashesPath?: string;
