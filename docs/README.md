@@ -57,6 +57,9 @@ than a narrative document.
 - [Fleet governance](fleet.md): several agents on one host with their own identities,
   allowlists, and budgets, what each identity signal is actually worth, what stays global,
   and what multi-host would take that this does not do.
+- [TLS interception](tls-interception.md): reading https request and response bodies for the
+  hosts you choose, what installing a local CA costs your threat model, and everything that
+  stays opaque anyway.
 - [Detection benchmark](benchmark.md): re-measuring the detection numbers yourself, why
   precision and recall are never combined into one score, and what a corpus of 190 cases
   cannot tell you.

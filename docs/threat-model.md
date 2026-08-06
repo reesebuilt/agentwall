@@ -27,6 +27,7 @@ On the forward proxy, a plaintext HTTP response is scanned for injected instruct
 Content inspection detects common secrets and PII. Policy can deny secret-bearing egress and redact PII on risky flows.
 
 Read that with its scope attached. Inspection runs on content Agentwall is handed directly - the `/inspect/*` and `/evaluate` payloads, the MCP frames it wraps, channel messages, watched file writes - and on plaintext HTTP through the forward proxy, where the request path, headers, and body are scanned before anything is opened upstream and a credential in any of them is refused. It does not run on https through the proxy, because that body is encrypted, so a secret leaving inside a TLS session is visible as a destination, a negotiated SNI, and a byte count and never as content; the egress allowlist is what stands between it and the network. The plaintext scan is bounded at 256 KiB per body and the bound is evadable by padding, which makes it a control against accident and unsophisticated theft rather than against an adversary who is choosing their transport.
+Over https that inspection is bounded by what the transport exposes, a hostname and a port, so a clean record means "nothing found in what could be read" rather than "nothing was sent". Opt-in TLS interception removes that ambiguity for the hosts an operator chooses, at the cost of a local CA installed in this host's trust stores. See [TLS interception](tls-interception.md).
 
 ### Tool and MCP manifest drift
 

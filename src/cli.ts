@@ -10,6 +10,7 @@ import { runMcpWrap, runMcpHttpWrap } from "./mcp/wrap";
 import { runDecoyCommand } from "./decoy";
 import { runPerimeterCommand } from "./perimeter";
 import { runSandboxCommand } from "./sandbox";
+import { runInterceptCommand } from "./intercept";
 import {
   formatRationaleReport,
   parseRationaleArgs,
@@ -116,6 +117,7 @@ Commands:
   terminate           Terminate one runtime session
   perimeter           Contain an agent UID behind the transparent proxy
   sandbox             Confine one process with Landlock and seccomp (Linux, no root needed)
+  intercept           Manage the local TLS interception CA (opt-in, off by default)
   decoy               Generate and inspect decoy tokens
   why                 Explain which check fires on a URL, some text, or a tool call
   version             Print version
@@ -1040,6 +1042,19 @@ async function commandPerimeter(args: string[]): Promise<void> {
 }
 
 /**
+ * `agentwall intercept` - the local TLS interception CA lifecycle.
+ *
+ * Raw argv for the same reason `perimeter` and `mcp` take it: the subcommand is a positional, and
+ * parseFlags() has already read it as though it were one of our flags. The exit code comes
+ * straight back from the intercept module rather than being re-derived here. `status` is a gate a
+ * deployment script reads before it turns interception on, and `path` exists to be substituted
+ * into another command line, so both need their own status to survive this hop untouched.
+ */
+async function commandIntercept(args: string[]): Promise<void> {
+  process.exit(await runInterceptCommand(args));
+}
+
+/**
  * `agentwall why` - re-run the scanners against a subject and print what fired.
  *
  * Exits 1 when anything fired and 0 when nothing did, so this works as a gate in a script
@@ -1133,6 +1148,11 @@ async function main() {
       // Raw args for the same reason `perimeter` takes them: everything after `run --` belongs
       // to the sandboxed command, and parseFlags() would read those options as ours.
       process.exit(await runSandboxCommand(args));
+    case "intercept":
+      // Raw args for the same reason `perimeter` takes them: the subcommand is a positional, and
+      // the path after `--ca-dir` belongs to the intercept parser rather than to us.
+      await commandIntercept(args);
+      return;
     case "decoy":
       // Raw args for the same reason `mcp` takes them: the subcommand is a positional that
       // parseFlags() would hand back stripped of the ordering the decoy parser needs.

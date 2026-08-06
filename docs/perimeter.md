@@ -364,8 +364,10 @@ Not contained:
     and cannot obtain it.
   - unix domain sockets, filesystem writes, and anything else that never reaches the
     network stack. Those are other planes' problem.
-  - what is inside a TLS session. The proxy does not terminate TLS; it decides from the
-    destination the stream names, and denies a stream that names none.
+  - what is inside a TLS session. This listener does not terminate TLS; it decides from the
+    destination the stream names, and denies a stream that names none. Interception, which does
+    terminate TLS, is opt-in and is wired to the forward proxy only, so nothing the perimeter
+    captures is decrypted. See [TLS interception](tls-interception.md).
   - ports, by itself. The kernel captures :80 and :443 and drops the rest, but the proxy
     connects on the agent's behalf to whatever the stream names, and an HTTP request may
     name its own port via `Host: host:PORT`. Nothing is misrouted — the verdict is
@@ -633,7 +635,10 @@ anything else.
   the follow-up.
 
 Two more properties that are not limits of the perimeter but are inherited from what it sits
-in front of: the proxy never terminates TLS, so bodies, paths, and headers of an HTTPS request
-cannot inform a decision, and only `deny` is enforceable on a connection. Both are covered in
+in front of: this listener never terminates TLS, so bodies, paths, and headers of an HTTPS
+request cannot inform a decision, and only `deny` is enforceable on a connection. The first is
+now conditionally lifted on the FORWARD proxy, which can terminate TLS when an operator has
+explicitly enabled [interception](tls-interception.md) and installed a CA; the transparent
+listener the perimeter feeds is unchanged and still sees a name and a port. Both are covered in
 [egress enforcement](enforcement.md), and the [threat model](threat-model.md) states what the
 system as a whole does and does not defend.

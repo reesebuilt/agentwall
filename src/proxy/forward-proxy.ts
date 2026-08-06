@@ -7,6 +7,7 @@ import { MAX_SCAN_CHARS } from "../policy/injection";
 import type { RiskLevel } from "../types";
 import { MAX_CLIENT_HELLO_BYTES, peekClientHello } from "./tls-peek";
 import { parseProxyCredential } from "../fleet/registry";
+import type { Interceptor } from "./tls-intercept";
 
 /**
  * CONNECT-aware forward proxy: the insertion mechanism.
@@ -113,7 +114,17 @@ export interface ProxyBody {
  *   partial:   read to the byte cap or a stall, and the remainder forwarded uninspected.
  *   plaintext: read whole and scanned.
  */
-export type BodyVisibility = "tunneled" | "unread" | "stream" | "partial" | "plaintext";
+export type BodyVisibility =
+  | "tunneled"
+  | "unread"
+  // Relayed opaque ON PURPOSE, because the host is on the interception bypass list. A
+  // different claim from incidentally opaque, and the distinction is the point of the field.
+  | "bypassed"
+  | "stream"
+  | "partial"
+  | "plaintext"
+  // A whole https body, read because TLS was terminated for it.
+  | "intercepted";
 
 /**
  * How much each state saw, so an exchange with several passes can report its weakest one.
@@ -124,9 +135,14 @@ export type BodyVisibility = "tunneled" | "unread" | "stream" | "partial" | "pla
 const VISIBILITY_ORDER: Record<BodyVisibility, number> = {
   tunneled: 0,
   unread: 0,
+  // Sits with the other two that saw no content. Deliberate opacity is still opacity.
+  bypassed: 0,
   stream: 1,
   partial: 2,
   plaintext: 3,
+  // Read whole, like plaintext, and ranked with it: what distinguishes them is how the bytes
+  // were obtained, not how much of the exchange the evidence rests on.
+  intercepted: 3,
 };
 
 export interface ProxyEvent {
@@ -250,6 +266,17 @@ export interface ForwardProxyOptions {
   decide: (event: ProxyEvent) => ProxyDecideResult;
   record: (record: ProxyRecord) => void;
   onError?: (err: Error, context: string) => void;
+  /**
+   * TLS interception, when the operator turned it on and every precondition held.
+   *
+   * Absent means the CONNECT path tunnels exactly as it always has. It is passed in rather than
+   * constructed here because building one requires `openssl`, a CA on disk, and a trust probe:
+   * all boot-time concerns, all of which must be able to REFUSE and stop the process before a
+   * single connection is handled. A proxy that could build its own interceptor lazily would be
+   * a proxy that could discover halfway through a deployment that it cannot inspect anything,
+   * which is the failure this design exists to make impossible.
+   */
+  interceptor?: Interceptor;
 }
 
 /**
@@ -443,6 +470,14 @@ const PEEK_TIMEOUT_MS = 5000;
  * ledger rather than watching the logs.
  */
 const SNI_MISMATCH_RULE = "net:sni-connect-mismatch";
+
+/**
+ * A zero-length head, so the interception path takes a Buffer rather than an optional one.
+ *
+ * `head` is documented as a Buffer by Node but is empty far more often than not, and the
+ * interceptor's contract is cleaner with a value it can always measure than with a maybe.
+ */
+const EMPTY_HEAD = Buffer.alloc(0);
 
 /** A `decide` result with its optional parts filled in, ready to spread onto a record. */
 export interface ResolvedVerdict {
@@ -867,6 +902,9 @@ export function createForwardProxy(opts: ForwardProxyOptions): Server {
     let verdict: ResolvedVerdict = { decision: "allow", reasons: NO_STRINGS, matchedRules: NO_STRINGS, budgetTicket: null };
     let bytesUp = 0;
     let bytesDown = 0;
+    // Tunnelled until something says otherwise. The default is the pessimistic claim on
+    // purpose: a record that overstates what was readable is worse than one that understates.
+    let visibility: BodyVisibility = "tunneled";
     let recorded = false;
     const finish = () => {
       if (recorded) return;
@@ -895,7 +933,10 @@ export function createForwardProxy(opts: ForwardProxyOptions): Server {
       opts.record({
         ...connection,
         ...verdict,
-        bodyVisibility: "tunneled",
+        // Not a literal any more. A tunnel is `tunneled` by default, and `bypassed` when the
+        // interception bypass list is what kept it opaque: deliberate opacity is a different
+        // claim from incidental opacity, and only this variable knows which one happened.
+        bodyVisibility: visibility,
         durationMs: Date.now() - event.startedAt,
         bytesUp,
         bytesDown,
@@ -939,6 +980,48 @@ export function createForwardProxy(opts: ForwardProxyOptions): Server {
     // client 'close' teardown further down has to know that: see the comment there.
     let peekHolding = true;
     let closedEarly = false;
+    // Interception, when an operator turned it on and this destination is not bypassed.
+    //
+    // Placed after the deny check and before netConnect, and both halves of that matter. A
+    // denied CONNECT is never intercepted, so refusing a host still costs the destination
+    // nothing. And an intercepted connection opens no raw tunnel at all: its upstream is a
+    // fresh verified TLS connection per inner request, made inside the interceptor.
+    //
+    // A bypassed or unmintable host falls through to the tunnel below with `visibility` already
+    // set to what actually happened, and the reason recorded, so the ledger never implies a body
+    // was read when it was not.
+    if (opts.interceptor) {
+      const choice = opts.interceptor.shouldIntercept(host, port);
+      visibility = choice.visibility;
+      if (choice.reason) verdict = { ...verdict, reasons: [...verdict.reasons, choice.reason] };
+      if (choice.intercept) {
+        opts.interceptor.intercept({
+          clientSocket,
+          head: head?.length ? head : EMPTY_HEAD,
+          host,
+          port,
+          event,
+          decide: opts.decide,
+          record: opts.record,
+          ...(opts.onError ? { onError: opts.onError } : {}),
+        });
+        // The connection record is filed on close, and its byte counts come from the socket's
+        // own counters rather than a `data` listener: attaching one here would put the socket
+        // into flowing mode and steal the bytes the TLS stack is about to read. They are the
+        // ENCRYPTED totals for the connection, which is the honest thing for a connection-level
+        // record to carry. Each inner HTTP exchange files its own record with the path, the
+        // decision that was actually enforced on it, and how much of its body was readable.
+        clientSocket.once("close", () => {
+          bytesUp = clientSocket.bytesRead;
+          bytesDown = clientSocket.bytesWritten;
+          finish();
+        });
+        clientSocket.on("error", () => {
+          /* reported by the interceptor; the record still lands on close */
+        });
+        return;
+      }
+    }
 
     const upstream = netConnect(port, host, () => {
       clientSocket.write("HTTP/1.1 200 Connection Established\r\n\r\n");
