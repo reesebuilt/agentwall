@@ -1,6 +1,8 @@
 import { connect as netConnect, createServer as createNetServer, Server, Socket } from "net";
 import type { ProxyDecision, ProxyEvent, ProxyRecord, ProxyVerdict } from "./forward-proxy";
 import type { RiskLevel } from "../types";
+import { IPV6_CHARS, isPlausibleHostname } from "./hostname";
+import { peekClientHello } from "./tls-peek";
 
 /**
  * Transparent listener: the egress path that does not need the agent's cooperation.
@@ -96,15 +98,6 @@ const DEFAULT_PEEK_TIMEOUT_MS = 5000;
 const DEFAULT_MAX_PEEK_BYTES = 8192;
 const DEFAULT_TLS_PORT = 443;
 
-const TLS_HANDSHAKE = 0x16;
-const HANDSHAKE_CLIENT_HELLO = 0x01;
-const TLS_RECORD_HEADER_BYTES = 5;
-const EXT_SERVER_NAME = 0x0000;
-const SNI_HOST_NAME = 0x00;
-
-const MAX_HOSTNAME_CHARS = 253;
-const MAX_LABEL_CHARS = 63;
-
 const NO_STRINGS: readonly string[] = [];
 const EMPTY = Buffer.alloc(0);
 
@@ -161,145 +154,6 @@ function resolveVerdict(result: ProxyDecision | ProxyVerdict): ResolvedVerdict {
 function headerSafe(reason: string): string {
   const cleaned = reason.replace(/[^\x20-\x7e]+/g, " ").replace(/ {2,}/g, " ").trim();
   return cleaned.length > 200 ? `${cleaned.slice(0, 197)}...` : cleaned;
-}
-
-const HOSTNAME_LABEL = /^[A-Za-z0-9_-]+$/;
-
-/**
- * Is this something we are willing to hand to a connect call?
- *
- * The name arrives inside a packet an untrusted process composed, so it is validated before
- * it becomes an argument anywhere. Length and per-label limits come from DNS itself; the
- * character allowlist is what rejects an embedded NUL, a CR, a slash, or any other byte that
- * would mean one thing to this parser and something else to a downstream consumer of the
- * ledger. A trailing dot is rejected on purpose: it is legal in DNS but forbidden in SNI,
- * and permitting it would give one destination two spellings for an exact-match allowlist to
- * disagree about.
- */
-function isPlausibleHostname(name: string): boolean {
-  if (name.length === 0 || name.length > MAX_HOSTNAME_CHARS) return false;
-  for (const label of name.split(".")) {
-    if (label.length === 0 || label.length > MAX_LABEL_CHARS) return false;
-    if (!HOSTNAME_LABEL.test(label)) return false;
-    if (label.startsWith("-") || label.endsWith("-")) return false;
-  }
-  return true;
-}
-
-/**
- * A charset and shape gate for a bracketed IPv6 authority, not a full address validator.
- * Anything that passes it and is not actually an address fails at connect time with a normal
- * upstream error; what matters is that nothing outside hex, colons and dots reaches that call.
- */
-const IPV6_CHARS = /^[0-9A-Fa-f:.]{2,45}$/;
-
-/**
- * Pull the SNI host_name out of a TLS ClientHello, or return null.
- *
- * Null means "no usable name here" and never means "probably fine": a truncated record, a
- * non-TLS first byte, a length field that overruns its container, an absent extension and a
- * name that fails validation all return null, and the caller denies. Truncation is the one
- * ambiguous case — the caller keeps buffering and re-parses as more bytes arrive, so a
- * ClientHello split across TCP segments is parsed once it is whole.
- *
- * EVERY read is bounds-checked against the enclosing structure's end before it happens, and
- * each nested length is checked against its parent's rather than against the buffer, so a
- * declared length cannot walk the cursor past the record it lives in. This function is
- * handed the first packet of a connection from an untrusted process; an out-of-range read
- * here is not a wrong answer, it is a thrown exception in the one component that has nothing
- * behind it.
- */
-export function extractSni(clientHello: Buffer): string | null {
-  if (clientHello.length < TLS_RECORD_HEADER_BYTES) return null;
-  if (clientHello[0] !== TLS_HANDSHAKE) return null;
-
-  const recordLength = clientHello.readUInt16BE(3);
-  const recordEnd = TLS_RECORD_HEADER_BYTES + recordLength;
-  // Require the whole record. A partial record cannot be distinguished from a malformed one
-  // without guessing, and this parser does not guess.
-  if (recordLength === 0 || clientHello.length < recordEnd) return null;
-
-  let p = TLS_RECORD_HEADER_BYTES;
-
-  // Handshake header: type (1) + length (3).
-  if (p + 4 > recordEnd) return null;
-  if (clientHello[p] !== HANDSHAKE_CLIENT_HELLO) return null;
-  const handshakeLength = clientHello.readUIntBE(p + 1, 3);
-  p += 4;
-  const bodyEnd = p + handshakeLength;
-  if (bodyEnd > recordEnd) return null;
-
-  // client_version (2) + random (32).
-  if (p + 34 > bodyEnd) return null;
-  p += 34;
-
-  // session_id.
-  if (p + 1 > bodyEnd) return null;
-  const sessionIdLength = clientHello[p];
-  p += 1;
-  if (p + sessionIdLength > bodyEnd) return null;
-  p += sessionIdLength;
-
-  // cipher_suites.
-  if (p + 2 > bodyEnd) return null;
-  const cipherSuitesLength = clientHello.readUInt16BE(p);
-  p += 2;
-  if (p + cipherSuitesLength > bodyEnd) return null;
-  p += cipherSuitesLength;
-
-  // compression_methods.
-  if (p + 1 > bodyEnd) return null;
-  const compressionLength = clientHello[p];
-  p += 1;
-  if (p + compressionLength > bodyEnd) return null;
-  p += compressionLength;
-
-  // extensions block. Absent entirely on an SSLv3-era hello, which has no SNI to find.
-  if (p + 2 > bodyEnd) return null;
-  const extensionsLength = clientHello.readUInt16BE(p);
-  p += 2;
-  const extensionsEnd = p + extensionsLength;
-  if (extensionsEnd > bodyEnd) return null;
-
-  while (p + 4 <= extensionsEnd) {
-    const extensionType = clientHello.readUInt16BE(p);
-    const extensionLength = clientHello.readUInt16BE(p + 2);
-    p += 4;
-    // An extension claiming more bytes than the block holds is malformed, not merely
-    // uninteresting: continuing past it would mean parsing whatever follows as an extension
-    // header. Refuse the whole hello.
-    if (p + extensionLength > extensionsEnd) return null;
-    if (extensionType === EXT_SERVER_NAME) {
-      return parseServerNameList(clientHello, p, p + extensionLength);
-    }
-    p += extensionLength;
-  }
-  return null;
-}
-
-function parseServerNameList(buf: Buffer, start: number, end: number): string | null {
-  let p = start;
-  if (p + 2 > end) return null;
-  const listLength = buf.readUInt16BE(p);
-  p += 2;
-  const listEnd = p + listLength;
-  if (listEnd > end) return null;
-
-  while (p + 3 <= listEnd) {
-    const nameType = buf[p];
-    const nameLength = buf.readUInt16BE(p + 1);
-    p += 3;
-    if (p + nameLength > listEnd) return null;
-    if (nameType === SNI_HOST_NAME) {
-      // latin1, not utf8: a byte outside ASCII must survive as a character the validator
-      // rejects. Decoding as utf8 would turn invalid sequences into U+FFFD, which is a
-      // printable character that could sail through a naive charset check.
-      const name = buf.toString("latin1", p, p + nameLength);
-      return isPlausibleHostname(name) ? name.toLowerCase() : null;
-    }
-    p += nameLength;
-  }
-  return null;
 }
 
 const HTTP_METHOD = /^[A-Z]{1,16}$/;
@@ -376,10 +230,15 @@ export function extractHttpHost(head: Buffer): { host: string; port: number; met
 
 /** First byte decides which parser gets a look; neither is asked to guess at the other's input. */
 function destinationFrom(peek: Buffer, tlsPort: number): Destination | null {
-  if (peek.length === 0) return null;
-  if (peek[0] === TLS_HANDSHAKE) {
-    const sni = extractSni(peek);
-    return sni === null ? null : { host: sni, port: tlsPort, scheme: "https", method: "CONNECT" };
+  const hello = peekClientHello(peek);
+  if (hello.status !== "not-tls") {
+    // Incomplete and complete-but-nameless both come back null, which the caller reads as
+    // "keep buffering". That is correct for the first and merely harmless for the second:
+    // this listener has no other source of a destination, so a hello with no SNI is going
+    // to be refused when the peek window closes either way.
+    return hello.status === "complete" && hello.sni !== null
+      ? { host: hello.sni, port: tlsPort, scheme: "https", method: "CONNECT" }
+      : null;
   }
   const parsed = extractHttpHost(peek);
   return parsed === null ? null : { ...parsed, scheme: "http" };
@@ -490,7 +349,9 @@ function handleConnection(client: Socket, opts: TransparentProxyOptions): void {
   const refuse = (): void => {
     if (recorded) return;
     stopPeeking();
-    if (peek.length > 0 && peek[0] === TLS_HANDSHAKE) event.scheme = "https";
+    // Labelled https on the record even though it was never named: "not-tls" is the only
+    // status that rules a handshake out, so a truncated hello still counts as one.
+    if (peek.length > 0 && peekClientHello(peek).status !== "not-tls") event.scheme = "https";
     verdict = { decision: "deny", reasons: [UNNAMED_REASON], matchedRules: NO_STRINGS, riskLevel: "high" };
     finish();
     destroyAll();

@@ -24,6 +24,8 @@ Web pages, emails, tool output, and retrieved memory can contain adversarial ins
 
 Content inspection detects common secrets and PII. Policy can deny secret-bearing egress and redact PII on risky flows.
 
+Read that with its scope attached, because the scope is narrow. Content inspection runs on content Agentwall is handed directly: `/inspect/*` and `/evaluate` payloads, the MCP frames it wraps, channel messages, and watched file writes. It does not run on traffic through the proxy. An https body is unreadable there because the proxy does not terminate TLS, and an http body is readable but is never scanned, so neither is inspected. Egress through the proxy is judged on host, port, scheme, and negotiated SNI alone. A secret leaving inside a request body to an allowlisted host is not detected by this control, and the allowlist is what stands between it and the network.
+
 ### Tool and MCP manifest drift
 
 A changed manifest can silently expand an agent's authority. Agentwall adds manifest fingerprinting and drift detection so changed tools require re-approval.

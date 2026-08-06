@@ -148,7 +148,10 @@ Full detail, including the conformance corpus and what verification does not pro
   rejected whole and the previous ruleset stays in force, so a typo cannot leave you running
   with half a policy.
 - **DLP with inline redaction.** AWS keys, GitHub PATs and OAuth tokens, OpenAI keys, Slack
-  tokens, private keys, JWTs, SSNs, credit cards, emails, phone numbers.
+  tokens, private keys, JWTs, SSNs, credit cards, emails, phone numbers. This runs on content
+  handed to AgentWall directly: the `/inspect/*` and `/evaluate` payloads, MCP frames it
+  wraps, channel messages, and watched file writes. It does not run on proxied traffic of
+  either scheme; see the limits table.
 - **SSRF and egress inspection.** Scheme, port, and host allowlists blocking private, loopback,
   and link-local ranges plus cloud metadata endpoints. Shell command preflight and manifest
   drift detection alongside.
@@ -181,7 +184,9 @@ Stated plainly, because a security tool that oversells itself is worse than no t
 | Anchoring proves no alteration, not completeness | An anchor shows that what was written was not altered afterwards. It cannot show that everything which should have been written was. |
 | A signature is necessary, not sufficient | On a host where the audited principal can read the signing key, an agent with root can sign anything the operator can. Off-box anchoring is what closes that gap. |
 | Verifier agreement is bounded by the corpus | The two verifiers return the same verdict on all 26 conformance cases. That is agreement about those cases, not a proof of equivalence, and it says nothing about a forgery neither has been asked to judge. |
-| No TLS interception | CONNECT traffic is visible at hostname and port level only. Paths, headers, and bodies stay opaque. MITM would need a CA in every runtime trust store, which breaks the framework-agnostic property the proxy exists for. |
+| No TLS interception | The ClientHello is read, so a tunnel is visible at hostname, port, and the SNI the client negotiated. Everything after the handshake is opaque: paths, headers, and bodies are never inspected. MITM would need a CA in every runtime trust store, which breaks the framework-agnostic property the proxy exists for. |
+| Content inspection never runs on proxied traffic | DLP, PII, and injection scanning apply to content AgentWall is handed directly, listed above. The proxy decides from host, port, scheme, and SNI alone. This is not only a TLS limit: a plaintext HTTP body relayed by the proxy is not scanned either, and neither is its path. |
+| The SNI cross-check is not domain-fronting detection | The proxy compares the CONNECT authority against the negotiated SNI and re-evaluates policy on the latter, which catches a client that names one host and negotiates another. Domain fronting puts its real destination in the HTTP Host header inside the session, and nothing short of interception can read that. Fronted traffic agrees at every layer this can see. |
 | Attribution is Linux-only | It reads `/proc/net/tcp` and `/proc/<pid>/fd`. There is no macOS or Windows equivalent. The rest of the server is portable; process attribution is not. |
 | Channel containment is Telegram only | Slack and Discord appear in the platform schema with no route implementation behind them. |
 | The watchdog does not auto-deny | It exposes heartbeat age and a stop flag, and a rule denies on the `watchdog_timeout` label, but nothing wires staleness to that label automatically. Treat it as a signal you act on. |

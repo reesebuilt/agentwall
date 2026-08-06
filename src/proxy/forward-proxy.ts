@@ -2,6 +2,7 @@ import { createServer as createHttpServer, IncomingMessage, ServerResponse, requ
 import { connect as netConnect, Socket, Server } from "net";
 import { readdirSync, readFileSync, readlinkSync } from "fs";
 import type { RiskLevel } from "../types";
+import { MAX_CLIENT_HELLO_BYTES, peekClientHello } from "./tls-peek";
 
 /**
  * CONNECT-aware forward proxy: the insertion mechanism.
@@ -12,9 +13,11 @@ import type { RiskLevel } from "../types";
  * insertion surface: set the standard proxy environment variables and every cooperating
  * client is covered, with no per-framework adapter to maintain.
  *
- * Tier 1 only: this sees CONNECT host:port and absolute-URI hosts. It does NOT terminate
- * TLS, so https bodies stay opaque. Deliberate: MITM needs a CA in every runtime trust
- * store, which breaks the harness-agnostic property this exists for.
+ * Tier 1 only: this sees CONNECT host:port, absolute-URI hosts, and the SNI the client
+ * negotiates inside the tunnel. It does NOT terminate TLS, so https paths, headers and
+ * bodies stay opaque. Deliberate: MITM needs a CA in every runtime trust store, which
+ * breaks the harness-agnostic property this exists for. Reading a ClientHello needs
+ * neither, which is why the SNI cross-check below is affordable and interception is not.
  *
  * This file does not decide anything: `decide` is authoritative, and whatever it returns is
  * what happens to the connection. What this file guarantees is that a "deny" costs the
@@ -52,6 +55,16 @@ export interface ProxyEvent {
   /** Resolved originating process, or nulls when attribution failed. */
   client: { pid: number | null; comm: string | null };
   startedAt: number;
+  /**
+   * The hostname the client negotiated inside the tunnel, when one was readable.
+   *
+   * CONNECT connections only, and null-by-absence rather than by value: an https record
+   * without this field means no name was recovered, which covers a client that omits SNI,
+   * an encrypted ClientHello, a non-TLS tunnel, and a hello that never arrived whole.
+   */
+  sni?: string;
+  /** Set only when `sni` was read AND differs from the host on the CONNECT line. */
+  sniMismatch?: boolean;
 }
 
 export interface ProxyRecord extends ProxyEvent {
@@ -227,9 +240,30 @@ function parseHostPort(authority: string, fallbackPort: number): { host: string;
 }
 
 const NO_STRINGS: readonly string[] = [];
+const EMPTY = Buffer.alloc(0);
+
+/**
+ * How long the client's own upstream direction waits for a first record to become readable.
+ *
+ * Almost never reached: a complete hello releases the instant its declared length is
+ * satisfied, and a first byte that is not 0x16 releases on the first chunk. What is left is
+ * a client that sends a partial record and then stops, and a client that opens a tunnel and
+ * says nothing, and neither is sending traffic this delays.
+ */
+const PEEK_TIMEOUT_MS = 5000;
+
+/**
+ * The rule id a CONNECT/SNI disagreement is recorded under.
+ *
+ * A literal rather than something policy declares, because the proxy observes this itself
+ * rather than evaluating a rule for it. It is in the detection catalog so the audit chain
+ * carries the mapping, which is the only way this reaches an operator who is reading the
+ * ledger rather than watching the logs.
+ */
+const SNI_MISMATCH_RULE = "net:sni-connect-mismatch";
 
 /** A `decide` result with its optional parts filled in, ready to spread onto a record. */
-interface ResolvedVerdict {
+export interface ResolvedVerdict {
   decision: ProxyDecision;
   reasons: readonly string[];
   matchedRules: readonly string[];
@@ -245,6 +279,71 @@ function resolveVerdict(result: ProxyDecideResult): ResolvedVerdict {
     reasons: result.reasons ?? NO_STRINGS,
     matchedRules: result.matchedRules ?? NO_STRINGS,
     riskLevel: result.riskLevel,
+  };
+}
+
+/** What the cross-check concluded, and whether the caller has to refuse. */
+export interface NegotiatedNameCheck {
+  /** The verdict to record, already merged with whatever `decide` said about the new name. */
+  verdict: ResolvedVerdict;
+  /** True when policy refused the negotiated name. HOW to refuse is the caller's business. */
+  refuse: boolean;
+}
+
+/**
+ * Cross-check the name a client actually negotiated against the one it named to the proxy.
+ *
+ * THE SINGLE IMPLEMENTATION OF THIS CHECK. Any path that learns a negotiated server name has
+ * to call this rather than repeat it: two sites deciding the same fact is how one rule id
+ * ends up meaning two different things, and this rule id is what an operator greps for. Today
+ * the caller is the ClientHello peek on the tunnel path. An interception path learns the same
+ * name from its TLS servername callback and belongs here too.
+ *
+ * It deliberately does NOT refuse anything itself. It reports `refuse` and leaves the
+ * mechanism to the caller, because the mechanism is genuinely different and neither is
+ * substitutable: on a tunnel the 200 has already gone out and all that is left is to destroy
+ * both sockets, while a path that terminates TLS can fail the handshake before any session
+ * exists and never spend the upstream connection at all.
+ *
+ * Both names are normalised here rather than being trusted to arrive that way, so a caller
+ * that forgets cannot turn a difference in spelling into a reported bypass.
+ *
+ * `event` is mutated: `sni` is recorded whenever a name was read, and `sniMismatch` only when
+ * it actually differs. That is deliberate, because the record is built from this object later
+ * and the observation belongs to the connection, not to the verdict.
+ */
+export function crossCheckNegotiatedName(
+  negotiated: string,
+  connectAuthority: string,
+  event: ProxyEvent,
+  current: ResolvedVerdict,
+  decide: (event: ProxyEvent) => ProxyDecideResult
+): NegotiatedNameCheck {
+  const observed = negotiated.toLowerCase();
+  event.sni = observed;
+  // Case-folded on both sides: SNI is lowercased on the way out of the parser, so a CONNECT
+  // line that shouted its authority is a spelling difference and not a bypass.
+  if (observed === connectAuthority.toLowerCase()) return { verdict: current, refuse: false };
+
+  event.sniMismatch = true;
+  // Re-decided against the name the client actually negotiated. `decide` stays the single
+  // authority and is now being asked about the better-sourced of the two hostnames rather
+  // than only the typed one. This can only ever ADD a denial: it runs after an allow, so it
+  // can refuse what the CONNECT line was permitted and can never permit what it was refused.
+  // Monitor mode is unaffected, because monitor mode's `decide` returns allow.
+  const negotiatedVerdict = resolveVerdict(decide({ ...event, host: observed }));
+  return {
+    verdict: {
+      decision: negotiatedVerdict.decision,
+      reasons: [
+        `CONNECT named ${connectAuthority.toLowerCase()} but the ClientHello negotiated ${observed}`,
+        ...current.reasons,
+        ...negotiatedVerdict.reasons,
+      ],
+      matchedRules: [SNI_MISMATCH_RULE, ...current.matchedRules, ...negotiatedVerdict.matchedRules],
+      riskLevel: negotiatedVerdict.riskLevel ?? current.riskLevel,
+    },
+    refuse: negotiatedVerdict.decision === "deny",
   };
 }
 
@@ -347,23 +446,147 @@ export function createForwardProxy(opts: ForwardProxyOptions): Server {
       return;
     }
 
+    // The peek below owns the client-to-upstream direction until it has named the first
+    // record, and while it does it is holding bytes the client already handed over. The
+    // client 'close' teardown further down has to know that: see the comment there.
+    let peekHolding = true;
+    let closedEarly = false;
+
     const upstream = netConnect(port, host, () => {
       clientSocket.write("HTTP/1.1 200 Connection Established\r\n\r\n");
       // The head is bytes the client pipelined with its CONNECT. They are relayed, so they
       // are counted: bytes that reach the destination and appear in no record are an evidence
-      // gap a client can open on purpose by sending its first record early.
-      if (head?.length) {
-        upstream.write(head);
-        bytesUp += head.length;
-      }
-      // Counters attach HERE, not earlier. Adding a "data" listener puts the socket into
-      // flowing mode immediately; doing that before the pipe exists means any bytes a
-      // client sends before the 200 are counted and then dropped on the floor.
-      clientSocket.on("data", (c) => (bytesUp += c.length));
+      // gap a client can open on purpose by sending its first record early. Both the relay
+      // and the count now happen inside the peek below, which owns this direction until the
+      // first record has been named.
       upstream.on("data", (c) => (bytesDown += c.length));
-      clientSocket.pipe(upstream);
+      // Downstream is piped NOW, before the ClientHello peek below, and that ordering is
+      // load-bearing. A server-speaks-first protocol tunnelled over CONNECT (SMTP, IMAP, a
+      // bare TCP relay) sends its greeting before the client says anything at all. Holding
+      // this direction back until the peek resolved would deadlock every one of them
+      // against a handshake their client is waiting on the greeting to begin.
       upstream.pipe(clientSocket);
+      observeClientHello();
     });
+
+    /**
+     * Read the first record the client sends, name it, and cross-check that name.
+     *
+     * This is not interception and nothing here is decrypted. The ClientHello is plaintext
+     * by construction, and SNI is the hostname the client puts on the wire so the server
+     * knows which certificate to serve. What it buys is a SECOND source for the destination:
+     * the CONNECT line is a claim the client typed, and this is what the client then went on
+     * to negotiate. A client that names an allowlisted host to the proxy and then negotiates
+     * a different one has contradicted itself, and the contradiction is worth acting on.
+     *
+     * WHAT THIS IS NOT: domain-fronting detection. ATT&CK T1090.004 is SNI disagreeing with
+     * the HTTP Host header INSIDE the session, and that header is encrypted. Real fronting
+     * through this proxy agrees at every layer it can see (CONNECT cdn.example.com, SNI
+     * cdn.example.com, inner Host evil.example.com) and passes silently. Nothing short of
+     * terminating TLS changes that, which is why the detection this raises is left unmapped
+     * rather than filed under a technique it cannot actually observe.
+     *
+     * The peek is an enrichment, not a gate, and it fails open by construction: the CONNECT
+     * destination was already authorised by `decide` above, so a hello this cannot read
+     * leaves that decision exactly as it was. The re-decision below can only ever ADD a
+     * denial: it runs after an allow, so a second opinion can refuse what the first permitted
+     * and can never permit what the first refused.
+     */
+    function observeClientHello(): void {
+      // Seeded with `head`: bytes the client pipelined with its CONNECT, before the 200.
+      // A client that does not wait puts its ENTIRE hello here, and those bytes never arrive
+      // as a 'data' event, so the seed has to be evaluated in its own right further down. A
+      // peek driven only by 'data' would stall such a connection until its timeout and then
+      // report no name for one that stated a name perfectly clearly.
+      let peeked: Buffer = head?.length ? head : EMPTY;
+      let settled = false;
+
+      // Counted, including the head. These bytes are relayed to the destination, and bytes
+      // that arrive somewhere while appearing in no record are an evidence gap a client can
+      // open on purpose by sending its first record early.
+      if (peeked.length) bytesUp += peeked.length;
+
+      const evaluate = (): void => {
+        const hello = peekClientHello(peeked);
+        if (hello.status === "incomplete") {
+          // Bounded by one maximal TLS record. Past that it is not a hello, whatever it is.
+          if (peeked.length >= MAX_CLIENT_HELLO_BYTES) release(null);
+          return;
+        }
+        release(hello.status === "complete" ? hello.sni : null);
+      };
+
+      const onPeekData = (chunk: Buffer) => {
+        bytesUp += chunk.length;
+        peeked = peeked.length === 0 ? chunk : Buffer.concat([peeked, chunk]);
+        evaluate();
+      };
+
+      // A client that opens a tunnel and never speaks must not hold its own upstream
+      // direction shut forever. unref'd: a pending peek is not a reason to keep the
+      // process alive.
+      const timer = setTimeout(() => release(null), PEEK_TIMEOUT_MS);
+      timer.unref?.();
+
+      function release(sni: string | null): void {
+        if (settled) return;
+        settled = true;
+        // The peek is done holding this direction from here on, on every exit below,
+        // including the refusal that never reaches the handover.
+        peekHolding = false;
+        clearTimeout(timer);
+        clientSocket.off("data", onPeekData);
+
+        try {
+          if (sni !== null) {
+            const checked = crossCheckNegotiatedName(sni, host, event, verdict, opts.decide);
+            verdict = checked.verdict;
+            if (checked.refuse) {
+              // Torn down rather than refused politely: the 200 has already gone out, so
+              // there is no status line left to send. The honest cost of deciding this late
+              // is that the destination saw a TCP handshake, which a CONNECT-level deny never
+              // spends. Zero payload bytes reach it either way, because the hello that
+              // triggered this is still sitting in `peeked`, unforwarded.
+              clientSocket.destroy();
+              upstream.destroy();
+              finish();
+              return;
+            }
+          }
+        } catch (err) {
+          // A throw here is a bug in the peek or in a caller's `decide`, and the connection
+          // it would take down is one that policy already allowed. Report it and hand the
+          // tunnel over: a parser defect must not become an egress outage.
+          opts.onError?.(err as Error, "client-hello-peek");
+        }
+
+        clientSocket.on("data", (c) => (bytesUp += c.length));
+        // Buffered bytes go first, then the pipe. Both are synchronous, so no chunk can
+        // arrive between the two and be reordered behind the hello it belongs in front of.
+        if (peeked.length) upstream.write(peeked);
+        clientSocket.pipe(upstream);
+        // The client left while this still held its bytes, so the teardown it was owed was
+        // deferred to here. end() rather than destroy(): the hello has only just entered the
+        // write queue, and a destroy() can discard it or turn the close into a reset, which
+        // would throw away the one thing the deferral exists to deliver. The descriptor is
+        // released when the destination answers the FIN, and by the deadline the 'close'
+        // handler armed when it does not.
+        if (closedEarly) upstream.end();
+      }
+
+      // Flushed rather than dropped when the client hangs up mid-hello: those bytes were
+      // accepted from the client and the tunnel was open, so the ledger and the destination
+      // should agree on what was sent.
+      clientSocket.once("end", () => release(null));
+      clientSocket.on("data", onPeekData);
+
+      // The pipelined case, and it has to run AFTER the listeners above rather than before.
+      // `release` detaches onPeekData and installs the pipe, so evaluating the seed first
+      // would let the line above re-attach a peek listener on a socket already handed over.
+      // A client that pipelined its whole hello is complete right here and may never send a
+      // 'data' event at all, so without this it waits out the timeout and is never named.
+      if (peeked.length) evaluate();
+    }
 
     const bail = (err: Error, where: string) => {
       opts.onError?.(err, where);
@@ -382,7 +605,29 @@ export function createForwardProxy(opts: ForwardProxyOptions): Server {
     // descriptors stayed open after the client was gone, the destination could still write into
     // the tunnel, and no record was ever filed. An agent can abandon connections as fast as it
     // can open them.
+    //
+    // Deferred, never skipped, when the peek is still holding bytes the client pipelined
+    // with its CONNECT. That client sends its hello and its FIN in one segment, so this
+    // fires while the upstream connect is still in flight: destroying here drops bytes the
+    // tunnel had already accepted and files a record that names nothing, which is the whole
+    // observation the peek exists to make. Nothing is owed when the client pipelined
+    // nothing, so the common abandonment case keeps the immediate teardown above.
     clientSocket.on("close", () => {
+      if (peekHolding && head?.length) {
+        closedEarly = true;
+        // The backstop, and unconditional: whatever the peek and the destination go on to
+        // do, this releases the descriptor and files the record within one peek window of
+        // the client leaving, so the deferral is bounded by this proxy rather than by the
+        // kernel's connect timeout or by a destination that never answers a FIN. A no-op
+        // when the tunnel already closed on its own. unref'd, because a deferred teardown
+        // is not a reason to keep the process alive.
+        const deadline = setTimeout(() => {
+          upstream.destroy();
+          finish();
+        }, PEEK_TIMEOUT_MS);
+        deadline.unref?.();
+        return;
+      }
       upstream.destroy();
       finish();
     });
