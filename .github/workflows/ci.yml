@@ -236,11 +236,21 @@ jobs:
         run: cargo build --release --locked
         working-directory: verifier-rs
 
-      # Runs the committed corpus, the bytes a stranger gets from a checkout, through both
-      # implementations. The harness exits non-zero on any failure and zero when the only
-      # differences are the divergences declared in its DIVERGENCES table; it also fails when
-      # a declared divergence stops happening, so the table cannot absorb a fixed gap.
-      - name: Conformance (typescript and go)
+      # Runs the committed corpus, the bytes a stranger gets from a checkout, through every
+      # implementation this checkout contains. The harness exits non-zero on any failure and
+      # zero when the only differences are the divergences declared in its DIVERGENCES table;
+      # it also fails when a declared divergence stops happening, so the table cannot absorb a
+      # fixed gap. The Python verifier needs no build step, so it joins the run from the
+      # checkout. An implementation whose source tree is absent prints a note and sits out; one
+      # whose source is present and whose binary is missing is a hard failure.
+      #
+      # Do not add a CONFORMANCE_SKIP_* variable to this step. They exist so a contributor
+      # without a Go or Rust toolchain can still run the harness locally, and setting one here
+      # would shrink the cross-comparison while every job stayed green, because each verifier
+      # also has its own job that tests it alone. Agreement between implementations is the
+      # thing this step buys that those jobs cannot; a skip spends it to make a red build go
+      # away. If a verifier cannot build in CI, fix the build or delete the verifier.
+      - name: Conformance
         run: node scripts/conformance.js
 
       # Regeneration must reproduce the committed tree byte for byte. Ordered after the
