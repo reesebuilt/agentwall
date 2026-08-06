@@ -518,7 +518,11 @@ anything else.
   dropped and `curl https://example.com/` fails at resolution rather than at connection. The
   perimeter is working correctly; the resolver the agent's libc actually asks is simply not
   the one that was permitted. Point the agent's `resolv.conf` at the same address you passed
-  to `--dns-resolver`, or the agent resolves nothing.
+  to `--dns-resolver`, or the agent resolves nothing. Take that instruction literally on a
+  systemd host, because the obvious way to follow it does not work: `/etc/resolv.conf` is a
+  symlink to `../run/systemd/resolve/stub-resolv.conf`, which `systemd-resolved` owns and
+  rewrites, so editing through the link is reverted without warning. Replace the symlink with
+  a real file, or use the closure in the next entry and give the agent no resolver at all.
 - **The address the agent dials is discarded, which is how the DNS hole can be closed
   outright.** The redirect rewrites the destination before a single byte is sent, and the
   proxy recovers the real destination from SNI or the `Host` header, so the address the agent
