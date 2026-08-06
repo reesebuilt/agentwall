@@ -226,6 +226,17 @@ describe("evidence viewer, over a chain a real run produced", () => {
 		delete process.env.AGENTWALL_ALLOW_LOOPBACK_DEV;
 		try {
 			// A fresh instance, because the auth config is read when the guard is registered.
+			// The chain is reset first for the same reason the harness resets it: the durable
+			// sink takes an exclusive lock on the audit file, so a second server built against
+			// the path the first one is still holding is refused as a second writer. Alone that
+			// races benignly; sharing a jest worker with another suite it throws before the
+			// assertions run.
+			// A fresh chain in a fresh directory. The durable sink takes an exclusive
+			// per-file writer lock, so a second server pointed at the path the harness above is
+			// still holding is refused before any route registers. This test is about the auth
+			// guard, not about the chain, so it gets its own file rather than contending for one.
+			process.env.AGENTWALL_AUDIT_FILE = join(tmp(), "audit.jsonl");
+			resetAuditChain();
 			const { app: guarded } = await buildServer(config);
 			apps.push(guarded);
 			for (const url of ["/evidence", "/api/evidence", "/evidence/session/sess-a"]) {
