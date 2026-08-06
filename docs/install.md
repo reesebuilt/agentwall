@@ -61,13 +61,24 @@ procedure for doing so is below rather than assumed.
 
 Each release attaches five binaries and two manifests:
 
-| Asset | Platform | Install path |
-| --- | --- | --- |
-| `agentwall-verify-linux-amd64` | Linux x86-64 | Homebrew, or download |
-| `agentwall-verify-linux-arm64` | Linux ARM64 | Homebrew, or download |
-| `agentwall-verify-darwin-amd64` | macOS Intel | Homebrew, or download |
-| `agentwall-verify-darwin-arm64` | macOS Apple Silicon | Homebrew, or download |
-| `agentwall-verify-windows-amd64.exe` | Windows x86-64 | Download only |
+| Asset | Platform | Linkage | Install path |
+| --- | --- | --- | --- |
+| `agentwall-verify-linux-amd64` | Linux x86-64 | static | Homebrew, or download |
+| `agentwall-verify-linux-arm64` | Linux ARM64 | static | Homebrew, or download |
+| `agentwall-verify-darwin-amd64` | macOS Intel | libSystem | Homebrew, or download |
+| `agentwall-verify-darwin-arm64` | macOS Apple Silicon | libSystem | Homebrew, or download |
+| `agentwall-verify-windows-amd64.exe` | Windows x86-64 | system DLLs | Download only |
+
+Only the Linux binaries are statically linked, and that is stated rather than rounded up because
+"static" is the difference between a binary that runs anywhere and one that depends on its host.
+`file` reports the two Linux binaries as `statically linked`. The darwin binaries are Mach-O
+`DYLDLINK` against `/usr/lib/libSystem.B.dylib`, and the Windows binary imports the usual system
+DLLs including `kernel32.dll`, `advapi32.dll` and `ws2_32.dll`. Go cannot emit a fully static
+binary for macOS or Windows, because those libraries are the syscall interface on those platforms.
+
+In practice this costs you nothing: all five are built `CGO_ENABLED=0`, so none needs a Go
+toolchain, a package install, or any third-party runtime. Each needs only what its own operating
+system already ships.
 
 `checksums.txt` covers every release asset. `SHA256SUMS-verifier.txt` covers the five binaries
 only, and is the file the Homebrew formula's digests are generated from.

@@ -40,9 +40,19 @@
 #                      choose. GOFLAGS=-race in the caller's environment is enough to change the
 #                      output of every command below.
 #
-#   CGO_ENABLED=0      Static binaries, so the verifier runs on a machine with no toolchain and
-#                      no libc of a particular vintage. Also removes the host C compiler as a
-#                      build input, which is not reproducible across distributions.
+#   CGO_ENABLED=0      No cgo, so no third-party runtime and no host C compiler as a build input.
+#                      The compiler matters most here: it is not reproducible across
+#                      distributions, so leaving it in the build would defeat everything above.
+#
+#                      It does NOT make all five binaries static, and the header used to claim it
+#                      did. MEASURED with `file`: linux/amd64 and linux/arm64 are `statically
+#                      linked`; both darwin binaries are Mach-O DYLDLINK against
+#                      /usr/lib/libSystem.B.dylib; windows/amd64.exe imports kernel32.dll,
+#                      advapi32.dll, ws2_32.dll and friends. Go cannot emit a fully static binary
+#                      for either, since libSystem and those DLLs ARE the syscall interface on
+#                      those platforms. The honest portable claim is narrower and still useful:
+#                      every binary needs only what its own OS already ships, never a Go
+#                      toolchain and never a package install.
 #
 #   GOTOOLCHAIN=local  Refuse to silently download a different toolchain. The Go version changes
 #                      the output bytes, so an automatic upgrade would break reproduction

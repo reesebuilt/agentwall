@@ -160,9 +160,19 @@ decision, policy file, or enforcement behavior moved in this release.
 - An independent verifier, `agentwall-verify`, written in Go against `docs/audit-format.md`
   rather than against our source. It uses the Go standard library and nothing else, so
   `go list -m all` prints one line, and it performs no network access and writes no files.
-  Published as statically linked binaries for linux/amd64, linux/arm64, darwin/amd64,
-  darwin/arm64, and windows/amd64, attached to the GitHub release alongside `checksums.txt` and
-  `SHA256SUMS-verifier.txt`. Five binaries is not five equally convenient installs: macOS and
+  Published as binaries for linux/amd64, linux/arm64, darwin/amd64, darwin/arm64, and
+  windows/amd64, attached to the GitHub release alongside `checksums.txt` and
+  `SHA256SUMS-verifier.txt`. Only two of those five are statically linked, and the distinction is
+  security relevant enough not to round up: `file` reports linux/amd64 and linux/arm64 as
+  `statically linked`, while both darwin binaries are Mach-O `DYLDLINK` against
+  `/usr/lib/libSystem.B.dylib` and windows/amd64.exe imports the Windows system DLLs, among them
+  `kernel32.dll`, `advapi32.dll` and `ws2_32.dll`. Go cannot emit a fully static binary on either
+  platform, because libSystem is the only supported syscall interface on macOS and the Windows
+  syscall interface is those DLLs. What is true of all five is the property that matters for
+  running one: `CGO_ENABLED=0` means no cgo and no third-party runtime, so each binary needs only
+  the libraries its own operating system already ships, and never a Go toolchain or a package
+  install.
+  Five binaries is not five equally convenient installs: macOS and
   Linux have a generated Homebrew formula, `agentwall-verify.rb`, built from those same checksums
   and attached to the release, while Windows has the `.exe` and nothing else, because Homebrew has
   no Windows support. The formula is not yet published to a tap, and Homebrew refuses to install a
