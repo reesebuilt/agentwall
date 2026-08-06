@@ -337,7 +337,15 @@ function recordTable(records: readonly EvidenceRecord[]): string {
 	<td>${esc(rec.timestamp ?? "")}</td>
 	<td>${esc(rec.plane ?? "")}</td>
 	<td class="wrap">${esc(rec.action ?? "")}</td>
-	<td>${esc(rec.decision ?? "")}</td>
+	<td>${esc(rec.decision ?? "")}
+		${
+			// The writer's own stated grounds, which is what a reviewer is actually asking for.
+			// Rendered beside the decision rather than in a column of its own because the two are
+			// one fact: a deny with no reason beside it sends the reader to the JSONL.
+			rec.reasons.length
+				? `<div class="dim">${rec.reasons.map((r) => esc(r)).join("<br>")}</div>`
+				: ""
+		}</td>
 	<td>${esc(rec.riskLevel ?? "")}</td>
 	<td>${esc(rec.detections.map((d) => `${d.id} (${d.severity})`).join(", "))}</td>
 	<td>${

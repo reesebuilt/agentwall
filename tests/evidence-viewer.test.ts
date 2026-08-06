@@ -182,6 +182,9 @@ describe("evidence viewer, over a chain a real run produced", () => {
 		expect(page.statusCode).toBe(200);
 		expect(page.body).toContain("det.net.metadata.access");
 		expect(page.body).toContain("network.egress");
+		// The writer's own stated grounds, beside the decision. Without them a reviewer reads a
+		// deny with no explanation and goes to the JSONL anyway, which is the gap being closed.
+		expect(page.body).toContain("Request targets a cloud metadata endpoint");
 		// The offline command is on the page, because the page must not be the root of trust.
 		expect(page.body).toContain(`verify --audit ${auditPath}`);
 		expect(page.body).not.toContain("<script");

@@ -100,6 +100,11 @@ chained  FAIL  7 record(s), chain index 0 to 12, in 2 file(s)
     this session's records is not vouched for
 ```
 
+The record table on a session page carries the chain index, timestamp, plane, action, decision
+with the writer's own stated reasons beside it, risk level, detections, and the integrity state
+of that record. It does not carry the record's `metadata`, `payload`, `provenance` or `flow`
+blocks. A reviewer who needs the full record body uses the `jq` command the page prints.
+
 A card that reported only "your records reproduce" would be true and misleading.
 
 ### Signed receipt timeline
