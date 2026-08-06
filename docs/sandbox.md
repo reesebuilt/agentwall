@@ -115,6 +115,28 @@ one, so they can be checked against `include/uapi/linux/landlock.h` directly. Ad
 library dependencies to the one component that decides what an agent may read was not a trade
 worth making.
 
+### Checking your own build
+
+The launcher is built on your machine, so you can rebuild it and compare rather than trusting a
+binary someone handed you:
+
+```
+AGENTWALL_SANDBOX_OUT_DIR=/tmp/check bash scripts/build-sandbox-helper.sh
+sha256sum /tmp/check/agentwall-sandbox dist/native/agentwall-sandbox
+```
+
+Those two digests match. Measured on this project's development host, gcc 13.3.0: two builds a
+second apart, into different output paths, produced byte-identical binaries, and `strings` finds
+neither a build path nor a date embedded in the result. So a rebuild on the same toolchain is a
+real check, and a digest that changes when you did not change the source is worth investigating.
+
+What that check does NOT give you is a digest comparable with anyone else's. The bytes depend on
+the compiler and the C library that produced them, so a different gcc version, clang instead of
+gcc, or a different distribution will all yield a different and equally correct binary. There is
+no published checksum for this launcher to compare against, deliberately: it is not a release
+artifact, and a checksum nobody can independently reproduce, sitting in a manifest next to ones
+they can, teaches people the manifest means something it does not.
+
 ## Using it
 
 ```
