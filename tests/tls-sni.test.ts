@@ -431,6 +431,39 @@ describe("CONNECT-path ClientHello observation", () => {
     expect(upstream.received().equals(payload)).toBe(true);
   });
 
+  it("names a ClientHello the client pipelined with its CONNECT", async () => {
+    // A client that does not wait for the 200 puts its entire hello in `head`, the buffer
+    // http.Server hands the 'connect' listener. Those bytes never arrive as a 'data' event,
+    // so a peek driven only by 'data' sees nothing, stalls until its timeout, and reports no
+    // name for a connection that stated one perfectly clearly.
+    const upstream = await stub();
+    const harness = await proxy(() => "allow");
+    const hello = helloFor("pipelined.example.com");
+    const authority = `localhost:${upstream.port}`;
+
+    const socket = netConnect(harness.port, "127.0.0.1", () =>
+      // One end() call, so the hello rides along with the request head and the FIN follows
+      // it. The record is filed when the upstream socket closes, so the tunnel has to finish.
+      socket.end(
+        Buffer.concat([
+          Buffer.from(`CONNECT ${authority} HTTP/1.1\r\nHost: ${authority}\r\n\r\n`, "latin1"),
+          hello,
+        ])
+      )
+    );
+    socket.on("error", () => {
+      /* the stub tearing down at test end is not a failure */
+    });
+    const record = await harness.nextRecord();
+
+    expect(record.sni).toBe("pipelined.example.com");
+    expect(record.sniMismatch).toBe(true);
+    expect(upstream.received().equals(hello)).toBe(true);
+    // Head bytes are relayed, so they are counted. A record that omitted them would be an
+    // evidence gap any client could open on purpose by sending its first record early.
+    expect(record.bytesUp).toBe(hello.length);
+  });
+
   it("does not hold the upstream direction while waiting for a hello", async () => {
     // A server-speaks-first protocol over CONNECT: the client is waiting for the greeting
     // before it says anything, so a peek that gated both directions would deadlock it. The

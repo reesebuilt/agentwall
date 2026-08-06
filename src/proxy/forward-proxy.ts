@@ -422,22 +422,20 @@ export function createForwardProxy(opts: ForwardProxyOptions): Server {
      * and can never permit what the first refused.
      */
     function observeClientHello(): void {
-      // Seeded with `head`: bytes that arrived after the CONNECT line but before the 200.
-      // Rare, because a client normally waits for the 200 before speaking, but a client that
-      // pipelines puts its entire hello here and a peek that ignored it would see nothing.
+      // Seeded with `head`: bytes the client pipelined with its CONNECT, before the 200.
+      // A client that does not wait puts its ENTIRE hello here, and those bytes never arrive
+      // as a 'data' event, so the seed has to be evaluated in its own right further down. A
+      // peek driven only by 'data' would stall such a connection until its timeout and then
+      // report no name for one that stated a name perfectly clearly.
       let peeked: Buffer = head?.length ? head : EMPTY;
       let settled = false;
 
-      // Bytes counted from the first one, not from the handover: the peek window is real
-      // traffic and a ledger that starts counting after it would under-report every tunnel.
-      // The head is counted here too, because the release below relays it upstream and a
-      // byte that reaches the destination while appearing in no record is an evidence gap a
-      // client can open on purpose by sending its first record early.
+      // Counted, including the head. These bytes are relayed to the destination, and bytes
+      // that arrive somewhere while appearing in no record are an evidence gap a client can
+      // open on purpose by sending its first record early.
       if (peeked.length) bytesUp += peeked.length;
 
-      const onPeekData = (chunk: Buffer) => {
-        bytesUp += chunk.length;
-        peeked = peeked.length === 0 ? chunk : Buffer.concat([peeked, chunk]);
+      const evaluate = (): void => {
         const hello = peekClientHello(peeked);
         if (hello.status === "incomplete") {
           // Bounded by one maximal TLS record. Past that it is not a hello, whatever it is.
@@ -445,6 +443,12 @@ export function createForwardProxy(opts: ForwardProxyOptions): Server {
           return;
         }
         release(hello.status === "complete" ? hello.sni : null);
+      };
+
+      const onPeekData = (chunk: Buffer) => {
+        bytesUp += chunk.length;
+        peeked = peeked.length === 0 ? chunk : Buffer.concat([peeked, chunk]);
+        evaluate();
       };
 
       // A client that opens a tunnel and never speaks must not hold its own upstream
@@ -513,6 +517,13 @@ export function createForwardProxy(opts: ForwardProxyOptions): Server {
       // should agree on what was sent.
       clientSocket.once("end", () => release(null));
       clientSocket.on("data", onPeekData);
+
+      // The pipelined case, and it has to run AFTER the listeners above rather than before.
+      // `release` detaches onPeekData and installs the pipe, so evaluating the seed first
+      // would let the line above re-attach a peek listener on a socket already handed over.
+      // A client that pipelined its whole hello is complete right here and may never send a
+      // 'data' event at all, so without this it waits out the timeout and is never named.
+      if (peeked.length) evaluate();
     }
 
     const bail = (err: Error, where: string) => {
