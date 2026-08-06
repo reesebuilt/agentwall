@@ -508,8 +508,12 @@ anything else.
   host inside a query name and a 142-byte answer came back, and a plain TCP connection to
   `1.1.1.1:53` completed and carried arbitrary bytes in both directions. That is a working
   bidirectional channel to an external host which never touches the proxy and never reaches
-  the audit chain. With no resolver named it closes completely: UDP to `:53` fails with
-  `EPERM` and TCP to `:53` is dropped. Naming a resolver is therefore opening a hole on
+  the audit chain. With no resolver named the channel closes completely: UDP to `:53` fails
+  with `EPERM` and TCP to `:53` is dropped. Read that as a real closure and also as a real
+  cost, because it closes by denying the agent name resolution outright, which for most agents
+  means denying it everything. `src/perimeter/spec.ts` says the same thing in the field
+  documentation for `dnsResolver`, and two entries down explains why the obvious way to get
+  the closure without the cost does not work. Naming a resolver is therefore opening a hole on
   purpose. Point the agent at a resolver you control and log there.
 - **Naming a resolver does not by itself give the agent working DNS.** On any host using
   `systemd-resolved`, `/etc/resolv.conf` points at the stub listener `127.0.0.53`, and that
@@ -522,20 +526,43 @@ anything else.
   systemd host, because the obvious way to follow it does not work: `/etc/resolv.conf` is a
   symlink to `../run/systemd/resolve/stub-resolv.conf`, which `systemd-resolved` owns and
   rewrites, so editing through the link is reverted without warning. Replace the symlink with
-  a real file, or use the closure in the next entry and give the agent no resolver at all.
-- **The address the agent dials is discarded, which is how the DNS hole can be closed
-  outright.** The redirect rewrites the destination before a single byte is sent, and the
-  proxy recovers the real destination from SNI or the `Host` header, so the address the agent
-  resolved was never used for anything. Measured: with no resolver permitted, an agent pointed
-  at `192.0.2.1` for `example.com`, an address in `TEST-NET-1` that routes nowhere at all,
-  fetched the real `example.com` and got `200`, and the ledger recorded `example.com:443`. The
-  same trick against a non-allowlisted host was denied. What the agent needs is therefore not
-  correct DNS but merely *an* address to dial, which means the DNS hole above is closable in
-  practice: give the agent a static `/etc/hosts` mapping the names it uses to any placeholder
-  address, name no resolver, and it has no port 53 path at all while the proxy still reaches
-  the right hosts. Read the security consequence too. Policy is evaluated on the name in the
-  stream and never on the address, so any DNS-level pinning or IP allowlisting you believe you
-  have in front of this is decorative.
+  a real file. There is no no-resolver closure that works host-wide; see two entries down for
+  why, and prefer a resolver you control and log.
+- **The address the agent dials is discarded.** The redirect rewrites the destination before a
+  single byte is sent, and the proxy recovers the real destination from SNI or the `Host`
+  header, so the address the agent resolved is never used for anything. Measured with no
+  resolver permitted: an agent pointed at `192.0.2.1` for `example.com`, an address in
+  `TEST-NET-1` that routes nowhere, fetched the real `example.com` and got `200`, and the
+  ledger recorded `example.com:443` with 5344 bytes down. The same trick against a
+  non-allowlisted host was denied and recorded. Read the security consequence: policy is
+  evaluated against the hostname recovered from the stream and never against the address the
+  agent dialled, so any DNS pinning or IP allowlisting you believe you have in front of this
+  is decorative.
+- **That does not add up to a way to close the DNS channel, and the obvious recipe is wrong.**
+  Since the dialled address is discarded, it is tempting to conclude that you can name no
+  resolver, give the agent a static `/etc/hosts` mapping every name to a placeholder, and have
+  containment with no port 53 path at all. An earlier version of this document recommended
+  exactly that. It does not work, and it was corrected only because a reviewer challenged the
+  reasoning rather than the measurement. `/etc/hosts` is host-wide and uid-agnostic, and the
+  proxy runs on the same host with no mount namespace between them, so the proxy's own
+  `getaddrinfo` reads the same placeholder. Measured: with `192.0.2.1 example.com` in
+  `/etc/hosts`, the proxy resolved `example.com` to `192.0.2.1`, its upstream connect went to
+  an address that routes nowhere, and the agent's fetch failed with `curl: (28) Connection
+  timed out` and produced no ledger record at all. The measurement behind the previous entry
+  used `curl --resolve`, which is scoped to that one process, and the difference between those
+  two results is precisely the scope.
+
+  So the constraint, stated honestly: the agent needs *an* address and the proxy needs the
+  *correct* address for the same name, and one host-wide resolution path cannot serve both.
+  A per-client override such as `curl --resolve` genuinely works and is measured above, but it
+  is per-client rather than a posture, and it does nothing for an agent that resolves through
+  a library you do not control. Giving the agent its own `/etc/hosts` through a mount namespace
+  is the plausible general fix, and it is worth noting that a mount namespace would not break
+  containment the way a network namespace does, because nftables tables are per-network-namespace
+  and not per-mount-namespace. That is unimplemented and unmeasured here, so treat it as a
+  direction and not as advice. Until it exists there is no general closure for the DNS channel:
+  name a resolver you control and log there, and read the exfiltration entry above as a
+  standing property of any deployment where the agent resolves names for itself.
 - **ECH or ESNI hides the SNI, so such a client is refused rather than inspected.** The
   destination is unnameable, the refusal is structural, and the connection dies. That fails
   closed, which is correct, but the honest consequence is that it breaks that client rather
