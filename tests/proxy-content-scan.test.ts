@@ -564,6 +564,43 @@ describe("what the audit chain is allowed to know", () => {
     expect(serialised).not.toContain(token.value);
   });
 
+  it("puts nothing on the record but the fields the ledger is meant to carry", async () => {
+    // The flat ledger writes this object with `JSON.stringify({ ts, ...r })`, so what reaches
+    // an operator's JSONL is whatever is on it at runtime, not what its type admits.
+    // `ProxyRecord` omitting `headers` and `body` does not stop a spread from carrying them:
+    // excess properties survive a spread without tripping excess-property checking, so a
+    // field added to `ProxyEvent` would land in the sink while still compiling. The HTTP
+    // handler therefore names every field it records, and this asserts that set.
+    //
+    // A failure here means someone added a field to the record. If it describes the
+    // destination, add it below. If it came out of a message body, it does not belong on a
+    // record at all; put its class in `metadata` and leave the value where it was.
+    const { record } = await recordFor(() =>
+      through({ method: "POST", path: "/collect?api_key=x", body: "hello", headers: { "x-note": "hi" } })
+    );
+
+    expect(Object.keys(record).sort()).toEqual(
+      [
+        "bodyVisibility",
+        "bytesDown",
+        "bytesUp",
+        "client",
+        "decision",
+        "durationMs",
+        "host",
+        "matchedRules",
+        "metadata",
+        "method",
+        "path",
+        "port",
+        "reasons",
+        "riskLevel",
+        "scheme",
+        "startedAt",
+      ].sort()
+    );
+  });
+
   it("does not chain a record no durable sink accepted", async () => {
     // The durability contract the rest of the chain already has, asserted for the record a
     // content detection produces: a decoy trigger that no sink would store must not advance

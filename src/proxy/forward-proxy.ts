@@ -770,6 +770,16 @@ export function createForwardProxy(opts: ForwardProxyOptions): Server {
       // Always `tunneled`, never anything else. The plaintext path can say what it read of a
       // body; this one never can, and the record must say so rather than leave a reader to
       // infer opacity from the absence of findings.
+      //
+      // This one still spreads `event`, deliberately and unlike the HTTP handler below, which
+      // names every field. A tunnel has no content by construction, so there is nothing here
+      // for a spread to smuggle, and the spread is what lets a destination fact discovered
+      // after construction reach the record without this line having to know about it. The
+      // condition attached to that convenience: `src/index.ts` serialises this whole object
+      // into the flat ledger at runtime, so anything added to `ProxyEvent` lands in an
+      // operator's JSONL whether or not `ProxyRecord`'s type admits it. Destination facts are
+      // welcome. Anything read out of a message body is not, and would have to be named
+      // rather than spread, as the HTTP handler does.
       opts.record({
         ...event,
         ...verdict,
@@ -1058,20 +1068,36 @@ export function createForwardProxy(opts: ForwardProxyOptions): Server {
       if (visibility === undefined || VISIBILITY_ORDER[level] < VISIBILITY_ORDER[visibility]) visibility = level;
     };
 
-    // One record per exchange, filed exactly once. Every exit reaches this: a refusal, an
-    // upstream failure, a completed response, and a client that walked away mid-flight.
+    /**
+     * One record per exchange, filed exactly once. Every exit reaches this: a refusal, an
+     * upstream failure, a completed response, and a client that walked away mid-flight.
+     *
+     * Every field is named rather than spread from `event`, and that is a control, not a
+     * style choice. `src/index.ts` writes this object to the flat ledger with
+     * `JSON.stringify({ ts, ...r })`, which serialises whatever is on it at RUNTIME.
+     * `ProxyRecord` omitting `headers` and `body` shapes the type and stops nothing there: a
+     * spread carries excess properties without tripping excess-property checking, so a field
+     * added to `ProxyEvent` later would reach the JSONL sink silently while still compiling.
+     * An allowlist of named fields is the only version of this that cannot rot, because
+     * adding a field to `ProxyEvent` now does nothing here until somebody writes it down.
+     */
     const finish = (): void => {
       if (recorded) return;
       recorded = true;
       opts.record({
-        ...event,
-        // The pathname, without the query. `event.path` carries the query because `decide`
-        // has to scan it; the record must not, because a query is attacker-chosen content and
-        // `?api_key=AKIA...` is precisely the shape this path was built to catch. Writing it
-        // here would put the live credential into the audit chain and into the flat ledger as
-        // the evidence for its own detection. The size goes instead: enough to know a query
-        // was there and how big, and `metadata.contentSites` already says what class of thing
-        // was found in it and at what offset.
+        host: event.host,
+        port: event.port,
+        scheme: event.scheme,
+        method: event.method,
+        client: event.client,
+        startedAt: event.startedAt,
+        // The pathname, without the query. The full target including the query is handed to
+        // `decide` on the two content calls, because a credential smuggled out as
+        // `?api_key=AKIA...` is precisely the shape this path was built to catch. It must not
+        // be written down: that would put the live credential into the audit chain and into
+        // the flat ledger as the evidence for its own detection. The size goes instead,
+        // enough to know a query was there and how big, and `metadata.contentSites` already
+        // says what class of thing was found in it and at what offset.
         path: parsed.pathname,
         decision: ledger.decision,
         reasons: ledger.reasons,
