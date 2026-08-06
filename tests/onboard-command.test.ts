@@ -15,7 +15,7 @@ import {
   withAgent,
   OnboardRequest,
 } from "../src/onboard";
-import { findProfile } from "../src/onboard/profiles";
+import { AGENT_PROFILES, findProfile } from "../src/onboard/profiles";
 import { AgentRegistry, parseProxyCredential } from "../src/fleet/registry";
 import { loadConfig } from "../src/config";
 
@@ -286,6 +286,30 @@ describe("interception output refuses to break the agent it is configuring", () 
     const exportLine = lines.find((line) => line.startsWith("export REQUESTS_CA_BUNDLE="));
     expect(exportLine).toContain("bundle.pem");
     expect(exportLine).not.toContain("/ca/agentwall-ca.crt");
+  });
+
+  it("never emits a quoted tilde, which the shell does not expand", () => {
+    // A single-quoted '~/.agentwall/x.pem' is a literal directory named "~", so the variable
+    // would point at a file that does not exist while looking exactly like a working line.
+    // Every path in a paste-ready snippet has to be absolute.
+    for (const profile of AGENT_PROFILES) {
+      for (const line of renderInterceptionLines(profile, "/ca/agentwall-ca.crt")) {
+        if (line.startsWith("#")) continue;
+        expect(line).not.toContain("'~");
+      }
+    }
+  });
+
+  it("builds the shared bundle once even when two aliased variables need it", () => {
+    // requests reads CURL_CA_BUNDLE as an alias for REQUESTS_CA_BUNDLE, so both facts want the
+    // same file. Emitting the concatenation twice rewrites it mid-snippet for no reason.
+    const hermes = findProfile("hermes-agent")!;
+    const lines = renderInterceptionLines(hermes, "/ca/agentwall-ca.crt");
+    expect(lines.filter((line) => line.startsWith("cat "))).toHaveLength(1);
+    // Both variables must still be exported, and both at the same bundle.
+    const exports = lines.filter((line) => line.startsWith("export "));
+    expect(exports).toHaveLength(2);
+    expect(new Set(exports.map((line) => line.split("=")[1])).size).toBe(1);
   });
 
   it("emits a plain export for an additive variable", () => {

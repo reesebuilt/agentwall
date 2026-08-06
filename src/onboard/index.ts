@@ -185,6 +185,12 @@ export function renderNoProxyNote(profile: AgentProfile): string[] {
  */
 export function renderInterceptionLines(profile: AgentProfile, caPath: string): string[] {
   const lines: string[] = [];
+  // One bundle per profile, built at most once even when several variables need it. python
+  // requests reads REQUESTS_CA_BUNDLE and CURL_CA_BUNDLE as aliases for the same thing, so
+  // emitting the concatenation twice would just rewrite the same file mid-snippet.
+  const bundlePath = path.join(process.env.HOME ?? "/root", ".agentwall", `${profile.id}-bundle.pem`);
+  let bundleEmitted = false;
+
   for (const fact of profile.caTrust) {
     if (fact.semantics === "unknown") {
       lines.push(
@@ -201,12 +207,20 @@ export function renderInterceptionLines(profile: AgentProfile, caPath: string): 
       continue;
     }
     if (fact.semantics === "replacement") {
-      lines.push(
-        `# ${fact.variable} REPLACES the public trust store. Point it at a bundle, never the bare CA,`,
-        `# or every public HTTPS call this agent makes will fail.`,
-        `cat ${quoteForShell(caPath)} /etc/ssl/certs/ca-certificates.crt > ~/.agentwall/${profile.id}-bundle.pem`,
-        `export ${fact.variable}=${quoteForShell(`~/.agentwall/${profile.id}-bundle.pem`)}`
-      );
+      if (!bundleEmitted) {
+        lines.push(
+          `# This runtime REPLACES the public trust store with whatever the variable names, so`,
+          `# the file has to carry the public roots too. Pointing it at the bare CA would make`,
+          `# every public HTTPS call this agent attempts fail CERTIFICATE_VERIFY_FAILED.`,
+          `mkdir -p ${quoteForShell(path.dirname(bundlePath))}`,
+          `cat ${quoteForShell(caPath)} /etc/ssl/certs/ca-certificates.crt > ${quoteForShell(bundlePath)}`
+        );
+        bundleEmitted = true;
+      }
+      // Absolute, never "~": the path is single-quoted for the shell, and a quoted tilde is a
+      // literal directory named "~" rather than $HOME. That would point the agent at a file
+      // that does not exist while looking exactly like a working line.
+      lines.push(`export ${fact.variable}=${quoteForShell(bundlePath)}`);
       continue;
     }
     lines.push(
