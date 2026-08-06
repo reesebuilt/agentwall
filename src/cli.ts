@@ -757,7 +757,16 @@ function commandDoctor(flags: CliFlags) {
   const capture = collectDoctorCapture(flags);
   const section = renderCaptureSection(capture);
   const installFailures = checks.filter((check) => !check.ok).length;
-  const failures = installFailures + section.failures;
+
+  /**
+   * Fleet lines are gathered BEFORE the exit code is decided, not printed as a side effect
+   * partway through. Two slices met here: one counts install and capture failures into a
+   * single total, the other adds credential-lifecycle failures. Reading the store early lets
+   * both land in the same total instead of one of them arriving after the arithmetic.
+   */
+  const fleetLines = fleetDoctorLines(typeof flags.config === "string" ? flags.config : undefined);
+  const fleetFailures = fleetLines.filter((line) => line.level === "fail").length;
+  const failures = installFailures + section.failures + fleetFailures;
 
   /**
    * 0 clear, 1 failed, 2 inconclusive.
@@ -798,6 +807,8 @@ function commandDoctor(flags: CliFlags) {
 
   for (const check of checks) {
     console.log(check.ok ? `✅ ${check.name}` : `❌ ${check.name} (hint: ${check.detail})`);
+  }
+
   // Fleet credential lifecycle, when a fleet is declared. Silent otherwise, because a
   // single-agent install should not grow four lines about a feature nobody turned on.
   //
@@ -806,25 +817,27 @@ function commandDoctor(flags: CliFlags) {
   // long is left. It does not fail the command, because a rotation in progress is not a
   // broken install. A store that cannot be parsed does fail: nothing can be changed until it
   // is fixed, including a revocation somebody may be trying to make right now.
-  for (const line of fleetDoctorLines(typeof flags.config === "string" ? flags.config : undefined)) {
+  for (const line of fleetLines) {
     if (line.level === "fail") {
-      failures += 1;
       console.log(`❌ ${line.text}`);
     } else {
       console.log(`${line.level === "warn" ? "⚠️ " : "✅"} ${line.text}`);
     }
   }
 
-  if (failures > 0) {
-    process.exit(1);
-  }
+  // Everything prints before anything exits. An earlier resolution of this merge exited on
+  // fleet failures here, which silently swallowed the capture section below it: an operator
+  // with a credential problem would never learn they also had an agent escaping.
   for (const line of section.lines) console.log(line);
 
   if (exitCode === 0) return;
 
   console.log("");
   if (failures > 0) {
-    console.log(`${installFailures} install check(s) and ${section.failures} capture check(s) failed. (exit 1)`);
+    console.log(
+      `${installFailures} install check(s), ${section.failures} capture check(s) and ` +
+        `${fleetFailures} fleet check(s) failed. (exit 1)`,
+    );
     // Only explained when it happened. A standing sentence about escaping agents printed
     // under a run that failed on a missing policy.yaml is how a warning stops being read.
     if (section.failures > 0) {
