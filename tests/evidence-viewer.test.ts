@@ -463,6 +463,30 @@ describe("evidence viewer, anchor state", () => {
 		expect(report.anchors[0].bitcoinHeights).toEqual([870_123]);
 	});
 
+	it("derives the reach from the live tail alone when nothing has rotated yet", async () => {
+		// The commonest deployment shape: one live file, no rotation, so the checkpoint commits
+		// a null manifest head and a live tail. The sealed span contributes nothing, and a reader
+		// that only looked at the manifest would report every record as unanchored right after a
+		// successful anchor.
+		const { app, auditPath } = await harness();
+		await runAnchorPass({ auditPath }, () => new Date(), {
+			post: async () => ({ status: 200, body: pendingProof("https://alice.calendar.example.com") }),
+		} as HttpPoster);
+
+		const report = (await app.inject({ method: "GET", url: "/api/evidence" })).json();
+		expect(report.anchors[0].segments).toBe(0);
+		expect(report.anchors[0].coveredThroughIndex).toBe(TRAFFIC.length - 1);
+		expect(report.layers.find((l: { name: string }) => l.name === "anchored").state).toBe("pending");
+		for (const session of report.sessions) {
+			expect(session.layers.find((l: { name: string }) => l.name === "anchored").state).toBe("pending");
+			// Nothing has rotated, so no manifest entry covers these records and the view says so
+			// instead of borrowing the file-wide vacuous pass.
+			const linked = session.layers.find((l: { name: string }) => l.name === "linked");
+			expect(linked.state).toBe("absent");
+			expect(linked.detail).toContain("live file");
+		}
+	});
+
 	it("renders an anchor whose record claims confirmed but whose proof is only pending as pending", () => {
 		// Corpus case l1 exists to pin a documented limit: `agentwall verify` counts an anchor
 		// as confirmed from the record's own status field and never compares that claim against
