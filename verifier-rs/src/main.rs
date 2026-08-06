@@ -4,6 +4,11 @@
 //! every implementation with the same arguments: exit 0 when all three layers pass, 1 when any
 //! layer fails, 2 for a usage or IO error, which is not a verdict about evidence.
 
+// The same guarantee the library crate carries. This is a second crate root, so the attribute
+// on lib.rs does not reach it, and a claim that the verifier contains no unsafe code is only
+// true of the whole verifier if the binary target says so too.
+#![forbid(unsafe_code)]
+
 use std::io::Write;
 use std::path::PathBuf;
 use std::process::ExitCode;
