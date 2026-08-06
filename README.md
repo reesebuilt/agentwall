@@ -118,6 +118,12 @@ list -m all` prints one line.
 Full detail, including the conformance corpus and what verification does not prove, is in
 [docs/verification.md](docs/verification.md).
 
+For reading the record rather than only checking it, `/evidence` is a read-only console over the
+same files: a per-session scorecard of what an agent did and what was blocked, the three layers
+shown inline, a signed receipt timeline, and the offline command above printed on the page so the
+UI is never the root of trust. It has no approve, deny, or edit path and serves no script. See
+[docs/evidence-viewer.md](docs/evidence-viewer.md).
+
 ## What it does
 
 - **Egress enforcement, in three modes.** `monitor` evaluates and allows while reporting what
@@ -221,6 +227,7 @@ this project declines.
 [Lockdown](docs/lockdown.md) ·
 [Architecture](docs/architecture.md) · [Threat model](docs/threat-model.md) ·
 [Verification](docs/verification.md) · [Audit format](docs/audit-format.md) ·
+[Evidence viewer](docs/evidence-viewer.md) ·
 [API and configuration](docs/reference.md) · [Probe API](docs/probe-api.md) ·
 [Why](docs/why.md) · [Benchmark](docs/benchmark.md) ·
 [Compliance](docs/compliance.md) · [Decoy tokens](docs/decoy.md) ·
