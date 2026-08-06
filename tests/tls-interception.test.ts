@@ -601,7 +601,12 @@ onlyWithOpenssl("end to end against a loopback https upstream", () => {
     const request = observation("intercepted").records.find((r) => r.matchedRules.includes("dlp:secret-in-request-body"))!;
     expect(Object.keys(JSON.parse(request.raw)).sort()).toEqual(
       [
+        // The fleet fields the decision resolved. Neither carries the credential it was
+        // resolved from, and the ticket is null on an inner exchange because the connection
+        // that carried it was admitted once, at CONNECT. "attribution" is absent here because
+        // this harness declares no fleet, so the verdict resolved none.
         "bodyVisibility",
+        "budgetTicket",
         "bytesDown",
         "bytesUp",
         "client",
