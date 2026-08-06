@@ -110,11 +110,13 @@ decision, policy file, or enforcement behavior moved in this release.
 - An independent verifier, `agentwall-verify`, written in Go against `docs/audit-format.md`
   rather than against our source. It uses the Go standard library and nothing else, so
   `go list -m all` prints one line, and it performs no network access and writes no files.
-  Released as static binaries for linux, macOS, and Windows.
 - A 26 case conformance corpus covering valid evidence, forgeries, and boundary conditions, run
-  through both verifiers on every commit. The two agree on 22 cases; the 4 remaining are places
-  the bundled TypeScript verifier accepts evidence the format rejects, declared explicitly in
-  the harness rather than papered over.
+  through both verifiers on every commit. The two agree on all 26 cases and the harness declares
+  no divergences. Four cases diverged when the corpus first shipped, each one a place the bundled
+  TypeScript verifier accepted evidence the format rejects; they were closed by making the
+  bundled verifier check what the anchor record proves rather than what it claims. The harness
+  still reports divergence explicitly rather than papering over it, which is how those four were
+  found.
 - `docs/audit-format.md`, the normative specification. The implementations conform to it, not
   the other way around.
 - FloodGuard shield mode control surface in the dashboard.
