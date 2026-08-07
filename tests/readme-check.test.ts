@@ -163,6 +163,35 @@ describe("README contract checker", () => {
     expect(result.stdout).toContain("README contract check passed");
   });
 
+  it("rejects an unquoted HTML image target when its local file is missing", () => {
+    const markdown = [
+      themeAwarePicture(),
+      imageTargets(),
+      "",
+      "<img src=missing-readme-image.png alt=Missing>",
+    ].join("\n");
+
+    const result = runChecker(writeRootFixture(markdown));
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("missing-readme-image.png: local target does not exist");
+  });
+
+  it("accepts a required manifest image in an unquoted HTML attribute", () => {
+    const markdown = [
+      themeAwarePicture(),
+      `![Product image 1](${manifestImages[0]})`,
+      `![Product image 2](${manifestImages[1]})`,
+      "",
+      `<img src=${manifestImages[2]} alt=Product-image-3>`,
+    ].join("\n");
+
+    const result = runChecker(writeRootFixture(markdown));
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("README contract check passed");
+  });
+
   it("rejects a supplied README path outside the repository before reading it", () => {
     const directory = mkdtempSync(join(tmpdir(), "agentwall-readme-check-"));
     temporaryDirectories.push(directory);

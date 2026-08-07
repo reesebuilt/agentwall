@@ -50,33 +50,48 @@ function addTarget(targets, rawTarget) {
   return target;
 }
 
+function htmlAttributeValue(tag, name) {
+  const escapedName = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const attribute = new RegExp(
+    `(?:^|\\s)${escapedName}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s"'=<>\\x60]+))`,
+    'i',
+  ).exec(tag);
+  if (!attribute) return null;
+  return attribute[1] ?? attribute[2] ?? attribute[3];
+}
+
 function collectHtmlTargets(html, targets, imageTargets) {
   const renderedHtml = html.replace(/<!--[\s\S]*?-->/g, '');
 
   for (const match of renderedHtml.matchAll(/<(?:img|source)\b[^>]*>/gi)) {
     const tag = match[0];
     if (/^<img\b/i.test(tag)) {
-      const source = /\bsrc\s*=\s*["']([^"']+)["']/i.exec(tag);
-      if (source) {
-        const target = addTarget(targets, source[1]);
+      const source = htmlAttributeValue(tag, 'src');
+      if (source !== null) {
+        const target = addTarget(targets, source);
         if (target) imageTargets.add(target);
       }
     }
-    const sourceSet = /\bsrcset\s*=\s*["']([^"']+)["']/i.exec(tag);
-    if (sourceSet) {
-      for (const candidate of sourceSet[1].split(',')) {
+    const sourceSet = htmlAttributeValue(tag, 'srcset');
+    if (sourceSet !== null) {
+      for (const candidate of sourceSet.split(',')) {
         const target = addTarget(targets, candidate.trim().split(/\s+/)[0]);
         if (target) imageTargets.add(target);
       }
     }
   }
 
-  for (const match of renderedHtml.matchAll(/\b(?:href|src)\s*=\s*["']([^"']+)["']/gi)) {
-    addTarget(targets, match[1]);
-  }
-  for (const match of renderedHtml.matchAll(/\bsrcset\s*=\s*["']([^"']+)["']/gi)) {
-    for (const candidate of match[1].split(',')) {
-      addTarget(targets, candidate.trim().split(/\s+/)[0]);
+  for (const match of renderedHtml.matchAll(/<[A-Za-z][^>]*>/g)) {
+    const tag = match[0];
+    for (const name of ['href', 'src']) {
+      const value = htmlAttributeValue(tag, name);
+      if (value !== null) addTarget(targets, value);
+    }
+    const sourceSet = htmlAttributeValue(tag, 'srcset');
+    if (sourceSet !== null) {
+      for (const candidate of sourceSet.split(',')) {
+        addTarget(targets, candidate.trim().split(/\s+/)[0]);
+      }
     }
   }
 }
