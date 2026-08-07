@@ -25,7 +25,7 @@
   {
     "file": "docs/assets/agentwall-approval-in-action.png",
     "pixelWidth": 1584,
-    "pixelHeight": 513,
+    "pixelHeight": 515,
     "route": "/",
     "selector": "#approvals",
     "viewport": {

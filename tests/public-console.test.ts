@@ -70,6 +70,10 @@ describe("public operator console contract", () => {
     }
   });
 
+  it("keeps hidden console states out of layout", () => {
+    expect(styles).toContain("[hidden] { display: none !important; }");
+  });
+
   it("defines small-screen, focus, and reduced-motion states", () => {
     expect(styles).toContain("@media (max-width: 599px)");
     expect(styles).toContain(":focus-visible");
