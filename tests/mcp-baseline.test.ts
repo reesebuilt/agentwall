@@ -83,6 +83,26 @@ describe("MCP baseline store", () => {
       inputSchema: { type: "object", properties: { query: { type: "string" } } },
     }]);
   });
+
+  it("removes the writer lock when a write fails validation", () => {
+    const store = new McpBaselineStore(filePath);
+
+    expect(() => store.write(KEY, [{ name: 42 } as unknown as McpToolDescriptor])).toThrow();
+    expect(fs.existsSync(`${filePath}.lock`)).toBe(false);
+  });
+
+  it("reclaims a stale writer lock before an atomic write", () => {
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.writeFileSync(`${filePath}.lock`, "stale\n");
+    const old = new Date(Date.now() - 120_000);
+    fs.utimesSync(`${filePath}.lock`, old, old);
+
+    const store = new McpBaselineStore(filePath);
+    store.write(KEY, [{ name: "search" }]);
+
+    expect(store.read(KEY)).toEqual([{ name: "search" }]);
+    expect(fs.existsSync(`${filePath}.lock`)).toBe(false);
+  });
 });
 
 describe("MCP persistent inventory gate", () => {

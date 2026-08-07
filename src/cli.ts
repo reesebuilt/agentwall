@@ -285,6 +285,12 @@ export function parseFlags(args: string[]): ParsedArgs {
   return { flags, positionals };
 }
 
+function packageEntry(...parts: string[]): string {
+  const entry = path.resolve(__dirname, "..", ...parts);
+  if (!fs.existsSync(entry)) throw new Error(`AgentWall package entry is missing: ${entry}`);
+  return entry;
+}
+
 function runNodeScript(args: string[]): void {
   const result = spawnSync(process.execPath, args, {
     stdio: "inherit",
@@ -324,11 +330,14 @@ export function commandSetup(flags: CliFlags): void {
 }
 
 export async function commandUi(flags: CliFlags): Promise<void> {
+  const servicePort = flags["service-port"] === undefined
+    ? loadConfig().port
+    : Number(flags["service-port"]);
   await runBootstrapUi({
     baseDir: process.cwd(),
     host: String(flags.host || "127.0.0.1"),
     port: Number(flags.port || 3001),
-    servicePort: Number(flags["service-port"] || defaultConfig.port),
+    servicePort,
   });
 }
 
@@ -1836,10 +1845,10 @@ async function main() {
       // several of which (--allow, --agent-id) parseFlags() would have already consumed.
       process.exit(runOnboardCommand(args));
     case "start":
-      runNodeScript([path.resolve(process.cwd(), "dist/index.js")]);
+      runNodeScript([packageEntry("dist", "index.js")]);
       return;
     case "dev":
-      runNodeScript([path.resolve(process.cwd(), "node_modules/ts-node/dist/bin.js"), "src/index.ts"]);
+      runNodeScript([packageEntry("node_modules", "ts-node", "dist", "bin.js"), packageEntry("src", "index.ts")]);
       return;
     case "doctor":
       commandDoctor(flags);

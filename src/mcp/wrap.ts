@@ -8,6 +8,7 @@ import { DetectionMapping, detectionCatalog } from "../policy/detections";
 import { PolicyEngine } from "../policy/engine";
 import { AgentContext, DetectionMatch, PolicyResult, ProvenanceTag } from "../types";
 import { GateContext, evaluateFrame, recordToolInventory } from "./gates";
+import { parseMcpToolInventoryPage } from "./inventory";
 import { McpBaselineStore } from "./baseline";
 import { McpHttpHandle, startMcpHttpListener } from "./http";
 import { runStdioWrapper } from "./stdio";
@@ -234,31 +235,6 @@ function classifyFrame(frame: JsonRpcFrame, inFlight: Map<string, PendingCall>):
   return remembered;
 }
 
-/**
- * Read the tool list out of a `tools/list` result.
- *
- * Sniffed by shape rather than by the method of the request it answers, because a response
- * carries no method and the correlation map is bounded: an evicted mapping must not cost us the
- * inventory baseline. A malformed entry is skipped rather than defaulted, so it cannot enter the
- * baseline as a tool named "undefined" that a later comparison then treats as approved.
- */
-function parseToolDescriptors(result: unknown): McpToolDescriptor[] {
-  if (result === null || typeof result !== "object" || !("tools" in result)) return [];
-  if (!Array.isArray(result.tools)) return [];
-  const listed: readonly unknown[] = result.tools;
-
-  const tools: McpToolDescriptor[] = [];
-  for (const entry of listed) {
-    if (entry === null || typeof entry !== "object") continue;
-    if (!("name" in entry) || typeof entry.name !== "string" || entry.name.length === 0) continue;
-
-    const tool: McpToolDescriptor = { name: entry.name };
-    if ("description" in entry && typeof entry.description === "string") tool.description = entry.description;
-    if ("inputSchema" in entry) tool.inputSchema = entry.inputSchema;
-    tools.push(tool);
-  }
-  return tools;
-}
 
 /**
  * Project a gate evaluation onto the audit record's detection list.
@@ -518,6 +494,28 @@ function createFrameHandling(args: {
   return {
     async handleFrame(frame: JsonRpcFrame, direction: FrameDirection): Promise<FrameAction> {
       const call = classifyFrame(frame, inFlight);
+
+      if (direction === "client_to_server" && frame.method === "tools/list") {
+        const params = frame.params;
+        const cursor =
+          params !== null && typeof params === "object" && "cursor" in params
+            ? (params as { cursor?: unknown }).cursor
+            : undefined;
+        if (cursor === undefined || cursor === null || cursor === "") {
+          advertised.clear();
+          ctx.inventoryCandidate = undefined;
+          ctx.inventoryComplete = undefined;
+        }
+      }
+
+      const inventoryPage = direction === "server_to_client" ? parseMcpToolInventoryPage(frame.result) : null;
+      if (inventoryPage !== null) {
+        const candidate = new Map(advertised);
+        for (const tool of inventoryPage.tools) candidate.set(tool.name, tool);
+        ctx.inventoryCandidate = [...candidate.values()];
+        ctx.inventoryComplete = inventoryPage.nextCursor === undefined;
+      }
+
       const evaluation = evaluateFrame(frame, direction, ctx);
       record({
         action: `mcp:${call.method}`,
@@ -529,6 +527,8 @@ function createFrameHandling(args: {
       });
 
       if (evaluation.decision === "deny") {
+        ctx.inventoryCandidate = undefined;
+        ctx.inventoryComplete = undefined;
         return blockAction(evaluation, blockReason(evaluation, `MCP ${call.method} blocked by AgentWall.`));
       }
 
@@ -541,6 +541,8 @@ function createFrameHandling(args: {
       // Forwarding the call, or telling the client it was approved, would be a claim the client
       // then acts on.
       if (evaluation.decision === "approve") {
+        ctx.inventoryCandidate = undefined;
+        ctx.inventoryComplete = undefined;
         const reason = blockReason(evaluation, "policy holds this call for a human.");
         return blockAction(evaluation, `MCP ${call.method} requires operator approval: ${reason}`);
       }
@@ -554,10 +556,17 @@ function createFrameHandling(args: {
         // Baselined only from a frame we are actually forwarding, and only after the gates have
         // judged it. Recording a denied or held inventory would launder it: the next tools/list
         // would be compared against the poisoned list and come back clean.
-        const tools = parseToolDescriptors(forwarded.result);
-        if (tools.length > 0) {
-          for (const tool of tools) advertised.set(tool.name, tool);
-          recordToolInventory(ctx, [...advertised.values()]);
+        const forwardedPage = parseMcpToolInventoryPage(forwarded.result);
+        if (forwardedPage !== null) {
+          for (const tool of forwardedPage.tools) advertised.set(tool.name, tool);
+          if (forwardedPage.nextCursor === undefined) {
+            recordToolInventory(ctx, [...advertised.values()]);
+            ctx.inventoryCandidate = undefined;
+            ctx.inventoryComplete = undefined;
+          } else {
+            ctx.inventoryCandidate = [...advertised.values()];
+            ctx.inventoryComplete = false;
+          }
         }
       }
 

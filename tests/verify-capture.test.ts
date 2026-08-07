@@ -649,15 +649,16 @@ describe("typed capture command execution", () => {
         host: "127.0.0.1",
         timeoutMs: 2_000,
         settleMs: 0,
-        commandArgv: [process.execPath, "-e", "fetch(process.argv[1])", "{url}"],
+        commandArgv: [process.execPath, "-e", "process.stdout.write('fetching\\n'); fetch(process.argv[1])", "{url}"],
       });
 
       expect(report.fetch.exitCode).toBe(0);
+      expect(report.fetch.stdout).toContain("fetching");
       expect(report.hits).toHaveLength(1);
       expect(report.fetch.commandArgv).toEqual([
         process.execPath,
         "-e",
-        "fetch(process.argv[1])",
+        "process.stdout.write('fetching\\n'); fetch(process.argv[1])",
         "{url}",
       ]);
     } finally {

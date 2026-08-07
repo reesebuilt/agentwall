@@ -224,6 +224,7 @@ kbd {
 .text-link { text-decoration-color: var(--color-line-strong); text-underline-offset: var(--space-1); }
 .text-link:hover { color: var(--color-accent-strong); text-decoration-color: currentColor; }
 .section-intro, .disclosure-copy { max-width: 68ch; color: var(--color-text-muted); }
+.subsection-heading { display: grid; gap: var(--space-2); margin-top: var(--space-7); margin-bottom: var(--space-2); }
 
 .status-skeleton { display: grid; gap: var(--space-3); padding: var(--space-5) 0; }
 .status-skeleton span { display: block; width: 100%; height: var(--space-4); border-radius: var(--radius-sm); background: var(--color-surface-raised); animation: skeleton-pulse 1.2s ease-in-out infinite alternate; }

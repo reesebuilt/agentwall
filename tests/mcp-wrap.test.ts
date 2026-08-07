@@ -101,6 +101,28 @@ process.stdin.resume();
 process.stdin.on("end", () => process.exit(3));
 `;
 
+const PAGINATED_CHILD_SERVER = `
+let buffered = "";
+process.stdin.setEncoding("utf8");
+process.stdin.on("data", (chunk) => {
+  buffered += chunk;
+  for (;;) {
+    const newline = buffered.indexOf("\\n");
+    if (newline === -1) break;
+    const line = buffered.slice(0, newline).trim();
+    buffered = buffered.slice(newline + 1);
+    if (!line) continue;
+    const frame = JSON.parse(line);
+    if (frame.id === undefined || frame.id === null) continue;
+    const page = frame.params && frame.params.cursor === "page-2"
+      ? { tools: [{ name: "write_file" }] }
+      : { tools: [{ name: "read_file", description: "Read a file" }], nextCursor: "page-2" };
+    process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: frame.id, result: page }) + "\\n");
+  }
+});
+process.stdin.on("end", () => process.exit(0));
+`;
+
 interface WrapHarness {
   /** Stream the "client" writes request frames into. */
   client: PassThrough;
@@ -427,6 +449,22 @@ describe("runMcpWrap", () => {
     send(harness, { jsonrpc: "2.0", id: 9, method: "tools/list" });
     await harness.awaitFrames(1);
 
+    expect(mockInventories).toEqual([
+      [{ name: "read_file", description: "Read a file" }, { name: "write_file" }],
+    ]);
+
+    expect(await shutdown(harness)).toBe(0);
+  }, 15000);
+
+  it("waits for the final tools/list page before recording a complete inventory", async () => {
+    const harness = startWrap(PAGINATED_CHILD_SERVER);
+
+    send(harness, { jsonrpc: "2.0", id: 10, method: "tools/list", params: {} });
+    await harness.awaitFrames(1);
+    expect(mockInventories).toHaveLength(0);
+
+    send(harness, { jsonrpc: "2.0", id: 11, method: "tools/list", params: { cursor: "page-2" } });
+    await harness.awaitFrames(2);
     expect(mockInventories).toEqual([
       [{ name: "read_file", description: "Read a file" }, { name: "write_file" }],
     ]);

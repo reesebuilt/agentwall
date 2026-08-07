@@ -1,9 +1,12 @@
 import {
+  closeSync,
   existsSync,
   mkdirSync,
+  openSync,
   readFileSync,
   renameSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from "fs";
 import { randomUUID } from "crypto";
@@ -22,6 +25,8 @@ export type {
 } from "./types";
 
 const STORE_VERSION = 1;
+const WRITE_LOCK_TIMEOUT_MS = 5_000;
+const STALE_LOCK_TIMEOUT_MS = 60_000;
 
 interface StoredBaseline {
   key: McpBaselineKey;
@@ -101,28 +106,66 @@ export class McpBaselineStore {
   }
 
   write(key: McpBaselineKey, tools: McpToolDescriptor[]): void {
-    const document = this.readDocument();
-    const sanitizedKey = BaselineKeySchema.parse(key);
-    document.entries[keyId(sanitizedKey)] = {
-      key: sanitizedKey,
-      tools: sanitizeTools(tools),
-    };
+    this.withWriteLock(() => {
+      const document = this.readDocument();
+      const sanitizedKey = BaselineKeySchema.parse(key);
+      document.entries[keyId(sanitizedKey)] = {
+        key: sanitizedKey,
+        tools: sanitizeTools(tools),
+      };
 
-    const directory = dirname(this.path);
-    mkdirSync(directory, { recursive: true, mode: 0o700 });
-    const temporaryPath = `${this.path}.${process.pid}.${randomUUID()}.tmp`;
-    try {
-      writeFileSync(temporaryPath, `${JSON.stringify(document, null, 2)}\n`, {
-        encoding: "utf8",
-        flag: "wx",
-        mode: 0o600,
-      });
-      renameSync(temporaryPath, this.path);
-    } finally {
-      rmSync(temporaryPath, { force: true });
-    }
+      const temporaryPath = `${this.path}.${process.pid}.${randomUUID()}.tmp`;
+      try {
+        writeFileSync(temporaryPath, `${JSON.stringify(document, null, 2)}\n`, {
+          encoding: "utf8",
+          flag: "wx",
+          mode: 0o600,
+        });
+        renameSync(temporaryPath, this.path);
+      } finally {
+        rmSync(temporaryPath, { force: true });
+      }
+    });
   }
 
+
+  private withWriteLock<T>(operation: () => T): T {
+    const lockPath = `${this.path}.lock`;
+    mkdirSync(dirname(this.path), { recursive: true, mode: 0o700 });
+    const deadline = Date.now() + WRITE_LOCK_TIMEOUT_MS;
+    let descriptor: number | undefined;
+
+    while (descriptor === undefined) {
+      try {
+        descriptor = openSync(lockPath, "wx", 0o600);
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code !== "EEXIST") throw error;
+
+        try {
+          if (Date.now() - statSync(lockPath).mtimeMs > STALE_LOCK_TIMEOUT_MS) {
+            rmSync(lockPath, { force: true });
+            continue;
+          }
+        } catch (statError) {
+          if ((statError as NodeJS.ErrnoException).code !== "ENOENT") throw statError;
+          continue;
+        }
+
+        if (Date.now() >= deadline) {
+          throw new Error(`MCP baseline file ${this.path} is busy`);
+        }
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
+      }
+    }
+
+    try {
+      return operation();
+    } finally {
+      closeSync(descriptor);
+      rmSync(lockPath, { force: true });
+    }
+  }
   private readDocument(): BaselineDocument {
     if (!existsSync(this.path)) return { version: STORE_VERSION, entries: {} };
     try {

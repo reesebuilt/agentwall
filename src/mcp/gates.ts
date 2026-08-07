@@ -16,6 +16,7 @@ import {
   McpServerIdentity,
   McpToolDescriptor,
 } from "./types";
+import { parseMcpToolInventoryPage } from "./inventory";
 import type { McpBaselineStore } from "./baseline";
 
 /**
@@ -65,19 +66,6 @@ const ToolCallParamsSchema = z.looseObject({
   arguments: JsonObjectSchema.optional(),
 });
 
-/**
- * The inventory envelope is checked separately from the tools inside it. A single
- * unreadable entry should not make the whole list unreadable: the gate inspects
- * every tool it can identify and ignores the rest, because a server that adds a
- * field is not the threat this gate exists for.
- */
-const ToolInventorySchema = z.object({ tools: z.array(z.unknown()) });
-
-const AdvertisedToolSchema = z.object({
-  name: z.string(),
-  description: z.string().optional(),
-  inputSchema: z.unknown().optional(),
-});
 
 const JsonRpcErrorSchema = z.object({
   code: z.number(),
@@ -134,16 +122,12 @@ export interface GateContext {
   baselineKey?: McpBaselineKey;
   /** Most recent inventory comparison, used by the audit composition layer. */
   baselineDecision?: McpBaselineDecision;
+  /** Complete candidate built across a paginated tools/list response. */
+  inventoryCandidate?: McpToolDescriptor[];
+  /** False until the server returns the final tools/list page. */
+  inventoryComplete?: boolean;
 }
 
-/**
- * Findings carried between gates while a single frame is being evaluated.
- *
- * The markers become AgentContext metadata. They are the whole coupling between
- * the scanners and the rules: no gate imports a rule id and no rule imports a
- * gate, the two meet on these string keys. The same key names appear in
- * src/policy/rules.ts and the two lists have to stay in step.
- */
 interface GateRun {
   markers: Record<string, string>;
   redactedFrame?: JsonRpcFrame;
@@ -171,28 +155,6 @@ function maxRisk(current: RiskLevel, candidate: RiskLevel): RiskLevel {
   return RISK_PRECEDENCE[candidate] > RISK_PRECEDENCE[current] ? candidate : current;
 }
 
-/**
- * Pull tool descriptors out of a tools/list result, or null when the frame is not
- * an inventory at all. Null is the "this gate does not apply" signal; an empty
- * array is a server that genuinely advertises no tools, which is a different
- * thing and still worth recording as a baseline.
- */
-function advertisedTools(frame: JsonRpcFrame): McpToolDescriptor[] | null {
-  const inventory = ToolInventorySchema.safeParse(frame.result);
-  if (!inventory.success) return null;
-
-  const tools: McpToolDescriptor[] = [];
-  for (const entry of inventory.data.tools) {
-    const tool = AdvertisedToolSchema.safeParse(entry);
-    if (!tool.success) continue;
-    tools.push({
-      name: tool.data.name,
-      description: tool.data.description,
-      inputSchema: tool.data.inputSchema,
-    });
-  }
-  return tools;
-}
 
 /**
  * Gate 1: structural validity.
@@ -301,15 +263,15 @@ function gateToolInventory(
   run: GateRun
 ): McpGateOutcome | null {
   if (direction !== "server_to_client") return null;
-  const tools = advertisedTools(frame);
-  if (tools === null) return null;
+  const page = parseMcpToolInventoryPage(frame.result);
+  if (page === null) return null;
+  const tools = ctx.inventoryCandidate ?? page.tools;
 
   const reasons: string[] = [];
   const detectionIds: string[] = [];
   let decision: Decision = "allow";
   let riskLevel: RiskLevel = "low";
-
-  for (const tool of tools) {
+  for (const tool of page.tools) {
     const scanned = scanInjection(`${tool.name}\n${tool.description ?? ""}`);
     if (!scanned.containsInjection) continue;
 
@@ -321,6 +283,19 @@ function gateToolInventory(
       `Tool "${tool.name}" advertises instructions to the model rather than a description ` +
         `(${dedupe(scanned.findings.map((finding) => finding.patternId)).join(", ")})`
     );
+  }
+
+  if (ctx.inventoryComplete === false) {
+    if (reasons.length === 0) {
+      reasons.push(`Received ${page.tools.length} tool(s); waiting for the final tools/list page`);
+    }
+    return {
+      gate: "tool_inventory",
+      decision,
+      riskLevel,
+      reasons,
+      detectionIds: dedupe(detectionIds),
+    };
   }
 
   const baselineMode = ctx.baselineMode ?? "off";
@@ -650,7 +625,7 @@ function gateResponseScan(
   if (!carriesResult && !carriesError) return null;
   // Inventory frames belong to gate 2; scanning them here as well would report
   // the same finding twice under two different gate names.
-  if (carriesResult && advertisedTools(frame) !== null) return null;
+  if (carriesResult && parseMcpToolInventoryPage(frame.result) !== null) return null;
 
   const serialized = JSON.stringify(carriesResult ? frame.result : frame.error) ?? "null";
   const injection = scanInjection(serialized);
@@ -831,6 +806,6 @@ export function recordToolInventory(ctx: GateContext, tools: McpToolDescriptor[]
   ctx.approvedTools = tools.map((tool) => ({
     name: tool.name,
     description: tool.description,
-    inputSchema: tool.inputSchema,
+    inputSchema: tool.inputSchema === undefined ? undefined : structuredClone(tool.inputSchema),
   }));
 }

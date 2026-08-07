@@ -387,6 +387,39 @@ function renderPolicy(state) {
   if (editor) editor.hidden = !catalog.editable;
 }
 
+function renderChannelFirewall(state) {
+  const catalog = state?.policyCatalog || {};
+  const channel = catalog.channelFirewall || {};
+  const lanes = Array.isArray(channel.lanes) ? channel.lanes : [];
+  const container = byId("channel-firewall-summary");
+  if (!container) return;
+
+  if (lanes.length === 0) {
+    container.innerHTML = emptyState(
+      "No channel profiles are set.",
+      "Set a profile when an agent uses a channel that needs a clear action limit."
+    );
+  } else {
+    const profiles = channel.profiles && typeof channel.profiles === "object" ? channel.profiles : {};
+    container.innerHTML = lanes.slice(0, 12).map((lane) => {
+      const profile = String(lane.profile || "observe");
+      const label = profiles[profile] || titleFromId(profile);
+      const kind = profile === "locked_down" ? "warning" : profile === "observe" ? "pending" : "ok";
+      const ruleCount = Array.isArray(lane.rules) ? lane.rules.length : 0;
+      return `<article class="plain-row">
+        <div class="row-main">
+          <div class="row-title"><strong>${escapeHtml(lane.agentId || "Unknown agent")}</strong>${stateLabel(label, kind)}</div>
+          <p class="row-copy">Channel ${escapeHtml(lane.channelId || "Unknown channel")}</p>
+          <p class="row-meta">${formatNumber(ruleCount)} policy rule${ruleCount === 1 ? "" : "s"}</p>
+        </div>
+      </article>`;
+    }).join("");
+  }
+
+  const editor = byId("channel-firewall-editor");
+  if (editor) editor.hidden = !catalog.editable;
+}
+
 function formatBudget(budget) {
   if (!budget) return "No budget data";
   const requestLimit = budget.maxRequests == null ? "no limit" : formatNumber(budget.maxRequests);
@@ -489,6 +522,7 @@ function renderState(state) {
   renderStatus(state);
   renderApprovals(state);
   renderPolicy(state);
+  renderChannelFirewall(state);
   renderAgents(state);
   renderEvidence(state);
   renderHelp(state);
@@ -822,6 +856,48 @@ async function submitPolicyForm(form) {
   }
 }
 
+async function submitChannelFirewallForm(form) {
+  const values = new FormData(form);
+  const payload = {
+    agentId: String(values.get("agentId") || "").trim(),
+    channelId: String(values.get("channelId") || "").trim(),
+    profile: String(values.get("profile") || "observe"),
+  };
+  const feedback = byId("channel-firewall-form-state");
+  const button = form.querySelector('button[type="submit"]');
+
+  if (!window.confirm("Confirm this channel profile change.")) {
+    if (feedback) feedback.textContent = "Agentwall did not change the profile.";
+    return;
+  }
+
+  if (button) {
+    button.disabled = true;
+    button.setAttribute("aria-busy", "true");
+  }
+  if (feedback) {
+    feedback.classList.remove("form-state-error");
+    feedback.textContent = "Agentwall is saving the profile.";
+  }
+  try {
+    await postJSON("/api/dashboard/control/channel-firewall-profile", payload);
+    if (feedback) feedback.textContent = "Agentwall saved the profile.";
+    showFeedback("success", "Channel profile saved", "Agentwall loaded the new channel controls.");
+    await refreshState({ quiet: true });
+  } catch (error) {
+    if (feedback) {
+      feedback.classList.add("form-state-error");
+      feedback.textContent = error.message || "Agentwall could not save the profile.";
+    }
+    if (error instanceof RequestError && authMessage(error.status)) showGlobalError(error);
+  } finally {
+    if (button) {
+      button.disabled = false;
+      button.removeAttribute("aria-busy");
+    }
+  }
+}
+
 async function copyTextFrom(sourceId, button) {
   const source = byId(sourceId);
   const text = source?.textContent || "";
@@ -946,7 +1022,6 @@ function installNavigation() {
     }
   });
 }
-
 function installActions() {
   document.addEventListener("click", (event) => {
     const button = event.target.closest("button");
@@ -980,6 +1055,10 @@ function installActions() {
     if (form.id === "policy-form") {
       event.preventDefault();
       submitPolicyForm(form);
+    }
+    if (form.id === "channel-firewall-form") {
+      event.preventDefault();
+      submitChannelFirewallForm(form);
     }
   });
 }

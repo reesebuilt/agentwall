@@ -179,6 +179,22 @@ function sendStaticAsset(reply: FastifyReply, fileName: BootstrapAsset): void {
   }
 }
 
+function serviceEntry(mode: "production" | "development"): string[] {
+  const packageRoot = path.resolve(__dirname, "..");
+  if (mode === "production") {
+    const entry = path.join(packageRoot, "dist", "index.js");
+    if (!fs.existsSync(entry)) throw new Error(`AgentWall production entry is missing: ${entry}`);
+    return [entry];
+  }
+
+  const runner = path.join(packageRoot, "node_modules", "ts-node", "dist", "bin.js");
+  const entry = path.join(packageRoot, "src", "index.ts");
+  if (!fs.existsSync(runner) || !fs.existsSync(entry)) {
+    throw new Error("AgentWall development files are not present in this installation.");
+  }
+  return [runner, entry];
+}
+
 export function createBootstrapApp(options: BootstrapUiOptions): BootstrapApp {
   if (!isLoopbackHost(options.host)) {
     throw new Error("The AgentWall bootstrap UI can bind only to a loopback host.");
@@ -334,9 +350,7 @@ export function createBootstrapApp(options: BootstrapUiOptions): BootstrapApp {
         return reply.status(409).send({ error: "AgentWall is already active in this bootstrap session." });
       }
 
-      const args = mode === "production"
-        ? [path.join(baseDir, "dist", "index.js")]
-        : [path.join(baseDir, "node_modules", "ts-node", "dist", "bin.js"), "src/index.ts"];
+      const args = serviceEntry(mode);
       childState.service = "starting";
       childState.mode = mode;
       childState.pid = null;

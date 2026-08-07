@@ -230,6 +230,7 @@ export interface CaptureReport {
     command?: string;
     commandArgv?: string[];
     exitCode?: number | null;
+    stdout?: string;
     stderr?: string;
   };
   outcome: CaptureOutcome;
@@ -985,11 +986,11 @@ export async function runVerifyCapture(options: VerifyCaptureOptions): Promise<C
     : options.command
       ? { mode: "command", command: options.command }
       : { mode: "interactive" };
-
   try {
     if (typedCommand) {
       const result = await runCommandArgv(typedCommand, canary.url, options.timeoutMs);
       fetch.exitCode = result.exitCode;
+      fetch.stdout = result.stdout;
       fetch.stderr = result.stderr;
       if (result.exitCode !== 0) {
         log(`the fetch command exited ${result.exitCode ?? "on a signal"}.`);
@@ -998,6 +999,7 @@ export async function runVerifyCapture(options: VerifyCaptureOptions): Promise<C
     } else if (options.command) {
       const result = await runCommand(options.command, canary.url, options.timeoutMs);
       fetch.exitCode = result.exitCode;
+      fetch.stdout = result.stdout;
       fetch.stderr = result.stderr;
       if (result.exitCode !== 0) {
         log(`the fetch command exited ${result.exitCode ?? "on a signal"}.`);
@@ -1055,9 +1057,9 @@ export async function runVerifyCapture(options: VerifyCaptureOptions): Promise<C
     await canary.close();
   }
 }
-
 interface CommandResult {
   exitCode: number | null;
+  stdout: string;
   stderr: string;
 }
 
@@ -1078,9 +1080,13 @@ function runCommand(command: string, url: string, timeoutMs: number): Promise<Co
     // Inherited, deliberately. See runVerifyCapture: injecting proxy variables here would
     // test this command's environment instead of the agent's configuration.
     env: { ...process.env, AGENTWALL_CANARY_URL: url },
-    stdio: ["ignore", "ignore", "pipe"],
+    stdio: ["ignore", "pipe", "pipe"],
   });
+  let stdout = "";
   let stderr = "";
+  child.stdout?.on("data", (chunk) => {
+    if (stdout.length < 64 * 1024) stdout += String(chunk);
+  });
   child.stderr?.on("data", (chunk) => {
     // Bounded: a chatty agent must not be able to make this command hold its whole log.
     if (stderr.length < 64 * 1024) stderr += String(chunk);
@@ -1088,11 +1094,11 @@ function runCommand(command: string, url: string, timeoutMs: number): Promise<Co
   const timer = setTimeout(() => child.kill("SIGKILL"), timeoutMs);
   child.on("error", (err) => {
     clearTimeout(timer);
-    done.resolve({ exitCode: null, stderr: `${stderr}${String(err)}` });
+    done.resolve({ exitCode: null, stdout, stderr: `${stderr}${String(err)}` });
   });
   child.on("close", (code) => {
     clearTimeout(timer);
-    done.resolve({ exitCode: code, stderr });
+    done.resolve({ exitCode: code, stdout, stderr });
   });
   return done.promise;
 }
@@ -1103,11 +1109,24 @@ export function validateCaptureCommandArgv(commandArgv: readonly string[]): stri
   if (commandArgv.length === 0) {
     throw new Error("verify-capture commandArgv is empty.");
   }
+  let evalSource = false;
   for (const value of commandArgv) {
     if (value.length === 0) {
       throw new Error("verify-capture commandArgv contains an empty value.");
     }
-    if (CAPTURE_SHELL_SYNTAX.test(value.replaceAll("{url}", ""))) {
+    const normalized = value.replaceAll("{url}", "");
+    if (normalized.includes("\0")) {
+      throw new Error("verify-capture commandArgv contains shell syntax.");
+    }
+    if (evalSource) {
+      evalSource = false;
+      continue;
+    }
+    if (value === "-e" || value === "--eval") {
+      evalSource = true;
+      continue;
+    }
+    if (CAPTURE_SHELL_SYNTAX.test(normalized)) {
       throw new Error("verify-capture commandArgv contains shell syntax.");
     }
   }
@@ -1128,21 +1147,25 @@ function runCommandArgv(commandArgv: readonly string[], url: string, timeoutMs: 
   const done = deferred<CommandResult>();
   const child = spawn(executable, args, {
     env: { ...process.env, AGENTWALL_CANARY_URL: url },
-    stdio: ["ignore", "ignore", "pipe"],
+    stdio: ["ignore", "pipe", "pipe"],
     shell: false,
   });
+  let stdout = "";
   let stderr = "";
+  child.stdout?.on("data", (chunk) => {
+    if (stdout.length < 64 * 1024) stdout += String(chunk);
+  });
   child.stderr?.on("data", (chunk) => {
     if (stderr.length < 64 * 1024) stderr += String(chunk);
   });
   const timer = setTimeout(() => child.kill("SIGKILL"), timeoutMs);
   child.on("error", (err) => {
     clearTimeout(timer);
-    done.resolve({ exitCode: null, stderr: `${stderr}${String(err)}` });
+    done.resolve({ exitCode: null, stdout, stderr: `${stderr}${String(err)}` });
   });
   child.on("close", (code) => {
     clearTimeout(timer);
-    done.resolve({ exitCode: code, stderr });
+    done.resolve({ exitCode: code, stdout, stderr });
   });
   return done.promise;
 }
