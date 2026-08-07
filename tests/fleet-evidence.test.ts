@@ -668,7 +668,16 @@ describe("fleet evidence, the commands the page prints are commands", () => {
 			{ cwd: process.cwd(), encoding: "utf8" },
 		);
 		expect(probe.status).toBe(0);
-		expect(probe.stdout.trim()).toBe(process.cwd());
+		// The final line, not the whole of stdout. Stubbing `go` and `cargo` neutralises the
+		// compilers but not the binaries a previous build already left behind: both toolchain
+		// lines invoke their output by relative path (`./agentwall-verify`,
+		// `./target/release/agentwall-verify`), so on a machine that has built the verifiers
+		// those run for real and print their verdicts. Asserting on all of stdout made this
+		// test pass only on a checkout where the verifiers had never been built, which is a
+		// property of the machine rather than of the block. Where the shell ENDS is the
+		// claim under test, and a stray `cd` still fails it.
+		const printed = probe.stdout.trim().split("\n");
+		expect(printed[printed.length - 1]).toBe(process.cwd());
 	});
 
 	/**
