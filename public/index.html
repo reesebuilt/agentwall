@@ -3,525 +3,291 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Agentwall Control Room</title>
+    <meta name="theme-color" content="#0b0e12" />
+    <title>Agentwall Operator</title>
     <link rel="icon" type="image/svg+xml" href="/assets/brand/favicon.svg" />
     <link rel="stylesheet" href="/styles.css" />
   </head>
-  <body data-app-view="dashboard" data-console-mode="core">
-    <div class="app-shell">
-      <aside class="app-rail" aria-label="Workspace navigation">
-        <div class="rail-brand">
-          <div class="rail-mark" aria-hidden="true">
-            <img id="brand-mark-img" src="/assets/brand/icon_idle.svg" alt="" />
-          </div>
-          <div class="rail-brand-copy">
-            <span class="rail-eyebrow">Agentwall</span>
-            <strong>Control Room</strong>
-          </div>
-        </div>
+  <body>
+    <a class="skip-link" href="#main-content">Skip to status</a>
 
-        <nav class="rail-nav" aria-label="Primary navigation">
-          <p class="rail-section">Workspace</p>
-          <a id="nav-dashboard" class="rail-link" href="/dashboard" data-app-nav="dashboard">
-            <span class="rail-link-glyph" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg></span>
-            <span class="rail-link-text">Dashboard</span>
-          </a>
-          <a id="nav-knowledge-base" class="rail-link advanced-panel" href="/dashboard/knowledge-base" data-app-nav="knowledge-base">
-            <span class="rail-link-glyph" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h10" stroke-linecap="round"/></svg></span>
-            <span class="rail-link-text">Knowledge Base</span>
-          </a>
+    <div class="console-shell">
+      <aside class="console-rail" aria-label="Console navigation">
+        <a class="brand" href="#status" aria-label="Agentwall status">
+          <img src="/assets/brand/agentwall-logo-mark.svg" alt="" width="28" height="28" />
+          <span>Agentwall</span>
+        </a>
 
-          <p class="rail-section">Protection</p>
-          <a class="rail-link rail-link-sub" href="#control-room-panel" data-jump-anchor="control-room-panel">
-            <span class="rail-link-dot rail-dot-runtime" aria-hidden="true"></span>
-            <span class="rail-link-text">Local Runtime</span>
-          </a>
-          <a class="rail-link rail-link-sub" href="#channel-firewall-panel" data-jump-anchor="channel-firewall-panel">
-            <span class="rail-link-dot rail-dot-channel" aria-hidden="true"></span>
-            <span class="rail-link-text">Guardrails</span>
-          </a>
-          <a class="rail-link rail-link-sub" href="#damage-control-panel" data-jump-anchor="damage-control-panel">
-            <span class="rail-link-dot rail-dot-bash" aria-hidden="true"></span>
-            <span class="rail-link-text">Bash Firewall</span>
-          </a>
-          <a class="rail-link rail-link-sub advanced-panel" href="#policy-panel" data-jump-anchor="policy-panel">
-            <span class="rail-link-dot" aria-hidden="true"></span>
-            <span class="rail-link-text">Advanced</span>
-          </a>
+        <nav class="console-nav" aria-label="Operator areas">
+          <a href="#status" data-nav-link data-shortcut="1" aria-current="page">Status</a>
+          <a href="#approvals" data-nav-link data-shortcut="2">Approvals <span id="approval-nav-count" class="nav-count" hidden>0</span></a>
+          <a href="#policy" data-nav-link data-shortcut="3">Policy</a>
+          <a href="#agents" data-nav-link data-shortcut="4">Agents</a>
+          <a href="#evidence" data-nav-link data-shortcut="5">Evidence</a>
+          <a href="#help" data-nav-link data-shortcut="6">Help</a>
+          <a href="#operations" data-nav-link data-shortcut="7">Operations</a>
         </nav>
 
-        <div class="rail-footer">
-          <div class="advanced-user-control" aria-label="Console depth" data-route-view="dashboard">
-            <div class="advanced-user-copy">
-              <p class="eyebrow">Console Depth</p>
-              <strong id="console-mode-label">Operator View</strong>
-              <span id="console-mode-summary">Simple by default. Enable Advanced User for granular controls.</span>
-            </div>
-            <button id="advanced-user-slider" class="advanced-user-slider" type="button" role="switch" aria-checked="false" data-console-mode-toggle aria-label="Advanced User mode">
-              <span class="slider-track" aria-hidden="true"><span class="slider-thumb"></span></span>
-              <span class="slider-copy"><span>Advanced User</span><small>Granular control</small></span>
-            </button>
+        <div class="rail-status">
+          <span id="connection-dot" class="state-dot state-pending" aria-hidden="true"></span>
+          <div>
+            <strong id="connection-state">Connect</strong>
+            <span id="last-update">No status yet</span>
           </div>
         </div>
       </aside>
 
-      <div class="app-main">
-        <header class="topbar" role="banner">
-          <div class="topbar-titles">
-            <p class="topbar-eyebrow">Agentwall · Local Operator Cockpit</p>
-            <h1>Security Command Center</h1>
+      <main id="main-content" class="console-main" tabindex="-1">
+        <header class="console-header">
+          <div>
+            <p class="context-label">Local operator console</p>
+            <h1>Agentwall status</h1>
           </div>
-          <div class="topbar-meta">
-            <div id="service-badge" class="live-pill" aria-live="polite">
-              <span class="live-dot"></span>
-              Connecting
-            </div>
-            <div id="generated-at" class="timestamp">Syncing Agentwall runtime…</div>
-            <div class="time-range-group" aria-label="Dashboard time range">
-              <button class="time-range-button" type="button" data-time-range="15m">15m</button>
-              <button class="time-range-button" type="button" data-time-range="1h">1h</button>
-              <button class="time-range-button" type="button" data-time-range="24h">24h</button>
-              <button class="time-range-button" type="button" data-time-range="7d">7d</button>
-            </div>
-            <button id="command-palette-trigger" class="command-trigger" type="button" aria-haspopup="dialog" aria-controls="command-palette">
-              <span aria-hidden="true">⌘K</span> Command
-            </button>
+          <div class="header-state" aria-label="Current service state">
+            <span id="header-state-dot" class="state-dot state-pending" aria-hidden="true"></span>
+            <strong id="header-service-state">Wait for status</strong>
           </div>
-          <div id="service-facts" class="fact-strip" aria-label="Runtime facts"></div>
         </header>
 
-        <main class="layout" data-route-view="dashboard">
-          <section class="ops-hero" id="command-center" aria-label="Operational posture">
-            <article class="hero-card">
-              <header class="hero-statement">
-                <p class="eyebrow">Operational Posture</p>
-                <h2 id="service-status">Loading control posture</h2>
-                <p id="service-summary" class="hero-summary muted">Connecting to live Agentwall state.</p>
-              </header>
-              <div id="hero-brief" class="hero-brief"></div>
-            </article>
-            <div id="hero-metrics" class="hero-metrics" aria-label="Operator metrics"></div>
-          </section>
-
-          <div id="operator-notice" class="operator-notice" hidden></div>
-
-          <section class="ops-workboard" aria-label="Operator work queue">
-            <section id="approvals-summary-panel" class="panel panel-board panel-approvals">
-              <div class="panel-head">
-                <div>
-                  <p class="eyebrow">Approvals</p>
-                  <h3>Operator Queue</h3>
-                </div>
-                <button class="chip chip-button chip-neutral" type="button" data-jump-panel="approvals">Open all</button>
-              </div>
-              <div id="approvals-summary" class="stack"></div>
-            </section>
-
-            <section id="activity-summary-panel" class="panel panel-board panel-activity">
-              <div class="panel-head">
-                <div>
-                  <p class="eyebrow">Activity</p>
-                  <h3>Live Runtime Feed</h3>
-                </div>
-                <button class="chip chip-button chip-neutral" type="button" data-jump-panel="event-feed">Deep feed</button>
-              </div>
-              <div id="activity-summary" class="feed core-feed"></div>
-            </section>
-          </section>
-
-          <section class="ops-surfaces" aria-label="Protection surfaces">
-            <section id="control-room-panel" class="panel surface-panel" data-surface="runtime">
-              <div class="panel-head">
-                <div>
-                  <span class="surface-tag">Surface · Runtime</span>
-                  <h3>Local Runtime Controller</h3>
-                  <p class="panel-subcopy">Native Agentwall controls live here. Restart, reload policy, and tune approvals against the local service.</p>
-                </div>
-                <span class="pillar-badge surface-badge">01</span>
-              </div>
-              <div id="control-room" class="stack"></div>
-            </section>
-
-            <section id="channel-firewall-panel" class="panel surface-panel" data-surface="channel">
-              <div class="panel-head">
-                <div>
-                  <span class="surface-tag">Surface · Telegram Guardrails</span>
-                  <h3>Rules for Telegram Channels</h3>
-                  <p class="panel-subcopy">Start with one Telegram topic. Configure one Telegram channel, prove the deny path, then expand. Set the agent to Answer only, prove file writes and secrets are blocked, then add the next channel.</p>
-                </div>
-                <span class="pillar-badge surface-badge">02</span>
-              </div>
-              <div id="channel-firewall" class="stack"></div>
-            </section>
-
-            <section id="damage-control-panel" class="panel surface-panel" data-surface="bash">
-              <div class="panel-head">
-                <div>
-                  <span class="surface-tag">Surface · Damage Control</span>
-                  <h3>Bash Firewall</h3>
-                  <p class="panel-subcopy">Bash is the damage funnel. One command can delete code, data, infra, or secrets. Preflight any command against the L1-L5 ladder before an agent runs it.</p>
-                </div>
-                <span class="pillar-badge surface-badge">03</span>
-              </div>
-              <div id="damage-control" class="stack"></div>
-            </section>
-          </section>
-
-          <section class="panel advanced-panel">
-            <div class="panel-head">
-              <div>
-                <p class="eyebrow">Detection Timeline</p>
-                <h3>What Happened and What Needs Action</h3>
-              </div>
-            </div>
-            <div id="operator-timeline" class="stack"></div>
-          </section>
-
-          <section class="panel panel-wide advanced-panel">
-            <div class="panel-head">
-              <div>
-                <p class="eyebrow">Command Deck</p>
-                <h3>Today, Waiting, Risks, Approvals, Auto-handled</h3>
-              </div>
-            </div>
-            <div id="command-deck" class="stack grid-deck"></div>
-          </section>
-
-          <section class="panel advanced-panel">
-            <div class="panel-head">
-              <div>
-                <p class="eyebrow">Control Surface</p>
-                <h3>Security Controls</h3>
-              </div>
-            </div>
-            <div id="control-matrix" class="stack grid-cards"></div>
-          </section>
-
-          <section class="panel advanced-panel">
-            <div class="panel-head">
-              <div>
-                <p class="eyebrow">Operator Workbench</p>
-                <h3>Approval and Session Controls</h3>
-              </div>
-            </div>
-            <div id="operator-workbench" class="stack"></div>
-          </section>
-
-          <section class="panel advanced-panel">
-            <div class="panel-head">
-              <div>
-                <p class="eyebrow">Priority Queue</p>
-                <h3>Operator Attention</h3>
-              </div>
-            </div>
-            <div id="priority-queue" class="stack"></div>
-          </section>
-
-          <section class="panel advanced-panel">
-            <div class="panel-head">
-              <div>
-                <p class="eyebrow">Incident Command</p>
-                <h3>Guided Containment</h3>
-              </div>
-            </div>
-            <div id="incident-command" class="stack"></div>
-          </section>
-
-          <section class="panel advanced-panel">
-            <div class="panel-head">
-              <div>
-                <p class="eyebrow">Threat Hunt</p>
-                <h3>Investigation Workbench</h3>
-              </div>
-            </div>
-            <div id="investigation-workbench" class="stack"></div>
-          </section>
-
-          <section class="panel advanced-panel">
-            <div class="panel-head">
-              <div>
-                <p class="eyebrow">System Health</p>
-                <h3>Control Plane Status</h3>
-              </div>
-            </div>
-            <div id="system-health" class="stack"></div>
-          </section>
-
-          <section id="organization-panel" class="panel panel-wide advanced-panel">
-            <div class="panel-head">
-              <div>
-                <p class="eyebrow">Organization Control Plane</p>
-                <h3>Instances, Gateways, Agents, and Channels</h3>
-              </div>
-            </div>
-            <div id="org-control-plane" class="stack"></div>
-          </section>
-
-          <section id="policy-panel" class="panel panel-wide advanced-panel">
-            <div class="panel-head">
-              <div>
-                <p class="eyebrow">Policy Execution</p>
-                <h3>Decision Distribution, Hot Rules, and Scoped Guardrails</h3>
-              </div>
-            </div>
-            <div class="dual-grid">
-              <div>
-                <div class="subhead">Decision Mix</div>
-                <div id="policy-stats" class="stack"></div>
-              </div>
-              <div>
-                <div class="subhead">High-Frequency Rules</div>
-                <div id="policy-hotspots" class="stack"></div>
-              </div>
-            </div>
-            <div class="dual-grid">
-              <div>
-                <div class="subhead">Scoped Guardrails</div>
-                <div id="policy-scoped-rules" class="stack"></div>
-              </div>
-              <div>
-                <div class="subhead">Guardrail editor</div>
-                <div id="policy-guardrail-editor" class="stack"></div>
-              </div>
-            </div>
-            <div>
-              <div class="subhead">Communication Channels</div>
-              <div id="policy-channel-inventory" class="stack"></div>
-            </div>
-          </section>
-
-          <section class="panel advanced-panel">
-            <div class="panel-head">
-              <div>
-                <p class="eyebrow">Risk Posture</p>
-                <h3>Key Risk Signals</h3>
-              </div>
-            </div>
-            <div id="risk-posture" class="stack"></div>
-          </section>
-
-          <section class="panel panel-wide approvals-panel advanced-panel">
-            <div class="panel-head">
-              <div>
-                <p class="eyebrow">Approvals</p>
-                <h3>Queue and Resolution</h3>
-              </div>
-            </div>
-            <div id="approvals" class="stack"></div>
-          </section>
-
-          <section class="panel panel-wide advanced-panel">
-            <div class="panel-head">
-              <div>
-                <p class="eyebrow">Live Runtime</p>
-                <h3>Runtime Flows and Sessions</h3>
-              </div>
-            </div>
-            <div class="dual-grid">
-              <div>
-                <div class="subhead">Runtime Flows</div>
-                <div id="runtime-flows" class="stack"></div>
-              </div>
-              <div>
-                <div class="subhead">Tracked Sessions</div>
-                <div id="sessions" class="stack"></div>
-              </div>
-            </div>
-          </section>
-
-          <section class="panel panel-wide advanced-panel">
-            <div class="panel-head">
-              <div>
-                <p class="eyebrow">Evidence Graph</p>
-                <h3>Evidence Ledger and Task Graph</h3>
-              </div>
-            </div>
-            <div class="dual-grid">
-              <div>
-                <div class="subhead">Evidence Ledger</div>
-                <div id="evidence-ledger" class="stack"></div>
-              </div>
-              <div>
-                <div class="subhead">Task Graph</div>
-                <div id="task-graph" class="stack"></div>
-              </div>
-            </div>
-          </section>
-
-          <section class="panel panel-wide advanced-panel">
-            <div class="panel-head">
-              <div>
-                <p class="eyebrow">Drilldown</p>
-                <h3>Operator Investigation</h3>
-              </div>
-            </div>
-            <div id="drilldown" class="stack"></div>
-          </section>
-
-          <section class="panel panel-wide advanced-panel">
-            <div class="panel-head">
-              <div>
-                <p class="eyebrow">Audit Feed</p>
-                <h3>Runtime Decisions</h3>
-              </div>
-            </div>
-            <div id="audit-feed" class="feed"></div>
-          </section>
-
-          <section class="panel panel-wide advanced-panel">
-            <div class="panel-head">
-              <div>
-                <p class="eyebrow">Inspection Activity</p>
-                <h3>Tool, Network, and Content Flows</h3>
-              </div>
-            </div>
-            <div class="triple-grid">
-              <div>
-                <div class="subhead">Inspection Telemetry</div>
-                <div id="inspection-activity" class="stack"></div>
-              </div>
-              <div>
-                <div class="subhead">Prompt Risk</div>
-                <div id="prompt-risk-events" class="stack"></div>
-              </div>
-              <div>
-                <div class="subhead">Active Agents</div>
-                <div id="agents" class="stack"></div>
-              </div>
-            </div>
-          </section>
-
-          <section class="panel panel-wide advanced-panel">
-            <div class="panel-head">
-              <div>
-                <p class="eyebrow">Event Feed</p>
-                <h3>Cross-Plane Runtime Activity</h3>
-              </div>
-            </div>
-            <div id="event-feed" class="feed"></div>
-          </section>
-        </main>
-
-        <main class="layout knowledge-layout" data-route-view="knowledge-base">
-          <section class="panel panel-wide kb-hero">
-            <div class="panel-head">
-              <div>
-                <p class="eyebrow">Knowledge Base</p>
-                <h3>Agentwall Mission Control Reference</h3>
-              </div>
-            </div>
-            <div class="kb-hero-grid">
-              <div>
-                <p id="kb-summary" class="muted">Loading knowledge base entries and access metadata.</p>
-              </div>
-              <div>
-                <div class="subhead">Canonical Access</div>
-                <div id="kb-access-panel" class="stack"></div>
-              </div>
-            </div>
-          </section>
-
-          <section class="panel panel-wide">
-            <div class="panel-head">
-              <div>
-                <p class="eyebrow">Quick Tutorials</p>
-                <h3>Learn the Control Loop Fast</h3>
-              </div>
-            </div>
-            <div class="tutorial-card-grid">
-              <article class="tutorial-card">
-                <img src="/assets/tutorials/telegram-answer-only.webp" alt="Abstract Agentwall Telegram answer-only tutorial thumbnail" loading="lazy" />
-                <span class="kb-label">60-90s</span>
-                <h4>Telegram Answer Only</h4>
-                <p>Set one Telegram topic to answer-only and prove file writes, secret reads, and unsafe egress stay blocked.</p>
-                <button class="chip chip-button chip-active" data-kb-filter="tutorials" type="button">Show tutorials</button>
-              </article>
-              <article class="tutorial-card">
-                <img src="/assets/tutorials/demo-verification.webp" alt="Abstract Agentwall demo verification tutorial thumbnail" loading="lazy" />
-                <span class="kb-label">45-60s</span>
-                <h4>Run Demo Verification</h4>
-                <p>Use synthetic evidence to understand the expected-deny path without touching real runtime actions.</p>
-                <button class="chip chip-button" data-kb-filter="tutorials" type="button">Open script</button>
-              </article>
-              <article class="tutorial-card">
-                <img src="/assets/tutorials/advanced-user-mode.webp" alt="Abstract Agentwall advanced user mode tutorial thumbnail" loading="lazy" />
-                <span class="kb-label">30-45s</span>
-                <h4>Operator View vs Advanced User</h4>
-                <p>Learn when to stay focused and when to reveal policy, federation, audit, and runtime telemetry.</p>
-                <button class="chip chip-button" data-kb-filter="tutorials" type="button">Open scripts</button>
-              </article>
-            </div>
-          </section>
-
-          <section class="panel panel-wide">
-            <div class="panel-head">
-              <div>
-                <p class="eyebrow">Index</p>
-                <h3>Knowledge Domains</h3>
-              </div>
-            </div>
-            <div id="kb-index-cards" class="kb-index-grid"></div>
-          </section>
-
-          <section class="panel panel-wide">
-            <div class="panel-head">
-              <div>
-                <p class="eyebrow">Search</p>
-                <h3>Find KB Entries</h3>
-              </div>
-            </div>
-            <div class="kb-search-bar">
-              <label class="kb-search-field" for="kb-search">
-                <span class="sr-only">Search knowledge base</span>
-                <input id="kb-search" type="search" placeholder="Search sources, concepts, articles, questions, file paths, and runtime context" autocomplete="off" />
-              </label>
-              <button id="kb-clear-search" class="mode-tab kb-clear-button" type="button">Clear filters</button>
-              <div id="kb-filter-chips" class="chip-row"></div>
-            </div>
-            <div id="kb-search-meta" class="meta"></div>
-          </section>
-
-          <section class="panel panel-wide">
-            <div class="panel-head">
-              <div>
-                <p class="eyebrow">Runtime Context</p>
-                <h3>Explicit Context Probes</h3>
-              </div>
-            </div>
-            <div id="kb-runtime-context" class="kb-runtime-grid"></div>
-          </section>
-
-          <section class="panel panel-wide">
-            <div class="panel-head">
-              <div>
-                <p class="eyebrow">Entries</p>
-                <h3>Curated Mission Control Material</h3>
-              </div>
-            </div>
-            <div id="kb-entry-list" class="stack"></div>
-          </section>
-        </main>
-      </div>
-    </div>
-
-    <div id="command-palette" class="command-palette" role="dialog" aria-modal="true" aria-labelledby="command-palette-title" hidden>
-      <div class="command-palette-backdrop" data-command-close="true"></div>
-      <div class="command-palette-panel">
-        <div class="command-palette-head">
+        <div id="operator-feedback" class="notice" role="status" aria-live="polite" aria-atomic="true" hidden></div>
+        <div id="operator-error" class="notice notice-error" role="alert" aria-live="assertive" hidden>
           <div>
-            <p class="eyebrow">Command Palette</p>
-            <h2 id="command-palette-title">Go to Agentwall surface</h2>
+            <strong id="operator-error-title">Agentwall did not return status.</strong>
+            <p id="operator-error-detail">Check the service, then try again.</p>
           </div>
-          <button class="chip chip-button chip-neutral" type="button" data-command-close="true">Esc</button>
+          <button class="button button-secondary" type="button" data-retry>Try again</button>
         </div>
-        <label class="command-search-field" for="command-palette-input">
-          <span class="sr-only">Search commands</span>
-          <input id="command-palette-input" type="search" placeholder="Search approvals, panels, agents, channels, sessions…" autocomplete="off" />
-        </label>
-        <div id="command-palette-results" class="command-results" role="listbox"></div>
-      </div>
+
+        <section id="status" class="console-section section-status" aria-labelledby="status-title">
+          <div class="section-heading">
+            <div>
+              <p class="context-label">Current protection</p>
+              <h2 id="status-title">Status</h2>
+            </div>
+            <span id="status-timestamp" class="section-meta">No update</span>
+          </div>
+
+          <div id="status-loading" class="status-skeleton" data-state="loading" aria-label="Wait for Agentwall status">
+            <span></span><span></span><span></span>
+          </div>
+
+          <div id="status-content" hidden>
+            <div class="status-summary">
+              <div class="status-primary">
+                <span id="protection-state-dot" class="state-dot" aria-hidden="true"></span>
+                <div>
+                  <p class="field-label">Protection state</p>
+                  <strong id="protection-state">Unknown</strong>
+                  <p id="protection-summary">Agentwall has not sent a status.</p>
+                </div>
+              </div>
+              <dl class="status-facts">
+                <div><dt>Mode</dt><dd id="current-mode">Unknown</dd></div>
+                <div><dt>Active agents</dt><dd id="active-agent-count">0</dd></div>
+                <div><dt>Open approvals</dt><dd id="pending-approval-count">0</dd></div>
+                <div><dt>Active rules</dt><dd id="active-rule-count">0</dd></div>
+              </dl>
+            </div>
+
+            <div id="important-warning" class="warning-strip" hidden>
+              <strong>Important warning</strong>
+              <p id="important-warning-text"></p>
+            </div>
+
+            <div class="next-action">
+              <div>
+                <p class="field-label">Next action</p>
+                <p id="next-action-text">Wait for Agentwall status.</p>
+              </div>
+              <a id="next-action-link" class="button button-primary" href="#approvals">Open approvals</a>
+            </div>
+
+            <div id="runtime-actions" class="operator-action-list" data-action-group="runtime"></div>
+          </div>
+        </section>
+
+        <section id="approvals" class="console-section" aria-labelledby="approvals-title">
+          <div class="section-heading">
+            <div>
+              <p class="context-label">Decisions that need review</p>
+              <h2 id="approvals-title">Approvals</h2>
+            </div>
+            <span id="approvals-count" class="section-meta">0 open</span>
+          </div>
+          <div id="approvals-list" class="decision-list">
+            <div class="empty-state" data-state="loading">
+              <strong>Wait for approval status.</strong>
+              <p>Agentwall will show the next decision here.</p>
+            </div>
+          </div>
+        </section>
+
+        <section id="policy" class="console-section" aria-labelledby="policy-title">
+          <div class="section-heading">
+            <div>
+              <p class="context-label">Rules in use</p>
+              <h2 id="policy-title">Policy</h2>
+            </div>
+            <span id="policy-file-state" class="section-meta">Read only</span>
+          </div>
+          <div id="policy-summary" class="plain-list">
+            <div class="empty-state" data-state="loading">
+              <strong>Wait for policy status.</strong>
+              <p>Agentwall will show active rules here.</p>
+            </div>
+          </div>
+
+          <details id="policy-editor" class="disclosure">
+            <summary>Edit a scoped rule</summary>
+            <p class="disclosure-copy">A scoped rule applies only to the agent, channel, or mode that you name.</p>
+            <form id="policy-form" class="typed-form">
+              <div class="form-grid">
+                <label class="form-field">
+                  <span>Rule name</span>
+                  <input name="description" type="text" autocomplete="off" required placeholder="Protect the deploy agent" />
+                </label>
+                <label class="form-field">
+                  <span>Rule ID</span>
+                  <input name="id" type="text" autocomplete="off" placeholder="deploy-agent-rule" />
+                </label>
+                <label class="form-field">
+                  <span>Plane</span>
+                  <select name="plane">
+                    <option value="all">All planes</option>
+                    <option value="tool">Tool</option>
+                    <option value="network">Network</option>
+                    <option value="content">Content</option>
+                    <option value="identity">Identity</option>
+                  </select>
+                </label>
+                <label class="form-field">
+                  <span>Decision</span>
+                  <select name="decision">
+                    <option value="deny">Deny</option>
+                    <option value="approval_required">Require approval</option>
+                    <option value="redact">Redact</option>
+                    <option value="allow">Allow</option>
+                  </select>
+                </label>
+                <label class="form-field">
+                  <span>Risk</span>
+                  <select name="riskLevel">
+                    <option value="high">High</option>
+                    <option value="critical">Critical</option>
+                    <option value="medium">Medium</option>
+                    <option value="low">Low</option>
+                  </select>
+                </label>
+                <label class="form-field form-field-wide">
+                  <span>Reason</span>
+                  <textarea name="reason" required placeholder="State why this rule exists."></textarea>
+                </label>
+                <label class="form-field">
+                  <span>Agent IDs</span>
+                  <input name="subjectAgentIds" type="text" autocomplete="off" required placeholder="deploy-agent, review-agent" />
+                  <small>Use commas between IDs.</small>
+                </label>
+                <label class="form-field">
+                  <span>Action text</span>
+                  <input name="actionIncludes" type="text" autocomplete="off" placeholder="deploy, publish" />
+                  <small>Use commas between values.</small>
+                </label>
+              </div>
+              <label class="check-field"><input name="enabled" type="checkbox" checked /> Enable this rule</label>
+              <div class="form-actions">
+                <button class="button button-primary" type="submit">Save rule</button>
+                <span id="policy-form-state" class="form-state" aria-live="polite"></span>
+              </div>
+            </form>
+          </details>
+        </section>
+
+        <section id="agents" class="console-section" aria-labelledby="agents-title">
+          <div class="section-heading">
+            <div>
+              <p class="context-label">Identity and session controls</p>
+              <h2 id="agents-title">Agents</h2>
+            </div>
+            <span id="agents-count" class="section-meta">0 known</span>
+          </div>
+          <div id="agents-list" class="plain-list">
+            <div class="empty-state" data-state="loading">
+              <strong>Wait for agent status.</strong>
+              <p>Agentwall will show agent identity and budgets here.</p>
+            </div>
+          </div>
+          <div id="session-actions" class="operator-action-list" data-action-group="sessions"></div>
+          <div id="fleet-actions" class="operator-action-list" data-action-group="fleet"></div>
+        </section>
+
+        <section id="evidence" class="console-section" aria-labelledby="evidence-title">
+          <div class="section-heading">
+            <div>
+              <p class="context-label">Records that prove each decision</p>
+              <h2 id="evidence-title">Evidence</h2>
+            </div>
+            <a class="text-link" href="/evidence">Open evidence viewer</a>
+          </div>
+          <div id="evidence-list" class="plain-list">
+            <div class="empty-state" data-state="loading">
+              <strong>Wait for evidence status.</strong>
+              <p>Agentwall will show recent evidence here.</p>
+            </div>
+          </div>
+          <div id="evidence-actions" class="operator-action-list" data-action-group="evidence"></div>
+        </section>
+
+        <section id="help" class="console-section" aria-labelledby="help-title">
+          <div class="section-heading">
+            <div>
+              <p class="context-label">Local reference</p>
+              <h2 id="help-title">Help</h2>
+            </div>
+            <a class="text-link" href="/dashboard/knowledge-base">Open all help</a>
+          </div>
+          <div id="help-list" class="plain-list">
+            <div class="empty-state" data-state="loading">
+              <strong>Wait for help content.</strong>
+              <p>Agentwall will show local guidance here.</p>
+            </div>
+          </div>
+          <details class="disclosure">
+            <summary>Keyboard controls</summary>
+            <dl class="shortcut-list">
+              <div><dt><kbd>Alt</kbd> + <kbd>1–7</kbd></dt><dd>Open an operator area.</dd></div>
+              <div><dt><kbd>R</kbd></dt><dd>Get the latest status.</dd></div>
+              <div><dt><kbd>?</kbd></dt><dd>Open this keyboard list.</dd></div>
+            </dl>
+          </details>
+        </section>
+
+        <section id="operations" class="console-section" aria-labelledby="operations-title">
+          <div class="section-heading">
+            <div>
+              <p class="context-label">Host and advanced controls</p>
+              <h2 id="operations-title">Operations</h2>
+            </div>
+            <span id="operation-catalog-state" class="section-meta">Wait for actions</span>
+          </div>
+          <p class="section-intro">Agentwall accepts typed values only. It does not accept a shell command.</p>
+          <div id="operator-catalog" class="operator-action-list" data-action="operator">
+            <div class="empty-state" data-state="loading">
+              <strong>Wait for operator actions.</strong>
+              <p>Agentwall will show only actions that the server allows.</p>
+            </div>
+          </div>
+        </section>
+      </main>
     </div>
 
-    <script type="module" src="/app.js?v=cockpit-revamp-2026-05-12"></script>
+    <template id="error-template">
+      <div class="empty-state empty-state-error">
+        <strong>Agentwall could not load this area.</strong>
+        <p>Get the latest status, then try again.</p>
+      </div>
+    </template>
+
+    <script src="/assets/action-catalog.js?v=simple-operator-2026-08-06"></script>
+    <script type="module" src="/app.js?v=simple-operator-2026-08-06"></script>
   </body>
 </html>

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "@jest/globals";
 import { get as httpGet } from "http";
-import { mkdtempSync, writeFileSync } from "fs";
+import { mkdtempSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import {
@@ -17,6 +17,8 @@ import {
   mintCanaryToken,
   proxyExemptionFor,
   startCanary,
+  runVerifyCapture,
+  validateCaptureCommandArgv,
   EXIT_CAPTURED,
   EXIT_INCOMPLETE,
   EXIT_NOT_CAPTURED,
@@ -631,6 +633,42 @@ describe("exit codes", () => {
     expect(captureExitCode(reportWith("bypass"))).toBe(EXIT_NOT_CAPTURED);
     expect(captureExitCode(reportWith("not-captured"))).toBe(EXIT_NOT_CAPTURED);
     expect(captureExitCode(reportWith("inconclusive"))).toBe(EXIT_INCOMPLETE);
+  });
+});
+
+describe("typed capture command execution", () => {
+  it("executes a typed argv without a shell and substitutes the canary URL", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "agentwall-capture-argv-"));
+    const auditPath = join(dir, "audit.jsonl");
+    writeFileSync(auditPath, "");
+
+    try {
+      const report = await runVerifyCapture({
+        agentId: "alpha",
+        auditPath,
+        host: "127.0.0.1",
+        timeoutMs: 2_000,
+        settleMs: 0,
+        commandArgv: [process.execPath, "-e", "fetch(process.argv[1])", "{url}"],
+      });
+
+      expect(report.fetch.exitCode).toBe(0);
+      expect(report.hits).toHaveLength(1);
+      expect(report.fetch.commandArgv).toEqual([
+        process.execPath,
+        "-e",
+        "fetch(process.argv[1])",
+        "{url}",
+      ]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects an empty argv and shell syntax before it starts a canary", () => {
+    expect(() => validateCaptureCommandArgv([])).toThrow(/empty/i);
+    expect(() => validateCaptureCommandArgv(["node;touch", "fetch.js"])).toThrow(/shell syntax/i);
+    expect(() => validateCaptureCommandArgv(["node", "$(id)"])).toThrow(/shell syntax/i);
   });
 });
 

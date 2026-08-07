@@ -1,7 +1,7 @@
-# Contributing to Agentwall
+# Contributions to AgentWall
 
-Contributions are welcome, including ones that prove a claim in the README is wrong. Agentwall
-is a security tool, so the bar is evidence rather than plausibility.
+AgentWall accepts contributions that add features, fix defects, or correct public claims.
+Security claims require evidence.
 
 ## Local setup
 
@@ -14,8 +14,8 @@ npm test
 ## Development workflow
 
 1. Create a feature branch.
-2. Add or update tests for behavior changes.
-3. Run:
+2. Add or update tests for each behavior change.
+3. Run the required checks.
 
 ```bash
 npm run lint
@@ -23,74 +23,66 @@ npm test
 npm run build
 ```
 
-4. Open a pull request using the PR template.
+4. Open a pull request with the pull request template.
 
-## The evidence standard
+## Evidence standard
 
-This is the rule that matters most here, because a security tool that overstates itself is
-worse than no tool.
+Follow these rules for every capability claim:
 
-- A capability described in the README or docs MUST be demonstrable by a command a stranger can
-  run. If it is implemented but not yet reachable, document it as not yet wired, not as
-  present.
-- Do not soften a documented limit to make the project look better. The
-  [Limits](README.md#limits) table and the out-of-scope list in [SECURITY.md](SECURITY.md) are
-  load-bearing, not marketing hedges. If a limit stops being true because you fixed it, move it
-  out and say what closed it.
-- Cite file and line when a doc claim depends on specific code, so the next person can check it
-  rather than trust it.
-- Verification output must report failure honestly. Code that prints a pass when it did not
-  actually check something will be rejected.
+- Give a command that another person can run.
+- Document an unreachable implementation as unavailable.
+- Keep each documented limit beside its capability.
+- Update [Limits](README.md#limits) and [SECURITY.md](SECURITY.md) when a limit changes.
+- Cite the file and line when a claim depends on specific code.
+- Make verification output report every failure accurately.
+
+Do not weaken a documented limit for promotional copy.
+A security control must produce evidence that another person can verify.
 
 ## Dependencies
 
-Runtime dependencies are deliberately three: `fastify`, `js-yaml`, `zod`. Adding a fourth needs
-a reason in the pull request. A dependency nothing imports is not a dependency; declare what the
-code actually uses.
+AgentWall has three runtime dependencies: `fastify`, `js-yaml`, and `zod`.
+Explain any fourth runtime dependency in the pull request.
+Declare only dependencies that the code imports.
 
-The audit, signing, and anchoring paths use Node's own `crypto` and plain HTTP with no
-third-party clients. Do not add a dependency there. A supply-chain compromise inside the
-component whose entire job is being trustworthy defeats the point of it.
+The audit, signature, and anchor paths use Node `crypto` and plain HTTP.
+Do not add a third-party client dependency to these paths.
+This rule limits the supply-chain attack surface of trust-critical code.
 
 ## Code style
 
-- Keep changes focused and small.
-- Prefer explicit policy and risk semantics over implicit behavior.
-- Comments explain why, not what. Record the reasoning behind a non-obvious decision, and the
-  failure that motivated it, so it is not undone by someone who does not know the history.
-- Include docs updates for user-visible behavior.
+- Keep each change focused.
+- Use explicit policy and risk semantics.
+- Write comments that explain a reason or a non-obvious tradeoff.
+- Update documentation for user-visible behavior.
 
 ## Commit guidance
 
-Use clear commit messages describing *why* the change exists, not just *what* changed.
+Write a clear commit message that explains why the change exists.
 
 ## Security-sensitive contributions
 
-For changes affecting policy enforcement, egress controls, approvals, or DLP logic, include:
-- threat scenario addressed
-- expected false-positive/false-negative tradeoffs
-- test coverage for edge cases
+For policy, egress, approval, or DLP changes, include:
 
+- the threat scenario
+- expected false positives and false negatives
+- edge-case test coverage
 
-## Sign your commits (DCO)
+Report a vulnerability through [SECURITY.md](SECURITY.md).
+Do not put undisclosed vulnerability details in a public pull request.
 
-Contributions are accepted under the [Developer Certificate of Origin](https://developercertificate.org/).
-It is a statement that you wrote the change, or have the right to submit it under the
-project's license. No corporate paperwork, no copyright assignment.
+## Developer Certificate of Origin
 
-Add the sign-off with `-s`:
+Contributions use the [Developer Certificate of Origin](https://developercertificate.org/).
+The sign-off confirms that you wrote the change or can submit it under the project license.
+The project does not require a copyright assignment.
+
+Add a sign-off with `-s`:
 
 ```bash
-git commit -s -m "your message"
+git commit -s -m "Document monitor mode"
 ```
 
-which appends:
+Git uses your configured name and email for the `Signed-off-by` line.
 
-```
-Signed-off-by: Your Name <your.email@example.com>
-```
-
-If you forget on the last commit: `git commit --amend -s --no-edit`.
-
-Why this and not a CLA: a DCO keeps copyright with you, which is the lighter ask and is
-what most OSS security projects settle on.
+Add the sign-off to the last commit with `git commit --amend -s --no-edit`.

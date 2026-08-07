@@ -1,86 +1,144 @@
-# Security Policy
+# Security policy
 
-Agentwall is a security tool, so a vulnerability here can cost an operator the exact thing they
-installed it to protect. Reports are welcome and are treated as the highest-priority work in
-the project.
+AgentWall is a security tool.
+A vulnerability can defeat the protection that an operator expects.
+The project gives security reports the highest priority.
 
-## Reporting a vulnerability
+## Report a vulnerability
 
-Report privately, not in a public issue.
+Report a vulnerability privately.
+Do not open a public issue.
 
-- Preferred: open a private security advisory on GitHub. This is the path that is verifiably
-  monitored and it is the one to use if you want certainty that a human sees it.
-- Alternative: email `security@agentwall.dev`.
+- Preferred channel: Open a private security advisory on GitHub. The project monitors this channel.
+- Alternative channel: Email `security@agentwall.dev`.
 
-Please include:
-- affected version or commit
-- reproduction steps, ideally a command or test that shows the failure
-- impact assessment
-- any suggested mitigation
+Include this information:
 
-A working reproduction is worth more than a severity rating. If you can express the issue as a
-failing test against this repository, that is the most useful form a report can take.
+- the affected version or commit
+- exact reproduction steps
+- a command or test that shows the failure, when possible
+- the impact
+- a suggested mitigation, when available
+
+A reproduction that works gives the maintainer the best evidence.
+A repository test that fails is also useful.
 
 ## Response targets
 
-Agentwall is maintained by a small team, so these are honest targets rather than a contractual
-SLA:
+These targets are not a contractual SLA.
 
-- initial acknowledgement: within 72 hours
-- triage decision: within 7 days
-- fix or mitigation timeline: shared after triage, based on severity
+- Initial acknowledgment: within 72 hours.
+- Triage decision: within 7 days.
+- Fix or mitigation schedule: after triage, based on severity.
 
-If a report goes unacknowledged past those windows, it is an oversight rather than a decision.
-Send a follow-up.
+Send a follow-up if the project misses an acknowledgment target.
 
 ## In scope
 
-Anything that breaks a property the project claims. Concretely:
+A report is in scope when it breaks a documented AgentWall property.
+Examples include:
 
-- bypassing operator authentication, or any route reachable without a valid token that is not
-  documented as public
-- causing the policy engine to return a less restrictive decision than its rules specify, or
-  breaking the `deny` > `approve` > `redact` > `allow` precedence
-- forging, truncating, reordering, or silently rewriting audit records without `agentwall
-  verify` reporting it
-- forging an Ed25519 checkpoint, or making a checkpoint verify against a key that did not sign
-  it
-- causing the audit chain's single-writer lock to admit a second concurrent writer
-- SSRF or egress-allowlist bypass, including private-range, loopback, link-local, or cloud
-  metadata targets
-- DLP bypass that lets a supported secret type through unredacted
-- crashing or hanging the forward proxy in a way that takes down egress for every client
+- bypass of operator authentication
+- access to a protected route without a valid token
+- access to any undocumented public route
+- a policy result that is less restrictive than its rules require
+- a break in `deny` > `approve` > `redact` > `allow` precedence
+- audit record forgery, truncation, order changes, or silent rewrites that `agentwall verify` does not report
+- an Ed25519 checkpoint forgery
+- checkpoint verification against a key that did not sign it
+- a second writer that bypasses the audit chain single-writer lock
+- SSRF or allowlist bypass on traffic that reaches AgentWall
+- bypass of private, loopback, link-local, or cloud metadata protection
+- DLP bypass for a supported secret type on an inspected surface
+- a forward-proxy crash or hang that stops egress for all proxy clients
+- a TLS interception bypass outside configured `interception.bypassHosts`
+- unsafe storage or use of the TLS interception CA key
 
-## Out of scope
+Only `/health` and `/api/health` are public by default.
+Other routes require operator authentication.
+`AGENTWALL_ALLOW_LOOPBACK_DEV=1` intentionally accepts unauthenticated loopback callers.
+Use that environment variable only for local development.
 
-These are documented limits, not defects. They are listed in the README under
-[Limits](README.md#limits). Reporting them is not a vulnerability, though arguments about how
-they should change are welcome as normal issues.
+## Documented limits
 
-- The forward proxy records and allows. It does not block. Monitor-first is the shipped
-  posture.
-- Proxy capture is cooperative. A process that ignores proxy environment variables egresses
-  unobserved, and nothing here installs iptables or nftables redirection.
-- There is no TLS interception, so CONNECT traffic is visible at hostname and port level only.
-- Process attribution reads `/proc` and works on Linux only.
-- An OpenTimestamps anchor is `pending` until a Bitcoin block confirms it. Pending is not
-  proof, and the tool says so.
-- Anchoring shows that records were not altered after the fact. It does not show that the log
-  is complete. Silent omission at write time is a known unsolved problem, not a bug report.
-- A signature proves a key holder vouched. On a host where the audited principal can read the
-  signing key, that is insufficient by design, which is why off-box anchoring exists.
-- `AGENTWALL_ALLOW_LOOPBACK_DEV=1` intentionally accepts unauthenticated loopback callers. It
-  is documented as local development only.
+These limits are not vulnerabilities by themselves.
+Report a documentation bug if the public claim is broader than the limit.
+Propose a control change in a normal issue.
 
-If you believe one of these limits is worse than the README admits, that is a documentation bug
-and a legitimate report. Say so and it will be fixed.
+### Egress modes
+
+`monitor` records policy results and mode projections.
+It allows normal requests.
+Operator lockdown still denies all traffic that reaches the proxy.
+
+`guarded` enforces a `deny` from a matched policy rule.
+It allows a destination when no rule matches.
+A policy rule that throws is skipped, so that rule fails open.
+
+`strict` requires an exact allowed host and port.
+It also enforces policy denials.
+An empty global host or port allowlist denies every destination that inherits it.
+A declared fleet agent can replace either global list.
+An omitted or empty scoped list inherits its related global list.
+Traffic without a declared fleet identity uses both global lists.
+
+An invalid mode stops startup.
+AgentWall does not fall back to another mode.
+
+### Capture boundary
+
+The forward proxy uses cooperative capture by default.
+A process can ignore `HTTP_PROXY` and `HTTPS_PROXY`.
+AgentWall does not observe or block that process's direct connection.
+AgentWall does not install nftables rules unless an operator installs the optional perimeter.
+
+The Linux perimeter contains outbound traffic for one configured agent UID.
+It requires root access and an explicit install.
+It does not contain DNS.
+
+### TLS and content inspection
+
+Without TLS interception, CONNECT traffic exposes only the authority, port, and available SNI.
+HTTPS paths, headers, and bodies remain encrypted.
+
+Opt-in TLS interception applies only to selected forward-proxy CONNECT hosts.
+It requires `openssl` and a local CA in the client trust store.
+It does not apply to the transparent perimeter listener.
+A configured `interception.bypassHosts` connection stays opaque and records the bypass.
+
+Plaintext and intercepted body scans stop after 256 KiB per body.
+AgentWall forwards the remainder and records a partial result.
+Event-stream bodies pass without body inspection.
+Deterministic scanners do not detect unknown patterns or all paraphrases.
+A clean scan covers only the bytes and patterns that AgentWall checked.
+
+The proxy does not perform a `redact` decision on a live body.
+It records `redact` and allows the connection.
+Only `deny` stops a proxy connection.
+
+### Evidence limits
+
+Process attribution reads `/proc` and works only on Linux.
+
+An OpenTimestamps anchor stays `pending` until a Bitcoin block confirms it.
+A pending anchor is not proof.
+The command reports this state.
+
+An anchor proves that records did not change after its creation.
+It does not prove that the log is complete.
+Silent omission at write time remains an unsolved limit.
+
+A signature proves that a key holder vouched for the record.
+It is insufficient when the audited principal can read the signing key.
+An off-box anchor reduces this risk.
 
 ## Disclosure policy
 
-Please do not disclose publicly until a fix or mitigation is released. Credit is given in the
-changelog unless you ask otherwise.
+Do not disclose the vulnerability publicly before the project releases a fix or mitigation.
+The changelog credits the reporter unless the reporter declines credit.
 
-## Scope of this policy
+## Policy scope
 
-This policy covers this repository. Vulnerabilities in third-party dependencies should go to
-that project first; tell us as well if Agentwall's use of it makes the impact worse.
+This policy covers this repository.
+Report a third-party dependency vulnerability to that project first.
+Also notify this project when AgentWall increases the impact.

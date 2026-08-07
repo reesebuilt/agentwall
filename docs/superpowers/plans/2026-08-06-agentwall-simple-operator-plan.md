@@ -78,7 +78,7 @@ it("gives an explicit environment variable priority over the generated file", ()
 
 - [ ] **Step 2: Run the focused test and confirm the expected missing-symbol failure**
 
-Run: `npm test -- --runInBand tests/setup-command.test.ts`
+Run: `npm test -- tests/setup-command.test.ts`
 Expected: FAIL because the setup module and command do not exist.
 
 - [ ] **Step 3: Implement the setup module**
@@ -111,7 +111,7 @@ Keep `agentwall init` unchanged for compatibility.
 
 - [ ] **Step 6: Run the focused tests and the existing CLI tests**
 
-Run: `npm test -- --runInBand tests/setup-command.test.ts tests/cli.test.ts`
+Run: `npm test -- tests/setup-command.test.ts tests/cli.test.ts`
 Expected: PASS with zero failures.
 - [ ] **Step 7: Write failing bootstrap tests**
 
@@ -140,9 +140,11 @@ it("rejects a cross-origin bootstrap mutation", async () => {
 
 Serve `public/bootstrap.html` and its static assets.
 Bind to loopback by default.
-Create a one-time local session token when the app starts.
-Set the token in an HttpOnly, SameSite=Strict cookie.
-Require the cookie and an allowed origin for every mutation.
+Create a one-time local bootstrap session token when the app starts.
+Set the bootstrap token in an HttpOnly, SameSite=Strict cookie.
+Read the generated or inherited operator token without printing it.
+Set the HttpOnly, SameSite=Strict `agentwall_operator` cookie after setup or status.
+Require the bootstrap cookie and an allowed origin for every bootstrap mutation.
 Expose setup, init, onboard, start, dev, stop, and status as typed actions.
 Start only `dist/index.js` for production and `ts-node src/index.ts` for development.
 Track child process state and return a clear stopped, starting, running, or failed status.
@@ -157,7 +159,7 @@ Keep the process alive until an operator stops it.
 
 - [ ] **Step 10: Run setup, bootstrap, and CLI tests**
 
-Run: `npm test -- --runInBand tests/setup-command.test.ts tests/bootstrap-ui.test.ts tests/cli.test.ts`
+Run: `npm test -- tests/setup-command.test.ts tests/bootstrap-ui.test.ts tests/cli.test.ts`
 Expected: PASS with zero failures.
 
 ---
@@ -168,10 +170,12 @@ Expected: PASS with zero failures.
 - Create: `src/routes/operator.ts`
 - Create: `src/operator/action-catalog.ts`
 - Create: `src/operator/command-allowlist.ts`
+- Modify: `src/auth/operator.ts`
 - Modify: `src/server.ts:1-204`
 - Modify: `src/fleet/command.ts:327-599`
 - Modify: `src/config.ts` only when the route needs a typed generated path
 - Test: `tests/operator-routes.test.ts`
+- Test: `tests/operator-auth.test.ts`
 
 **Interfaces:**
 - `OperatorActionSchema` is a Zod discriminated union on `action`.
@@ -210,17 +214,12 @@ it("rejects shell syntax in a typed command action", async () => {
 });
 ```
 
-- [ ] **Step 2: Test the exhaustive action inventory**
-
-Assert that the catalog contains every mutating CLI action in the interface list.
-Assert that `setup`, `init`, `onboard`, `start`, and `dev` appear in the bootstrap catalog.
-Assert that every read-only CLI command appears in either the bootstrap or running catalog.
-Assert that a typed command rejects shell metacharacters, absolute executable paths, undeclared binaries, and working-directory traversal.
-
-- [ ] **Step 3: Run the route tests and confirm the expected missing-route failure**
-
-Run: `npm test -- --runInBand tests/operator-routes.test.ts`
-Expected: FAIL because the route does not exist.
+Require cookie-authenticated mutations to include a same-origin `Origin` header.
+Accept the HttpOnly `agentwall_operator` cookie only on loopback requests.
+Keep bearer token authentication available for non-browser clients.
+Return status `400` for schema errors, `401` for missing operator auth, `403` for cross-origin or invalid cookie mutations, `409` for missing confirmation, and `200` for completed actions.
+Never return raw secrets in list, status, or error data.
+Return a one-sentence message and a concrete next action.
 
 - [ ] **Step 4: Implement the action schema and route registration**
 
@@ -264,7 +263,7 @@ Return status for read-only perimeter, sandbox, interception, decoy, audit, and 
 
 - [ ] **Step 7: Register the routes and run focused tests**
 
-Run: `npm test -- --runInBand tests/operator-routes.test.ts tests/route-auth.test.ts tests/fleet-credentials.test.ts`
+Run: `npm test -- tests/operator-routes.test.ts tests/route-auth.test.ts tests/fleet-credentials.test.ts`
 Expected: PASS with zero failures.
 
 ---
@@ -317,7 +316,7 @@ it("does not update a locked baseline from a denied inventory", () => {
 
 - [ ] **Step 2: Run the baseline tests and confirm the expected missing-symbol failure**
 
-Run: `npm test -- --runInBand tests/mcp-baseline.test.ts tests/mcp-gates.test.ts`
+Run: `npm test -- tests/mcp-baseline.test.ts tests/mcp-gates.test.ts`
 Expected: FAIL because the baseline store and mode are not present.
 
 - [ ] **Step 3: Implement the atomic baseline store**
@@ -348,7 +347,7 @@ Print the selected mode and file path without printing tool contents.
 
 - [ ] **Step 6: Run MCP tests**
 
-Run: `npm test -- --runInBand tests/mcp-baseline.test.ts tests/mcp-gates.test.ts tests/mcp-wrap.test.ts tests/mcp-wrap-durability.test.ts`
+Run: `npm test -- tests/mcp-baseline.test.ts tests/mcp-gates.test.ts tests/mcp-wrap.test.ts tests/mcp-wrap-durability.test.ts`
 Expected: PASS with zero failures.
 
 ---
@@ -400,7 +399,7 @@ Assert that the running page has a control for every mutating action returned by
 
 - [ ] **Step 3: Run the console tests and confirm the expected old-copy failure**
 
-Run: `npm test -- --runInBand tests/public-console.test.ts tests/bootstrap-console.test.ts tests/dashboard.test.ts`
+Run: `npm test -- tests/public-console.test.ts tests/bootstrap-console.test.ts tests/dashboard.test.ts`
 Expected: FAIL because the new shell markers do not exist.
 
 - [ ] **Step 4: Replace the running shell with five visible areas**
@@ -443,7 +442,7 @@ Do not show a shell input or arbitrary command field.
 
 - [ ] **Step 8: Add console tests and run the focused suite**
 
-Run: `npm test -- --runInBand tests/public-console.test.ts tests/bootstrap-console.test.ts tests/dashboard.test.ts tests/route-auth.test.ts`
+Run: `npm test -- tests/public-console.test.ts tests/bootstrap-console.test.ts tests/dashboard.test.ts tests/route-auth.test.ts`
 Expected: PASS with zero failures.
 
 ---
@@ -532,7 +531,7 @@ Add `tests/public-copy.test.ts` for the script behavior.
 
 Run: `npm run check:public-copy`
 Expected: PASS with no banned terms.
-Run: `npm test -- --runInBand tests/public-copy.test.ts`
+Run: `npm test -- tests/public-copy.test.ts`
 Expected: PASS with zero failures.
 
 ---
@@ -576,7 +575,7 @@ Keep issue and pull request instructions short and direct.
 
 Run: `node scripts/check-public-copy.js`
 Expected: PASS with no banned content.
-Run: `npm test -- --runInBand tests/public-console.test.ts`
+Run: `npm test -- tests/public-console.test.ts`
 Expected: PASS with zero failures.
 
 ---

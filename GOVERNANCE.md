@@ -1,61 +1,79 @@
 # Governance
 
-AgentWall is open source under Apache-2.0. This document says who decides what, so
-contributors know where they stand before they invest time.
+AgentWall uses the Apache-2.0 license.
+This document defines project roles and decisions.
 
-## Current state, stated plainly
+## Current structure
 
-AgentWall has a single maintainer. Calling that a "governance model" would be
-overselling it. This document describes how decisions are made today and the conditions
-under which that changes, rather than describing a committee that does not exist.
+AgentWall has one maintainer.
+The maintainer makes final project decisions.
 
 ## Roles
 
-**Maintainer.** Final call on scope, architecture, releases, and security response.
-Merges changes and sets project direction.
+### Maintainer
 
-**Contributor.** Anyone who opens an issue or pull request. No paperwork beyond the DCO
-sign-off described in CONTRIBUTING.md.
+The maintainer:
 
-## How decisions are made
+- sets project scope and direction
+- makes final architecture decisions
+- manages releases
+- manages security responses
+- reviews and merges changes
 
-Small changes (bug fixes, tests, docs) are decided in the pull request.
+### Contributor
 
-Changes to the security model, the policy decision path, the audit chain format, or
-anything that alters what a deployed instance enforces get an issue first. Explain the
-threat being addressed and how the change would be verified. A security control that
-cannot be demonstrated is not a control.
+A contributor opens an issue or pull request.
+A contributor must use the DCO sign-off in [CONTRIBUTING.md](CONTRIBUTING.md).
+The project requires no other contributor agreement.
 
-Breaking changes to the config schema, the audit event or capability-ticket format, or
-the HTTP API are called out in CHANGELOG.md with a migration note.
+## Decisions
+
+The maintainer decides small changes in the pull request.
+Small changes include defect fixes, tests, and documentation.
+
+Open an issue before a change to any of these areas:
+
+- the security model
+- the policy decision path
+- the audit chain format
+- deployed enforcement behavior
+
+The issue must state the threat and the verification method.
+A security control must have a repeatable demonstration.
+
+Document each incompatible change in `CHANGELOG.md`.
+Add a migration note for changes to:
+
+- the configuration schema
+- the audit event format
+- the capability-ticket format
+- the HTTP API
 
 ## Security issues
 
-Do not open a public issue for a vulnerability. SECURITY.md has the reporting path.
+Do not open a public issue for a vulnerability.
+Use the private report channels in [SECURITY.md](SECURITY.md).
 
-Reports that demonstrate a bypass are the most valuable contribution to this project, and
-they are treated that way: a working bypass is credited in the changelog unless the
-reporter asks otherwise.
+The changelog credits a demonstrated bypass unless the reporter declines credit.
 
-## The standard for claims
+## Public claims
 
-Every capability claim in the README or docs must be demonstrable by a command a stranger
-can run on their own machine. If a feature cannot be shown working, it is not documented
-as present.
+Every capability claim must have a command that another person can run.
+Do not document an unavailable feature as present.
+State each limit beside the related capability.
+State when traffic or an action can bypass AgentWall.
 
-This applies to security properties above all. Stating what a control does NOT cover is
-part of documenting it, not an admission against interest.
+## Additional maintainers
 
-## Adding maintainers
+The project has no fixed contribution threshold for a maintainer role.
+A candidate must show sustained, high-quality contributions.
+A candidate must also show sound judgment about security tradeoffs.
 
-There is no fixed threshold. Sustained, high-quality contribution and demonstrated
-judgment on security tradeoffs is the bar. When a second maintainer is added, this
-document changes first, and the licensing and contribution terms are revisited with them
-rather than around them.
+Update this document before the project adds a second maintainer.
+Review the license and contribution terms with that maintainer.
 
-## Licensing
+## License
 
-Apache-2.0, chosen over MIT for its express patent grant, which enterprise adoption
-commonly requires. Relicensing after outside contributions exist requires the agreement
-of every contributor whose work remains in the tree, so the license is treated as fixed
-absent an extraordinary reason.
+AgentWall uses Apache-2.0 for its express patent grant.
+A license change requires agreement from every contributor whose work remains in the repository.
+Treat the license as fixed unless an extraordinary reason requires a change.

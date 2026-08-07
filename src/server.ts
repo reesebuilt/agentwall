@@ -29,6 +29,22 @@ import { ReloadCoordinator } from "./runtime/reload";
 import { reloadRoutes } from "./routes/reload";
 import { RuntimeFloodGuard } from "./runtime/floodguard";
 import { createDecisionTraceExporter } from "./telemetry/otel";
+import { basename, resolve } from "path";
+import { operatorRoutes } from "./routes/operator";
+import { locateHelper } from "./sandbox";
+
+function configuredMcpBinaries(value: string | undefined): Record<string, string> {
+  const binaries: Record<string, string> = {};
+  for (const entry of value?.split(",") ?? []) {
+    const trimmed = entry.trim();
+    if (!trimmed) continue;
+    const separator = trimmed.indexOf("=");
+    const executable = separator < 0 ? trimmed : trimmed.slice(separator + 1).trim();
+    const name = separator < 0 ? basename(executable) : trimmed.slice(0, separator).trim();
+    if (name && executable) binaries[name] = executable;
+  }
+  return binaries;
+}
 
 declare module "fastify" {
   interface FastifyRequest {
@@ -186,6 +202,21 @@ export async function buildServer(config: AgentwallConfig): Promise<AgentwallSer
   await communicationChannelRoutes(app, engine, runtime);
   await damageControlRoutes(app, engine, runtime);
   await dashboardRoutes(app, config, engine, gate, runtime, floodGuard, policyRuntime, reloadCoordinator);
+  await operatorRoutes(app, {
+    config,
+    engine,
+    gate,
+    runtime,
+    floodGuard,
+    auditPath,
+    commandAllowlist: {
+      workingDirectoryRoot: process.cwd(),
+      agentwallBinary: resolve(process.argv[1] ?? process.execPath),
+      sandboxLauncher: locateHelper().path ?? undefined,
+      mcpBinaries: configuredMcpBinaries(process.env.AGENTWALL_OPERATOR_MCP_BINARIES),
+    },
+    decoyPath: process.env.AGENTWALL_DECOY_FILE,
+  });
   await uiRoutes(app);
   await lockdownRoutes(app);
   await probeRoutes(app, engine, runtime);

@@ -1,12 +1,7 @@
-<svg width="512" height="512" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg">
-  <defs>
-    <linearGradient id="mark-gradient" x1="96" y1="72" x2="408" y2="432" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#5B8CFF"/>
-      <stop offset="1" stop-color="#00C2A8"/>
-    </linearGradient>
-  </defs>
-  <rect x="48" y="48" width="416" height="416" rx="64" fill="#0E152A"/>
-  <path d="M136 356L256 148L376 356" stroke="url(#mark-gradient)" stroke-width="36" stroke-linecap="round" stroke-linejoin="round"/>
-  <path d="M188 286H324" stroke="url(#mark-gradient)" stroke-width="28" stroke-linecap="round"/>
-  <path d="M120 420H392" stroke="#1E2A44" stroke-width="16" stroke-linecap="round"/>
+<svg width="512" height="512" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="agentwall-mark-title agentwall-mark-description">
+  <title id="agentwall-mark-title">Agentwall mark</title>
+  <desc id="agentwall-mark-description">A mint protected center inside a graphite frame.</desc>
+  <rect x="32" y="32" width="448" height="448" rx="96" fill="#0F131B"/>
+  <path fill="#5FE6C8" fill-rule="evenodd" clip-rule="evenodd" d="M170 118H342L394 170V342L342 394H170L118 342V170L170 118ZM204 187L187 204V308L204 325H308L325 308V204L308 187H204Z"/>
+  <rect x="230" y="230" width="52" height="52" rx="8" fill="#5FE6C8"/>
 </svg>

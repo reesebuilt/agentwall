@@ -100,14 +100,18 @@ The browser never runs an arbitrary process.
 The UI can run a declared command only through a server-side allowlist and an explicit confirmation.
 
 ### Bootstrap UI
-
 Add a separately launchable `agentwall ui` command.
 The bootstrap UI binds to loopback and starts before the AgentWall service.
 It shows setup, service status, start, stop, and development start controls.
 It performs `setup`, `init`, `onboard`, `start`, `dev`, and `stop` through typed server actions.
 It starts only fixed AgentWall entry points and never accepts an arbitrary executable.
+After setup or status, it sets an HttpOnly `agentwall_operator` cookie with `SameSite=Strict`.
+The cookie carries the configured operator token to the main service port without exposing it to browser JavaScript.
+The main operator guard accepts this cookie only for loopback requests.
+Cookie-authenticated mutations require a same-origin `Origin` header.
+Authorization bearer authentication remains available for non-browser clients.
 After startup, it links to the authenticated dashboard and the operator action API.
-It uses a one-time local session token and origin checks for mutations.
+It uses a separate one-time local bootstrap session cookie and origin checks for bootstrap mutations.
 
 The bootstrap UI keeps working when the AgentWall service is stopped.
 The service dashboard does not claim to own setup or service start.

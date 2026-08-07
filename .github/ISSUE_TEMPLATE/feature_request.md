@@ -5,10 +5,13 @@ labels: enhancement
 ---
 
 ## Problem
-What operator or safety problem are you trying to solve?
+What operator or safety problem must this change solve?
 
-## Proposed solution
+## Proposed change
+Describe the change.
 
-## Alternatives considered
+## Other options
+Describe the other options that you reviewed.
 
 ## Additional context
+Add useful context.

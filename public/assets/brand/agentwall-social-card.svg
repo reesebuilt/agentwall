@@ -1,0 +1,16 @@
+<svg width="1200" height="630" viewBox="0 0 1200 630" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="agentwall-card-title agentwall-card-description">
+  <title id="agentwall-card-title">Protect agent actions with clear rules</title>
+  <desc id="agentwall-card-description">Agentwall reviews actions, applies rules, and keeps clear evidence.</desc>
+  <rect width="1200" height="630" fill="#0F131B"/>
+  <rect x="32" y="32" width="1136" height="566" rx="32" stroke="#313B49" stroke-width="2"/>
+  <rect x="80" y="72" width="152" height="152" rx="32" fill="#181E28" stroke="#313B49" stroke-width="2"/>
+  <path fill="#5FE6C8" fill-rule="evenodd" clip-rule="evenodd" d="M127 101H185L203 119V177L185 195H127L109 177V119L127 101ZM139 125L133 131V165L139 171H173L179 165V131L173 125H139Z"/>
+  <rect x="147" y="139" width="18" height="18" rx="3" fill="#5FE6C8"/>
+  <text x="264" y="170" fill="#F1F5FA" font-family="Inter, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="64" font-weight="700" letter-spacing="-1">Agentwall</text>
+  <text x="80" y="348" fill="#F1F5FA" font-family="Inter, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="72" font-weight="700" letter-spacing="-1.5">
+    <tspan x="80" dy="0">Protect agent actions</tspan>
+    <tspan x="80" dy="84">with clear rules</tspan>
+  </text>
+  <text x="82" y="508" fill="#A7B4C5" font-family="Inter, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="28" font-weight="400">Agentwall reviews actions, applies rules, and keeps clear evidence.</text>
+  <rect x="80" y="550" width="1040" height="4" rx="2" fill="#5FE6C8"/>
+</svg>

@@ -8,6 +8,7 @@ import { DetectionMapping, detectionCatalog } from "../policy/detections";
 import { PolicyEngine } from "../policy/engine";
 import { AgentContext, DetectionMatch, PolicyResult, ProvenanceTag } from "../types";
 import { GateContext, evaluateFrame, recordToolInventory } from "./gates";
+import { McpBaselineStore } from "./baseline";
 import { McpHttpHandle, startMcpHttpListener } from "./http";
 import { runStdioWrapper } from "./stdio";
 import {
@@ -15,6 +16,7 @@ import {
   FrameDirection,
   JsonRpcFrame,
   MCP_BLOCKED_ERROR_CODE,
+  McpBaselineMode,
   McpEvaluation,
   McpGateName,
   McpServerIdentity,
@@ -74,6 +76,14 @@ export interface WrapOptions {
   sessionId?: string;
   /** Called with every audit event this wrap produced, after it joined the chain. */
   onAuditEvent?: (event: unknown) => void;
+  /** Persistent inventory behavior. Off preserves session-only behavior. */
+  baselineMode?: McpBaselineMode;
+  /** JSON store used by learn and lock mode. */
+  baselineFile?: string;
+  /** Reuse an embedding service policy engine instead of creating a standalone default engine. */
+  engine?: PolicyEngine;
+  /** Skip standalone audit sink setup when the embedding service already owns the durable sink. */
+  durableAudit?: boolean;
   /**
    * Stdio overrides, defaulting to this process's own streams.
    *
@@ -375,12 +385,26 @@ function createFrameHandling(args: {
   onAuditEvent?: (event: unknown) => void;
   /** Extra metadata stamped on every record, for facts that are true of the whole session. */
   baseMetadata?: Record<string, string>;
+  baselineMode?: McpBaselineMode;
+  baselineFile?: string;
+  engine?: PolicyEngine;
+  durableAudit?: boolean;
 }): FrameHandling {
   const { server, transport } = args;
   const agentId = args.agentId ?? DEFAULT_AGENT_ID;
   // One wrap invocation is one session. Every frame it evaluates shares this id, which is how a
   // reader groups one server's traffic in the chain instead of inferring it from timestamps.
   const sessionId = args.sessionId ?? randomUUID();
+  const baselineMode = args.baselineMode ?? "off";
+  const requestedBaselineFile = args.baselineFile?.trim();
+  const baselinePath = requestedBaselineFile ? resolvePath(requestedBaselineFile) : undefined;
+  let baselineStore: McpBaselineStore | undefined;
+  if (baselineMode !== "off") {
+    if (baselinePath === undefined) {
+      throw new Error(`MCP baseline ${baselineMode} mode needs a baseline file.`);
+    }
+    baselineStore = new McpBaselineStore(baselinePath);
+  }
 
   // The chain has to be wired up here, not inherited.
   //
@@ -394,21 +418,31 @@ function createFrameHandling(args: {
   // audit JSON to it would interleave records into the client's JSON-RPC stream and corrupt the
   // session. The file is the record; unset means this wrap produces no durable evidence, and that
   // is the operator's choice to make explicitly.
-  const auditPath = process.env.AGENTWALL_AUDIT_FILE;
+  const auditPath = args.durableAudit === false ? undefined : process.env.AGENTWALL_AUDIT_FILE;
   if (auditPath) {
     const resumed = resumeChainState(auditPath);
     seedAuditChain(resumed.state);
     registerAuditSink(createFileSink(auditPath), { durable: true });
   }
 
-  // One context for the whole session, because the tool-inventory baseline lives on it.
-  // Rebuilding it per frame would reset the baseline before every comparison, making drift
-  // permanently undetectable while still looking like it was being checked.
+  // One context serves the whole session. Off mode uses approvedTools in memory.
+  // Learn and lock mode use the stable agent, server, and command identity below.
   const ctx: GateContext = {
     agentId,
     sessionId,
     server,
-    engine: new PolicyEngine(),
+    engine: args.engine ?? new PolicyEngine(),
+    baselineMode,
+    ...(baselineStore === undefined
+      ? {}
+      : {
+          baselineStore,
+          baselineKey: {
+            agentId,
+            serverName: server.serverName,
+            ...(server.commandHash === undefined ? {} : { commandHash: server.commandHash }),
+          },
+        }),
   };
 
   const inFlight = new Map<string, PendingCall>();
@@ -438,6 +472,12 @@ function createFrameHandling(args: {
         ...args.baseMetadata,
         ...recordArgs.extraMetadata,
       };
+      metadata.mcpBaselineMode = baselineMode;
+      if (baselinePath !== undefined) metadata.mcpBaselinePath = baselinePath;
+      if (ctx.baselineDecision !== undefined) {
+        metadata.mcpBaselineState = ctx.baselineDecision.state;
+        metadata.mcpBaselineDrift = JSON.stringify(ctx.baselineDecision.drift);
+      }
       if (recordArgs.toolName !== undefined) metadata.mcpTool = recordArgs.toolName;
       if (server.commandHash !== undefined) metadata.commandHash = server.commandHash;
       if (recordArgs.gate !== undefined) metadata.mcpGate = recordArgs.gate;
@@ -564,6 +604,10 @@ export async function runMcpWrap(opts: WrapOptions): Promise<number> {
     agentId: opts.agentId,
     sessionId: opts.sessionId,
     onAuditEvent: opts.onAuditEvent,
+    baselineMode: opts.baselineMode,
+    baselineFile: opts.baselineFile,
+    engine: opts.engine,
+    durableAudit: opts.durableAudit,
   });
 
   return runStdioWrapper({
@@ -596,6 +640,13 @@ export interface HttpWrapOptions {
   sessionId?: string;
   /** Called with every audit event this wrap produced, after it joined the chain. */
   onAuditEvent?: (event: unknown) => void;
+  baselineMode?: McpBaselineMode;
+  /** JSON store used by learn and lock mode. */
+  baselineFile?: string;
+  /** Reuse an embedding service policy engine instead of creating a standalone default engine. */
+  engine?: PolicyEngine;
+  /** Skip standalone audit sink setup when the embedding service already owns the durable sink. */
+  durableAudit?: boolean;
 }
 
 /**
@@ -637,8 +688,11 @@ export async function runMcpHttpWrap(opts: HttpWrapOptions): Promise<McpHttpHand
     transport: "http",
     agentId: opts.agentId,
     sessionId: opts.sessionId,
+    baselineMode: opts.baselineMode,
+    baselineFile: opts.baselineFile,
     onAuditEvent: opts.onAuditEvent,
-    // Origin and path only. A URL's userinfo and query string are exactly where a deployment hides
+    engine: opts.engine,
+    durableAudit: opts.durableAudit,
     // a credential, and the audit file is the last place one should reappear.
     baseMetadata: { mcpUpstream: `${upstream.protocol}//${upstream.host}${upstream.pathname}` },
   });

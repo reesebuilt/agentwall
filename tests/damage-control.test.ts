@@ -200,19 +200,19 @@ describe("damage-control route + dashboard", () => {
     expect(Array.isArray(body.damageControl.recentAudits)).toBe(true);
   });
 
-  it("dashboard shell and app.js advertise the bash firewall workbench", async () => {
+  it("dashboard shell exposes the operator and evidence surfaces", async () => {
     const { app } = await serverPromise;
     const html = await app.inject({ method: "GET", url: "/" });
     expect(html.statusCode).toBe(200);
-    expect(html.body).toContain("Damage Control");
-    expect(html.body).toContain("Bash Firewall");
-    expect(html.body).toContain("damage-control-panel");
+    expect(html.body).toContain("Agentwall status");
+    expect(html.body).toContain("Evidence");
+    expect(html.body).toContain("Operations");
+    expect(html.body).toContain('aria-live="polite"');
 
     const js = await app.inject({ method: "GET", url: "/app.js" });
     expect(js.statusCode).toBe(200);
-    expect(js.body).toContain("function renderDamageControl");
-    expect(js.body).toContain("/integrations/damage-control/command-preflight");
-    expect(js.body).toContain("data-damage-control-check");
-    expect(js.body).toContain("Bash is the damage funnel");
+    expect(js.body).toContain("function renderEvidence");
+    expect(js.body).toContain("/api/operator/actions");
+    expect(js.body).toContain("function renderOperatorAction");
   });
 });

@@ -1,7 +1,7 @@
 {
   "name": "@repsecure/agentwall",
   "version": "0.2.0",
-  "description": "Agentwall: provenance-aware policy enforcement for agent egress, tools, content, and approvals",
+  "description": "AgentWall checks agent actions and records policy decisions",
   "homepage": "https://github.com/repsecure/agentwall#readme",
   "bugs": {
     "url": "https://github.com/repsecure/agentwall/issues"
@@ -24,6 +24,7 @@
     "gen:corpus": "ts-node scripts/gen-corpus.ts",
     "bench": "ts-node bench/run.ts",
     "conformance": "node scripts/conformance.js",
+    "check:public-copy": "node scripts/check-public-copy.js",
     "lint": "tsc --noEmit",
     "cli": "node dist/cli.js",
     "init": "node dist/cli.js init",

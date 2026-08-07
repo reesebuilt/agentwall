@@ -1,85 +1,56 @@
 # AgentWall documentation
 
-Everything needed to install, understand, and operate AgentWall. If you are looking for
-something that is not here, it probably belongs in the code or the issue tracker rather
-than a narrative document.
+Start with the [user guide](user-guide.md).
+It uses `agentwall ui` as the first-run path.
 
-## Getting started
+## Start and operate
 
-- [Install](install.md): requirements, install, first run, and how to point an agent at
-  the proxy.
-- [Tutorials](tutorials/): short, task-shaped walkthroughs. Each states how long it
-  takes and what you should see when it works.
+- [User guide](user-guide.md) covers install, setup, modes, approvals, verification, and common fixes.
+- [Operator guide](operator-guide.md) maps every CLI action to a bootstrap or running UI workflow.
+- [Feature reference](feature-reference.md) lists each capability and its limit.
+- [Glossary](glossary.md) defines the public terms.
+- [Install guide](install.md) covers package, source, container, and platform installation.
+- [Onboarding guide](onboarding.md) creates one agent identity and proves capture.
+- [Tutorials](tutorials/) give short procedures for common tasks.
 
-## Understanding the system
+## Control traffic and processes
 
-- [Architecture](architecture.md): the components, how a request flows through them, and
-  where decisions are made.
-- [Threat model](threat-model.md): what AgentWall defends against, what it explicitly
-  does not, and the assumptions behind both. Read this before relying on it for anything.
-- [Audit evidence format](audit-format.md): the normative on-disk spec. Record hashing,
-  canonicalization, rotation manifest, checkpoints, and OpenTimestamps proofs, with worked
-  examples and a statement of what the format does not prove.
-- [Evidence viewer](evidence-viewer.md): the read-only console at `/evidence`, the per-session
-  scorecard, the three verification layers shown inline, why a pending anchor is never rendered
-  as verified, and the offline command the page prints so it is not the root of trust.
-- [Fleet evidence](fleet-evidence.md): the read-only aggregator at `/evidence/fleet` over
-  several hosts' chains, each verified independently on its own bytes; why the chains are not
-  merged, what an unreachable host renders as and why that is not a clean one, and the coverage
-  gaps shown as content rather than as a footnote.
-- [FloodGuard](runtime-floodguard.md): runtime rate and burst control, including how
-  shield mode changes behaviour.
-- [Wrapping an MCP server](mcp.md): running a local MCP server behind the gates, what each gate
-  checks, what the client sees when a call is blocked, and where those decisions land.
-- [Emergency stop](lockdown.md): the four independent ways to put AgentWall into lockdown and
-  halt the egress it decides, why releasing is per-source, and what the stop does not reach.
-- [Decoy tokens](decoy.md): planting synthetic credentials that are never legitimately
-  used, why a hit is proof rather than a guess, and the narrow band of theft it covers.
-- [Probe API](probe-api.md): asking AgentWall for a verdict on content you already hold, the
-  size and batch limits, and why a probe proves less than routing traffic through the proxy.
-- [Spill watch](spill-watch.md): watching named directories for credentials
-  written to disk, the platform caveat and its fallback, and what a finding deliberately
-  omits.
-- [Why a check fired](why.md): re-running the scanners against a subject to see which
-  check fires, the narrowest knob that silences that one finding, and why a clean result is
-  evidence rather than silence.
-- [Proving capture](verify-capture.md): making an agent fetch a single-use canary to prove its
-  traffic really passes through AgentWall, which binding tier actually held, and how a request
-  that reached the network without passing through is caught and named.
-- [Control mapping](owasp-mapping.md): which OWASP LLM, OWASP agentic, and ATT&CK controls
-  this codebase addresses, the machine-checked evidence behind each rating, and the gaps
-  stated rather than omitted.
-- [Configuration score](compliance.md): grading a deployment description across fifteen
-  categories, the critical exposures that force an F whatever the total, and why a
-  configuration score is not a claim about a running system.
-- [Egress enforcement](enforcement.md): the three enforcement modes, how to move from
-  recording to blocking without breaking a working agent, what a blocked request looks like,
-  and the traffic enforcement cannot reach.
-- [The perimeter](perimeter.md): closing cooperative capture with a dedicated agent UID and
-  nftables redirection, how a destination is named when there are no proxy headers to read,
-  and the holes the model leaves open.
-- [The sandbox](sandbox.md): confining the agent PROCESS with Landlock and seccomp rather than
-  its packets, which kernel versions buy which rights, how to measure that the kernel really
-  refused something, and why there is deliberately no network namespace.
-- [Fleet governance](fleet.md): several agents on one host with their own identities,
-  allowlists, and budgets, what each identity signal is actually worth, what stays global,
-  and what multi-host would take that this does not do.
-- [TLS interception](tls-interception.md): reading https request and response bodies for the
-  hosts you choose, what installing a local CA costs your threat model, and everything that
-  stays opaque anyway.
-- [Detection benchmark](benchmark.md): re-measuring the detection numbers yourself, why
-  precision and recall are never combined into one score, and what a corpus of 190 cases
-  cannot tell you.
+- [Enforcement](enforcement.md) explains monitor, guarded, and strict modes.
+- [Perimeter](perimeter.md) explains Linux UID network control and its DNS limit.
+- [Sandbox](sandbox.md) explains Landlock, seccomp, kernel requirements, and degraded operation.
+- [TLS interception](tls-interception.md) explains optional HTTPS inspection and CA risk.
+- [MCP wrapper](mcp.md) explains stdio, Streamable HTTP, gates, and inventory checks.
+- [Emergency stop](lockdown.md) explains each stop source and its scope.
+- [FloodGuard](runtime-floodguard.md) explains runtime rate and burst controls.
+- [Fleet governance](fleet.md) explains per-agent identity, credentials, allowlists, and budgets.
 
-## Elsewhere in the repository
+## Understand decisions
 
-- [README](../README.md): what AgentWall is, its limits, and a quick start.
-- [SECURITY](../SECURITY.md): how to report a vulnerability.
-- [CONTRIBUTING](../CONTRIBUTING.md): how to propose a change.
-- [CHANGELOG](../CHANGELOG.md): what changed and when.
+- [Architecture](architecture.md) shows request, decision, audit, and operator control paths.
+- [Threat model](threat-model.md) states the protected paths, assumptions, and gaps.
+- [Policy reference](reference.md) lists routes, settings, and environment variables.
+- [Why a check fired](why.md) explains a decision for a supplied subject.
+- [Probe API](probe-api.md) checks content that the caller already holds.
+- [Configuration score](compliance.md) grades a deployment description and states its limits.
+- [Control mapping](owasp-mapping.md) maps implemented controls to named risk frameworks.
+- [Detection benchmark](benchmark.md) reports measured detector precision, recall, and known gaps.
+- [Decoy credentials](decoy.md) explains synthetic secrets and their visibility limits.
+- [Spill watch](spill-watch.md) explains watched file paths and platform limits.
 
-## What this tree is for
+## Verify evidence
 
-Documentation that helps someone run AgentWall on their own systems. Anything that only
-describes how this project is planned, positioned, or built internally does not belong
-here, because it is not useful to a reader who just wants the tool to work.
+- [Audit format](audit-format.md) defines record hashing, segment links, checkpoints, and proofs.
+- [Verification](verification.md) defines each verification layer and conformance case.
+- [Evidence viewer](evidence-viewer.md) explains the read-only view at `/evidence`.
+- [Fleet evidence](fleet-evidence.md) explains independent host-chain checks at `/evidence/fleet`.
+- [Proving capture](verify-capture.md) checks one agent route with a single-use canary.
+
+## Project documents
+
+- [Repository README](../README.md) gives a short product decision page.
+- [Security policy](../SECURITY.md) gives the private report process.
+- [Contribution guide](../CONTRIBUTING.md) gives change and test requirements.
+- [Governance](../GOVERNANCE.md) defines project roles and decisions.
+- [Changelog](../CHANGELOG.md) records released changes.
+- [Enterprise roadmap](enterprise-roadmap.md) is a roadmap and does not describe shipped behavior.
+- [Enterprise controls](enterprise-controls.md) states shipped limits, planned upgrades, outage behavior, and evidence gates.

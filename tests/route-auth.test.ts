@@ -55,6 +55,8 @@ const PROTECTED = [
 	{ method: "POST" as const, url: "/evaluate" },
 	{ method: "POST" as const, url: "/approval/some-id/respond" },
 	{ method: "GET" as const, url: "/api/dashboard/state" },
+	{ method: "GET" as const, url: "/api/operator/actions" },
+	{ method: "POST" as const, url: "/api/operator/actions" },
 	// An unauthenticated caller who could reload policy could swap the ruleset governing every
 	// agent on the host, and the audit record would name nobody.
 	{ method: "POST" as const, url: "/reload" },

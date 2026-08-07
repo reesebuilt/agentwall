@@ -1,67 +1,83 @@
-# Agentwall
+# AgentWall
 
-A runtime firewall for AI agents.
+AgentWall is a local policy and evidence layer for agent actions.
+It checks network, tool, content, identity, and runtime decisions.
+It records each decision in a hash-chained audit file.
 
-Agentwall watches what agents actually do on the host, attributes each action to the process
-that took it, and writes a record that cannot be quietly rewritten. It runs locally, needs no
-account, and has no paid tier.
+## What AgentWall does
 
-Prompts are not a security boundary. An agent that has been argued into leaking a key still
-holds the key. Agentwall works one layer down, where an action becomes real, and treats the
-agent as the untrusted party.
+AgentWall provides three enforcement modes.
+`monitor` records decisions without blocking.
+`guarded` enforces matching deny rules.
+`strict` allows only configured destinations.
 
-## Before you install
+AgentWall also provides approvals, session controls, per-agent credentials, runtime limits, and independent audit verification.
+The local console exposes each supported service mutation through a typed action.
 
-Two limits matter more than any feature below.
+## What AgentWall does not do
 
-**It defaults to observing.** Enforcement exists and is real, but `monitor` is the default:
-egress is evaluated and recorded, and allowed. You opt in with `enforcement.mode` — `guarded`
-enforces the deny rules that match, `strict` is allowlist-only. Monitor mode reports what the
-other two would have done, so you build the allowlist by reading your own ledger rather than
-by breaking your tooling to find out. A firewall that starts by breaking your tooling gets
-switched off, and a switched-off firewall protects nothing.
+AgentWall does not control traffic that bypasses its proxy or Linux perimeter.
+The default proxy route depends on standard proxy environment variables.
+A process can ignore those variables.
 
-**Capture is cooperative by default.** The proxy is found through standard proxy environment
-variables, and a process that ignores them egresses unseen. That assumption is removable: a
-perimeter runs the agent under its own UID and has nftables redirect that UID's outbound TCP
-into the proxy, so cooperation stops being required. It costs root, Linux, and a deliberate
-install, it is off unless you set it up, and DNS still leaves the host directly.
-See [docs/perimeter.md](docs/perimeter.md).
+AgentWall does not prove that every action reached the audit writer.
+A valid hash chain proves later record integrity, not record completeness.
 
-The rest are in [Limits](#limits). They are not footnotes.
+AgentWall does not provide a clustered control plane.
+Fleet identity, policy, and budgets have per-instance scope.
 
-## Install
+## Install and setup
 
-Linux, Node.js 22.12 or newer.
+AgentWall requires Node.js 22.12 or newer.
+Linux provides process attribution, the perimeter, and the sandbox.
+Other core service features run where the supported Node.js runtime runs.
 
 ```bash
 npm install -g @repsecure/agentwall
+agentwall ui
+```
 
+`agentwall ui` starts the bootstrap UI on `http://127.0.0.1:3001` by default.
+Use **Setup** to create local configuration, policy, credentials, and an audit path.
+Setup uses monitor mode and loopback access by default.
+It does not replace existing files without `--force`.
+
+The direct CLI path is:
+
+```bash
+agentwall setup
+agentwall start
+agentwall doctor
+```
+
+`agentwall init` remains available for the earlier starter-file workflow.
+
+```bash
 agentwall init --mode monitor
 agentwall doctor
 ```
 
-The unscoped npm package `agentwall` is a different, unrelated project. This one is
-`@repsecure/agentwall`.
-
-`init` writes `agentwall.config.yaml` and `policy.yaml` into the current directory. Both are
-gitignored, and `init` will not overwrite work you already have. `doctor` checks Node, the
-build output, and those two files, and then reports **capture**: which declared agent was last
-seen and at what binding tier, each agent's standing against its budget, and any egress since
-the last run that no declared agent claims. It exits 0 clear, 1 when traffic reached the
-network that policy said to refuse, and 2 when it cannot tell the two apart, which it says
-plainly rather than guessing. See [fleet governance](docs/fleet.md#watching-capture-over-time).
-
-From a checkout instead — run `node dist/cli.js` wherever this file says `agentwall`:
+From a source checkout, run `node dist/cli.js` where this page uses `agentwall`.
 
 ```bash
 git clone https://github.com/repsecure/agentwall.git
 cd agentwall && npm install && npm run build
 ```
 
-## Run it
+## First run
 
-Every variable below is required for the thing it enables.
+1. Run `agentwall ui`.
+2. Open the printed local URL.
+3. Select **Setup** and keep monitor mode.
+4. Select **Start service**.
+5. Open the authenticated dashboard link.
+6. Run `agentwall doctor` after the agent sends traffic.
+
+The dashboard has Status, Approvals, Policy, Agents, and Evidence areas.
+The Operations view contains host and process controls.
+Each action shows its matching offline CLI command.
+
+For a manual environment, use these variables before `agentwall start`.
 
 ```bash
 export AGENTWALL_OPERATOR_TOKEN="$(openssl rand -hex 32)"   # without this, every route 401s
@@ -71,14 +87,14 @@ export AGENTWALL_PROXY_PORT=8899                            # without this, the 
 agentwall start
 ```
 
-Send traffic through it from a second shell in the same directory:
+Send test traffic through the proxy from another shell.
 
 ```bash
 https_proxy=http://127.0.0.1:8899 curl -s -o /dev/null https://example.com/
 tail -1 audit.jsonl
 ```
 
-Each request appends a chained record naming the process that made it:
+A proxied request appends a chained record.
 
 ```json
 {"agentId":"curl","plane":"network","action":"egress:https","decision":"allow",
@@ -87,23 +103,107 @@ Each request appends a chained record naming the process that made it:
               "algorithm":"sha256","status":"chained-local","canon":"cu1"}}
 ```
 
-The operator console is at `http://127.0.0.1:3000/dashboard`. A browser cannot send a bearer
-header, so for local use start with `AGENTWALL_ALLOW_LOOPBACK_DEV=1`, which accepts loopback
-callers as a `loopback-dev` principal. Do not set it on a host anyone else can reach.
+## Feature summary
 
-## Check the record without trusting us
+### Typed local operation
 
-A verifier written by the same people in the same language as the writer only proves the code
-agrees with itself. Agentwall ships two independent verifiers and a corpus of deliberate
-forgeries that runs them against each other on every push.
+The bootstrap UI performs setup, initialization, onboarding, start, development start, and stop.
+The running dashboard prepares client-owned stdio wrapper commands and performs every other supported service-side mutation through `POST /api/operator/actions`.
+The API rejects unknown actions, shell syntax, path traversal, and undeclared executables.
+
+**Limit:** The bootstrap UI manages only its fixed AgentWall child process.
+The running dashboard needs the service.
+
+### Network policy and content checks
+
+The forward proxy checks destinations and plaintext HTTP content.
+It can scan paths, headers, request bodies, and response bodies.
+A denied request opens no upstream socket.
+
+**Limit:** Each body scan stops at 256 KiB.
+AgentWall forwards the remaining bytes and records partial visibility.
+Event stream bodies pass without body inspection, but their headers remain visible.
+
+### TLS controls
+
+Without interception, AgentWall sees the `CONNECT` authority and available TLS SNI.
+Interception can decrypt configured hosts after a runtime trusts the local CA.
+Interception is off by default.
+
+**Limit:** HTTPS paths, headers, and bodies remain opaque without interception.
+Encrypted ClientHello or missing SNI can also hide the TLS hostname.
+The CA key holder can impersonate trusted sites for the configured runtime.
+
+### Process attribution
+
+On Linux, AgentWall maps a proxy socket through `/proc` to its PID and process name.
+Each record states the observed identity signal.
+
+**Limit:** Process attribution is Linux-only.
+A container can hide the required host namespaces or descriptors.
+Attribution failure records `pid: null` and does not block traffic.
+
+### Linux perimeter
+
+`agentwall perimeter` can redirect one UID's outbound TCP through the transparent proxy.
+`agentwall perimeter plan` prints the network rules before installation.
+Install, run, and rollback need root.
+
+**Limit:** The perimeter needs Linux and `nftables`.
+It permits one DNS resolver or blocks DNS.
+Permitted DNS remains a possible data path.
+
+### Linux sandbox
+
+`agentwall sandbox` applies Landlock and seccomp controls to one process.
+Probe and plan commands show the current kernel support and gaps.
+
+**Limit:** TCP restrictions need Landlock ABI 4 and Linux 6.7 or newer.
+The sandbox does not create a network namespace.
+
+### MCP wrapper
+
+`agentwall mcp wrap` checks JSON-RPC frames over stdio or Streamable HTTP.
+Use `agentwall mcp status` to list HTTP wrappers managed by the running service.
+Use `agentwall mcp stop <wrapper-id>` to stop one managed HTTP wrapper.
+The local dashboard provides the same start, list, and stop actions.
+Inventory baseline modes are `off`, `learn`, and `lock`.
+Lock mode sends inventory drift to approval.
+
+**Limit:** The HTTP wrapper has an 8 MiB default request limit.
+A baseline records inventory shape, but it does not prove safe server code.
+
+### Approvals and session controls
+
+The approval modes are `auto`, `always`, and `never`.
+Operators can pause, resume, terminate, boost, or reset a session through typed actions.
+Terminate needs explicit confirmation.
+
+**Limit:** These controls apply only inside AgentWall decision paths.
+They do not terminate an external process or close a direct socket.
+
+### Fleet credentials and budgets
+
+AgentWall can issue, rotate, and revoke per-agent credentials.
+It can enforce per-agent destination and budget rules in one instance.
+A new secret appears once and never enters the audit chain.
+
+**Limit:** Credentials separate cooperating agents, but not processes that can read the same secret.
+Budgets and policy state do not synchronize across instances.
+The transparent path carries no fleet identity.
+
+### Audit evidence
+
+AgentWall writes SHA-256 hash-chained JSONL records.
+Rotation manifests link closed segments.
+Signed checkpoints can anchor the current history outside the host.
 
 ```bash
 agentwall verify                                                   # bundled TypeScript verifier
 cd verifier && go build -o agentwall-verify . && ./agentwall-verify --audit <path>
 ```
 
-`verify` reports three layers separately, because they fail independently and one verdict
-would hide which guarantee you actually have:
+The verifier reports three separate layers.
 
 ```
 PASS  chained   records link within each segment, so an edit inside one is detectable
@@ -111,149 +211,44 @@ PASS  linked    segments link and match their files, so replacing one is detecta
 PASS  anchored  a fingerprint exists off-box, so a local rewrite shows
 ```
 
-`agentwall anchor` seals the segment, signs an Ed25519 checkpoint over the head, and submits
-the digest to OpenTimestamps for inclusion in a Bitcoin block. No account, no API key. An
-anchor stays `pending` for roughly one to six hours, and pending is not proof.
+**Limit:** A pending anchor is not confirmed evidence.
+An anchor detects later changes, but it cannot prove that the log is complete.
 
-A signature only proves a key holder vouched. Pin the key you expect with `--pubkey-file`; a
-foreign key exits 1. The Go verifier has zero third-party dependencies — `cd verifier && go
-list -m all` prints one line.
+## Limits at a glance
 
-Full detail, including the conformance corpus and what verification does not prove, is in
-[docs/verification.md](docs/verification.md).
-
-For reading the record rather than only checking it, `/evidence` is a read-only console over the
-same files: a per-session scorecard of what an agent did and what was blocked, the three layers
-shown inline, a signed receipt timeline, and the offline command above printed on the page so the
-UI is never the root of trust. It has no approve, deny, or edit path and serves no script. See
-[docs/evidence-viewer.md](docs/evidence-viewer.md).
-
-Several hosts are `/evidence/fleet`, the same shape one level up: it reads each host's chain from
-a path its evidence was delivered to, verifies each independently on its own bytes, and prints all
-four verifier implementations against each host's own file. The chains are not merged, a host it
-could not read renders as unreachable rather than as clean, and what none of it can see is a table
-on the page rather than a footnote. It is a reader and never an authority: if it is down, every
-host keeps enforcing and keeps recording. See [docs/fleet-evidence.md](docs/fleet-evidence.md).
-
-## What it does
-
-- **Egress enforcement, in three modes.** `monitor` evaluates and allows while reporting what
-  the stricter modes would have done; `guarded` enforces matched deny rules; `strict` is
-  allowlist-only. A blocked request gets a `403` and an `X-Agentwall-Block-Reason` header, so a
-  broken agent is a diagnosis rather than a mystery.
-- **MCP servers wrapped, stdio and Streamable HTTP.** `agentwall mcp wrap` puts every JSON-RPC
-  frame through ordered gates: tool-poisoning and drift on the advertised inventory, secrets
-  and injection in tool arguments, your policy rules, and injection in the tool output the
-  agent is about to read. Same engine, same audit chain, either transport.
-- **Lockdown: an emergency stop with four independent sources.** Config, API, `SIGUSR1`, or a
-  flag file on disk. Any one engages it, each releases only its own hold, and it overrides
-  every mode including monitor. The file channel is the one that still works when the HTTP
-  surface is wedged.
-- **A perimeter that removes the cooperative-capture assumption.** `agentwall perimeter` runs
-  the agent under its own UID and generates nftables rules that redirect that UID's outbound
-  TCP into the proxy and drop the rest. The proxy then names the destination from the TLS SNI
-  or the HTTP `Host:` header, and refuses a connection it cannot name. Root and Linux, opt-in,
-  and `plan` prints the ruleset before anything touches your firewall.
-- **Egress capture with observed identity.** A CONNECT-aware forward proxy maps the client
-  socket back to its owning process through `/proc/net/tcp` and `/proc/<pid>/fd`, so a record
-  carries the real `pid` and `comm` even if the agent lies about who it is. Linux only.
-  Attribution failure degrades to `pid: null` and never blocks egress.
-- **A policy engine with predictable precedence.** Six planes, four outcomes, most restrictive
-  wins: `deny` > `approve` > `redact` > `allow`. Results carry matched rule IDs, plain reasons,
-  a risk level, and MITRE ATT&CK technique IDs.
-- **Hot-reloadable policy.** A built-in rule pack plus YAML. A file that fails to parse is
-  rejected whole and the previous ruleset stays in force, so a typo cannot leave you running
-  with half a policy.
-- **DLP with inline redaction.** AWS keys, GitHub PATs and OAuth tokens, OpenAI keys, Slack
-  tokens, private keys, JWTs, SSNs, credit cards, emails, phone numbers. It runs on content
-  handed to AgentWall directly (the `/inspect/*` and `/evaluate` payloads, MCP frames it
-  wraps, channel messages, watched file writes) and on **plaintext HTTP** through the forward
-  proxy: path, headers, and both bodies, to a stated cap. It does not run on https through the
-  proxy, because that body is never decrypted. See the limits table.
-- **Content inspection on the proxy, for the one scheme that needs no CA.** A plaintext HTTP
-  request or response through the forward proxy is scanned for credentials, PII, injected
-  instructions, and planted decoy tokens before it is forwarded, and a detection blocks with a
-  403 and `X-Agentwall-Block-Reason` in `guarded` and `strict`. Response bodies are inspected
-  too: a poisoned tool result arriving in an answer is the shape a control that watches only
-  egress never sees. See [docs/enforcement.md](docs/enforcement.md).
-- **SSRF and egress inspection.** Scheme, port, and host allowlists blocking private, loopback,
-  and link-local ranges plus cloud metadata endpoints. Shell command preflight and manifest
-  drift detection alongside.
-- **Approvals and budgets.** A persistent approval queue with `auto`/`always`/`never` modes,
-  per-session and per-actor rate limits, pending-approval caps, cost budgets, and session
-  pause, resume, and terminate enforced at `/evaluate`.
-- **An audit log built for real operation.** SHA-256 hash-chained records, a single-writer
-  `O_EXCL` lock, torn-tail recovery, and restart-safe resume. A storage failure is reported as
-  a declared gap, never as a deletion, so a full disk and a tampered file do not look alike.
-- **Auth that fails closed.** A bearer token compared in constant time on an allowlist model:
-  every route is protected unless explicitly public, so a route added next year is guarded by
-  default. Only `/health` and `/api/health` are public.
-
-Egress observed by the proxy enters the same hash chain. The request-to-decision-to-audit path
-is written out in [docs/architecture.md](docs/architecture.md); the routes and every
-environment variable are in [docs/reference.md](docs/reference.md).
-
-## Limits
-
-Stated plainly, because a security tool that oversells itself is worse than no tool.
-
-| Limit | What it means |
+| Limit | Effect |
 | --- | --- |
-| Monitor by default | Enforcement is real but opt-in. Out of the box the proxy evaluates, records, and allows; `guarded` and `strict` are configured, not automatic. Installing this does not block anything until you say so. See [docs/enforcement.md](docs/enforcement.md). |
-| Only `deny` is enforceable on a socket | `approve` and `redact` verdicts are recorded and the request is allowed. A proxy has nowhere to put a held request and no way to rewrite a CONNECT body, so pretending otherwise would be worse than saying it. |
-| Cooperative capture, unless you install a perimeter | By default the proxy is found through environment variables a process may simply ignore. `agentwall perimeter` removes that with a dedicated UID and nftables redirection, but it is opt-in, needs root, and is Linux-only. Without it, unobserved egress stays possible. See [docs/perimeter.md](docs/perimeter.md). |
-| The perimeter does not contain DNS | The agent resolves names before it connects, so port 53 has to be permitted for anything to work. DNS is itself an exfiltration channel and this model does not close it. |
-| The perimeter ruleset is parser-verified, not kernel-verified | `nft` accepts the generated file as valid syntax, and a test checks that wherever `nft` is installed. Whether the kernel accepts the chain types, hooks, and `inet` NAT support at load time is settled by your first `install`. Run `plan`, read it, then install somewhere you can afford a refusal. |
-| Anchoring is pending, not instant | An OpenTimestamps anchor stays `pending` until a Bitcoin block confirms, roughly one to six hours. Pending is not proof. |
-| Anchoring proves no alteration, not completeness | An anchor shows that what was written was not altered afterwards. It cannot show that everything which should have been written was. |
-| A signature is necessary, not sufficient | On a host where the audited principal can read the signing key, an agent with root can sign anything the operator can. Off-box anchoring is what closes that gap. |
-| Verifier agreement is bounded by the corpus | All four verifiers return the same verdict on all 27 conformance cases. That is agreement about those cases, not a proof of equivalence, and it says nothing about a forgery none of them has been asked to judge. |
-| TLS interception is off by default, and https is opaque until you turn it on | With no `interception` section in the config there is no CA, nothing is minted, and a CONNECT tunnel is relayed undecoded: visible at hostname, port and negotiated SNI, opaque at path, header and body. Enabling it per host makes those readable, at the stated cost that whoever holds the CA private key can impersonate every site to that host. Read [docs/tls-interception.md](docs/tls-interception.md) first. |
-| The SNI cross-check is not domain-fronting detection | The proxy compares the CONNECT authority against the negotiated SNI and re-evaluates policy on the latter, which catches a client that names one host and negotiates another. Domain fronting puts its real destination in the HTTP Host header inside the session, and nothing short of interception can read that. Fronted traffic agrees at every layer this can see. |
-| Proxy content inspection is plaintext HTTP only, unless interception is on for that host | An http request and response through the forward proxy are read and scanned. An https one is not, because it is encrypted, and neither is anything inside a CONNECT tunnel, until interception is enabled for that host and decrypts it into the same scan path. The transparent listener relays raw TCP and inspects no content on either scheme. |
-| The proxy content scan is capped at 256 KiB per body, and the cap is evadable | Past it the prefix is scanned and the remainder is forwarded uninspected, with the record saying so. Refusing large bodies instead would break ordinary agent traffic to buy protection that padding defeats anyway. Treat it as a control against accident and unsophisticated theft, not against an adversary choosing their transport. |
-| Event streams are exempt from body inspection | `text/event-stream` and friends are passed through unbuffered on purpose. MCP carries SSE, and buffering an event stream to scan it hangs it. Their headers are still scanned and the record says the body was not. |
-| Attribution is Linux-only | It reads `/proc/net/tcp` and `/proc/<pid>/fd`. There is no macOS or Windows equivalent. The rest of the server is portable; process attribution is not. |
-| Channel containment is Telegram only | Slack and Discord appear in the platform schema with no route implementation behind them. |
-| The watchdog does not auto-deny | It exposes heartbeat age and a stop flag, and a rule denies on the `watchdog_timeout` label, but nothing wires staleness to that label automatically. Treat it as a signal you act on. |
-| Telemetry is off by default | The OTLP/HTTP decision-trace exporter is disabled unless configured. |
-| Bearer tokens, not identity | A shared token, not OIDC or mTLS. No identity-provider integration. |
-| Per-agent identity is only as strong as its signal | A fleet agent is bound by a presented credential, by the socket's uid, or by the process name. A credential separates cooperating agents and does not contain one that can read the secret; `comm` is a label the process sets for itself. Which signal matched is on every record so the claim is never stronger than the evidence. See [docs/fleet.md](docs/fleet.md). |
-| Fleet budgets are per-instance and in-memory | Ceilings are enforced by the instance that saw the traffic, and the running windows reset when the process does. The records are durable; the counters are not. Byte budgets refuse the next connection rather than truncating a live one. |
-| No fleet identity on the transparent path | A kernel-redirected connection carries no process name, no uid, and no proxy credential, so it resolves to the undeclared agent. `fleet.unmatched: "deny"` therefore refuses everything the perimeter redirects. |
-| Single host | Within one instance, identity, allowlists, and budgets are per-agent. Across instances there is nothing: no shared identity, no shared budget, and no clustered or highly-available control plane. Multiple instances can be polled into one read-only summary view. [docs/fleet.md](docs/fleet.md) states what multi-host would actually require. |
+| Cooperative capture by default | A process that ignores proxy settings can bypass AgentWall. |
+| TLS content is opaque by default | Enable interception only for reviewed hosts and runtimes. |
+| 256 KiB body scan | Content after the prefix is not inspected. |
+| Event stream body bypass | AgentWall inspects headers, but not stream body events. |
+| Linux-only attribution | Other platforms record the destination without a verified PID. |
+| DNS perimeter gap | Permitted DNS can carry data outside the TCP proxy path. |
+| Per-instance fleet scope | Instances do not share live budgets, policy state, or credentials automatically. |
+| Audit completeness gap | Verification detects changes to written records, not missing events. |
 
-## Built with
+## Documentation
 
-TypeScript 5 (strict) on Node.js 22.12+, Fastify 5, Zod, YAML policy via `js-yaml`, Jest.
-Runtime dependencies are deliberately three: `fastify`, `js-yaml`, `zod`. The audit and
-anchoring paths use Node's own `crypto` and plain HTTP with no third-party clients, because a
-dependency inside the component whose whole job is being trustworthy is a supply-chain risk
-this project declines.
+- [User guide](docs/user-guide.md) gives first-run procedures and common fixes.
+- [Operator guide](docs/operator-guide.md) maps every CLI action to its UI workflow.
+- [Feature reference](docs/feature-reference.md) lists each capability and its limit.
+- [Glossary](docs/glossary.md) defines the public terms.
+- [Install guide](docs/install.md) gives package, source, and platform details.
+- [Onboarding guide](docs/onboarding.md) creates and verifies one agent identity.
+- [Enforcement guide](docs/enforcement.md) explains monitor, guarded, and strict modes.
+- [Sandbox guide](docs/sandbox.md) explains Linux process controls.
+- [Architecture](docs/architecture.md) describes the request and control paths.
+- [Threat model](docs/threat-model.md) states protected and unprotected paths.
+- [API and configuration reference](docs/reference.md) lists routes and settings.
+- [Enterprise roadmap](docs/enterprise-roadmap.md) is a roadmap and does not describe shipped behavior.
 
-## Docs
+The [documentation index](docs/README.md) links the detailed evidence and control documents.
 
-[Install](docs/install.md) · [Enforcement](docs/enforcement.md) ·
-[Perimeter](docs/perimeter.md) · [Fleet](docs/fleet.md) · [MCP](docs/mcp.md) ·
-[Proving capture](docs/verify-capture.md) ·
-[Lockdown](docs/lockdown.md) ·
-[Architecture](docs/architecture.md) · [Threat model](docs/threat-model.md) ·
-[Verification](docs/verification.md) · [Audit format](docs/audit-format.md) ·
-[Evidence viewer](docs/evidence-viewer.md) · [Fleet evidence](docs/fleet-evidence.md) ·
-[API and configuration](docs/reference.md) · [Probe API](docs/probe-api.md) ·
-[Why](docs/why.md) · [Benchmark](docs/benchmark.md) ·
-[Compliance](docs/compliance.md) · [Decoy tokens](docs/decoy.md) ·
-[Spill watch](docs/spill-watch.md) ·
-[FloodGuard](docs/runtime-floodguard.md) · [Tutorials](docs/tutorials/README.md) ·
-[Changelog](CHANGELOG.md)
+## Security and license
 
-## Contributing
+Report a vulnerability through the private process in [SECURITY.md](SECURITY.md).
+Do not put a vulnerability report in a public issue.
 
-Issues and pull requests are welcome, including ones that show a claim in this file is wrong.
-See [CONTRIBUTING.md](CONTRIBUTING.md), [GOVERNANCE.md](GOVERNANCE.md), and
-[CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md). Security reports go through
-[SECURITY.md](SECURITY.md), not a public issue.
-
-## License
-
-Apache-2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
+See [CONTRIBUTING.md](CONTRIBUTING.md) and [GOVERNANCE.md](GOVERNANCE.md) before you propose a change.
+AgentWall uses the Apache-2.0 license.
+See [LICENSE](LICENSE) and [NOTICE](NOTICE).

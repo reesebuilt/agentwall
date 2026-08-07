@@ -165,6 +165,22 @@ export interface McpToolDescriptor {
   inputSchema?: unknown;
 }
 
+/** Persistent tool inventory behavior for one wrapped MCP server. */
+export type McpBaselineMode = "off" | "learn" | "lock";
+
+/** Stable identity used to select one accepted tool inventory. */
+export interface McpBaselineKey {
+  agentId: string;
+  serverName: string;
+  commandHash?: string;
+}
+
+/** Result of comparing an advertised inventory with its persistent baseline. */
+export interface McpBaselineDecision {
+  state: "missing" | "matched" | "learned" | "drift";
+  drift: string[];
+}
+
 /**
  * What a transport does with a frame after the gates have run.
  *

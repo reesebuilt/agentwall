@@ -10,6 +10,7 @@ import {
   createBaseUrl,
   formatStatusReport,
   parseFlags,
+  printHelp,
   resolveApprovalMode,
 } from "../src/cli";
 
@@ -30,6 +31,16 @@ describe("Agentwall CLI helpers", () => {
     const parsed = parseFlags(["--confirm", "session-42"]);
     expect(parsed.flags.confirm).toBe(true);
     expect(parsed.positionals).toEqual(["session-42"]);
+  });
+
+  it("lists guided setup and the separately launchable UI", () => {
+    const log = jest.spyOn(console, "log").mockImplementation(() => undefined);
+
+    printHelp();
+
+    expect(log).toHaveBeenCalledWith(expect.stringContaining("setup               Create safe local operator files"));
+    expect(log).toHaveBeenCalledWith(expect.stringContaining("ui                  Start the loopback setup"));
+    expect(log).toHaveBeenCalledWith(expect.stringContaining("--service-port <port>"));
   });
 
   it("prefers explicit url when creating API base url", () => {

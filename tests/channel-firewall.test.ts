@@ -55,17 +55,19 @@ describe("channel firewall profile controls", () => {
     fs.rmSync(tempDir, { recursive: true, force: true });
   });
 
-  it("serves the channel firewall dashboard surface", async () => {
+  it("serves the operator console surface for channel controls", async () => {
     const { app } = await serverPromise;
     const html = await app.inject({ method: "GET", url: "/" });
     const js = await app.inject({ method: "GET", url: "/app.js" });
 
     expect(html.statusCode).toBe(200);
-    expect(html.body).toContain("Telegram Guardrails");
-    expect(html.body).toContain("Rules for Telegram Channels");
-    expect(html.body).toContain("Start with one Telegram topic");
-    expect(js.body).toContain("function renderChannelFirewall");
-    expect(js.body).toContain("data-channel-firewall-profile");
+    expect(html.body).toContain("Agentwall status");
+    expect(html.body).toContain("Policy");
+    expect(html.body).toContain("Agents");
+    expect(html.body).toContain("Operations");
+    expect(js.body).toContain("function renderPolicy");
+    expect(js.body).toContain("function renderOperatorAction");
+    expect(js.body).toContain("/api/operator/actions");
   });
 
   it("writes firewall profile rules and hot-reloads them into policy evaluation", async () => {

@@ -1,73 +1,46 @@
 # The sandbox
 
-## The perimeter contains packets, not processes
+## Purpose
 
-`docs/perimeter.md` describes a control that makes an agent's network traffic unavoidable: the
-kernel redirects a uid's outbound TCP into the proxy and drops everything else it sends. That is
-a real control and it closes a real hole, but read what it constrains. Packets. A process
-contained by the perimeter can still open every file its uid can open.
+The AgentWall sandbox confines one Linux process and its children. The Linux kernel enforces the boundary before AgentWall starts the command.
 
-For most of AgentWall's history that was the right place to stop, because the threat model was an
-agent that is trusted at runtime and questionable at policy time: it will do what it was asked,
-and the question is whether what it was asked is allowed. Under that model, watching egress and
-scanning content is proportionate.
+The sandbox uses Landlock for filesystem access and TCP ports. It uses seccomp as a second control for selected system calls.
 
-Prompt injection breaks the model. An agent that reads a hostile web page, a hostile issue
-comment, or a hostile file in a repository can be redirected mid-task into doing something it was
-never asked to do, using credentials it legitimately holds. At that point the agent is untrusted
-at RUNTIME, and no amount of policy evaluation helps, because the agent is the thing evaluating.
+The perimeter and sandbox protect different resources.
 
-The sandbox answers that model. It puts a kernel boundary around the process itself, before any
-of AgentWall's own code runs. An agent that is talked into reading `~/.ssh/id_ed25519` under this
-sandbox does not get a policy verdict, a scanner finding, or a ledger entry. It gets `EACCES`
-from the kernel, and there is nothing in the prompt that can change that.
+| Control | Scope | Limit |
+| --- | --- | --- |
+| Perimeter | One uid's packets | It does not restrict files. It needs root to install nftables rules. |
+| Sandbox | One process tree | It does not provide complete network isolation. It never needs root. |
 
-The two controls answer different questions and neither replaces the other:
+Run both controls when the host supports them. Do not treat either control as a replacement for the other.
 
-| | Perimeter | Sandbox |
-|---|---|---|
-| Unit of containment | A uid's packets | One process and its children |
-| Mechanism | nftables redirect and drop | Landlock LSM, seccomp BPF |
-| Needs root | Yes, to install | No, ever |
-| Stops unobserved egress | Yes | Partly: TCP ports only, ABI 4 and up |
-| Stops reading a credential file | No | Yes |
-| Survives the agent unsetting an env var | Yes | Yes |
+## Operator workflow
 
-Run both. They compose, with one important exception described under
-[Why there is no network namespace here](#why-there-is-no-network-namespace-here).
+1. Build the launcher.
+2. Probe the host kernel.
+3. Review the sandbox plan.
+4. Run the command.
+5. Read the summary line for each run.
 
-## What actually enforces this
+The sandbox refuses unsupported filesystem confinement by default. `--allow-degraded` is the only explicit exception for a kernel without Landlock.
 
-Two Linux kernel features, in this order.
+## Kernel requirements
 
-**Landlock** is a Linux Security Module that lets an unprivileged process permanently restrict
-its own filesystem access, and from ABI 4 its own TCP ports. It is inherited across `fork` and
-`execve`, it cannot be relaxed once applied, and it needs no root, no capability, and no setuid
-binary. It is the boundary.
+The sandbox supports Linux only. `agentwall sandbox` refuses to run on macOS and Windows.
 
-**seccomp** filters syscalls. AgentWall installs a small denylist of calls no agent runtime
-issues, as defence in depth behind Landlock. It is not the boundary, and the reasons are stated
-in [The seccomp filter](#the-seccomp-filter).
+Do not use the kernel version alone to judge support. A distribution can compile Landlock but omit it from the active LSM list.
 
-Both are applied by `agentwall-sandbox`, a small launcher compiled from
-`native/agentwall-sandbox.c`. It exists because Landlock and seccomp are per-process credentials
-that must be installed after `fork` and before `execve`, and Node offers no pre-exec hook and no
-way to issue a raw syscall. The launcher reads a profile, makes four syscalls, and becomes your
-command. It is not setuid and never needs to be.
+| Capability | Landlock ABI | Kernel | Behavior without it |
+| --- | --- | --- | --- |
+| Filesystem confinement | 1 | 5.13 | The sandbox refuses to run. |
+| Rename and link across rules with `REFER` | 2 | 5.19 | The kernel refuses moves between two permitted directories. |
+| `TRUNCATE` right | 3 | 6.2 | A process can empty a file under a read-only path with `truncate(2)`. |
+| TCP connect and bind scoping | 4 | 6.7 | `--restrict-net` installs no network rule and reports degraded operation. |
+| `IOCTL_DEV` right | 5 | 6.10 | Device ioctls remain unrestricted on permitted device nodes. |
+| Abstract Unix socket and signal scoping | 6 | 6.12 | Same-uid abstract sockets and signals remain reachable. |
 
-## Requirements, and how to check rather than assume
-
-| Capability | Landlock ABI | Kernel | What you lose without it |
-|---|---|---|---|
-| Filesystem confinement | 1 | 5.13 | Everything. The sandbox refuses to run. |
-| Rename and link across rules (`REFER`) | 2 | 5.19 | Moves between two permitted directories are refused. |
-| `TRUNCATE` right | 3 | 6.2 | A file under a read-only path can still be emptied with `truncate(2)`. |
-| TCP connect and bind scoping | 4 | 6.7 | `--restrict-net` does nothing. The launcher says so, loudly, on every run. |
-| `IOCTL_DEV` right | 5 | 6.10 | Device ioctls on permitted device nodes are unrestricted. |
-
-Do not infer any of this from a version string. A distribution kernel can carry a 6.8 version
-number with Landlock compiled in but absent from the boot-time LSM list, and `uname` would report
-a capability that is not there. Measure it:
+Probe the actual kernel:
 
 ```
 $ agentwall sandbox probe
@@ -83,119 +56,246 @@ seccomp filter:  yes
 architecture:    supported
 ```
 
-That ABI number comes from `landlock_create_ruleset(NULL, 0, LANDLOCK_CREATE_RULESET_VERSION)`,
-which is the kernel answering, not a lookup table. `agentwall sandbox probe --json` gives the
-same thing for a deployment check, and exits non-zero when the ABI is 0.
+The launcher gets the ABI from `landlock_create_ruleset(NULL, 0, LANDLOCK_CREATE_RULESET_VERSION)`. The kernel returns this value.
 
-**macOS and Windows are not supported.** Landlock and seccomp are Linux kernel interfaces with no
-equivalent. Pipelock reaches macOS through `sandbox-exec` and dynamic SBPL profiles; AgentWall has
-nothing there, and `agentwall sandbox` on a non-Linux host refuses rather than degrading to
-something that looks similar. That is a real gap, not a design position.
+`agentwall sandbox probe --json` returns the same data for a deployment check. It exits with a nonzero status when the ABI is `0`.
 
-## Building the launcher
+## Build the launcher
+
+Build the launcher from a checkout or an installed package:
 
 ```
 npm run build:sandbox     # in a checkout
 agentwall sandbox build   # anywhere the packaged CLI is installed
 ```
 
-This is an explicit step rather than a `postinstall` hook. A package that silently invokes a C
-compiler during install is a supply-chain smell anywhere, and a poor look in one whose pitch is
-that you can audit what it does. It is also the moment you decide to trust a binary that will
-hold the filesystem boundary for your agent, and that should be a command you typed.
+The build needs a C compiler. It does not need libseccomp, libcap, or a Landlock userspace library.
 
-The build refuses to report success unless the binary it produced answers `--probe`, and it
-prints the measured ABI so a kernel that cannot enforce what you expect is visible at build time
-rather than at incident time. If you would rather build elsewhere, point
-`AGENTWALL_SANDBOX_HELPER` at the result.
+The source is `native/agentwall-sandbox.c`. It contains the kernel UAPI constants and the ABI that introduced each constant.
 
-Requirements: a C compiler. No libseccomp, no libcap, no Landlock userspace library. The kernel
-UAPI constants are reproduced in `native/agentwall-sandbox.c` with the ABI that introduced each
-one, so they can be checked against `include/uapi/linux/landlock.h` directly. Adding three
-library dependencies to the one component that decides what an agent may read was not a trade
-worth making.
+The build checks the launcher with `--probe`. It refuses to report success when the probe fails.
 
-### Checking your own build
+Set `AGENTWALL_SANDBOX_HELPER` to use a launcher from another location.
 
-The launcher is built on your machine, so you can rebuild it and compare rather than trusting a
-binary someone handed you:
+### Compare a local rebuild
+
+Build into a separate output directory:
 
 ```
 AGENTWALL_SANDBOX_OUT_DIR=/tmp/check bash scripts/build-sandbox-helper.sh
 sha256sum /tmp/check/agentwall-sandbox dist/native/agentwall-sandbox
 ```
 
-Those two digests match. Measured on this project's development host, gcc 13.3.0: two builds a
-second apart, into different output paths, produced byte-identical binaries, and `strings` finds
-neither a build path nor a date embedded in the result. So a rebuild on the same toolchain is a
-real check, and a digest that changes when you did not change the source is worth investigating.
+The same source and toolchain can produce matching digests. A compiler, C library, or distribution change can produce different valid bytes.
 
-What that check does NOT give you is a digest comparable with anyone else's. The bytes depend on
-the compiler and the C library that produced them, so a different gcc version, clang instead of
-gcc, or a different distribution will all yield a different and equally correct binary. There is
-no published checksum for this launcher to compare against, deliberately: it is not a release
-artifact, and a checksum nobody can independently reproduce, sitting in a manifest next to ones
-they can, teaches people the manifest means something it does not.
+The project does not publish one launcher checksum. The launcher is not a release artifact that every toolchain can reproduce byte for byte.
 
-## Using it
+## Plan and run
+
+Review the profile before the first run:
 
 ```
 agentwall sandbox plan --workdir /srv/agent/work            # render, change nothing
 agentwall sandbox run  --workdir /srv/agent/work -- node agent.js
 ```
 
-No root. `plan` is the only subcommand you should skip reading the output of, and only after you
-have read it once.
+Do not run the launcher as root.
 
-| Flag | Effect |
-|---|---|
-| `--workdir <path>` | The one directory the command may write to. Defaults to the current directory. |
-| `--allow-read <path>` | Widen the profile by one read-only path. Repeatable. |
-| `--allow-write <path>` | Widen the profile by one writable path. Repeatable. |
-| `--allow-exec <path>` | Widen the profile by one executable path. Repeatable. |
-| `--allow-tcp <port>` | Permit outbound TCP to one port. Repeatable. Implies `--restrict-net`. |
-| `--allow-bind <port>` | Permit listening on one port. Repeatable. Implies `--restrict-net`. |
-| `--restrict-net` | Confine TCP to the permitted ports. Needs ABI 4. |
-| `--seccomp off\|errno\|kill` | Syscall filter action. Default `errno`. |
-| `--require-abi <n>` | Refuse to run below this Landlock ABI. |
-| `--allow-degraded` | Run with no Landlock at all, printing what is unprotected on every run. |
+| Option | Effect | Limit |
+| --- | --- | --- |
+| `--workdir <path>` | Grants write access to one work directory. | It defaults to the current directory. |
+| `--allow-read <path>` | Adds one read-only path. | Repeat the option for more paths. Each path widens access. |
+| `--allow-write <path>` | Adds one writable path. | Repeat the option for more paths. Each path widens access. |
+| `--allow-exec <path>` | Adds one executable path. | Repeat the option for more paths. Each path widens access. |
+| `--allow-tcp <port>` | Permits outbound TCP to one port. | Repeat the option for more ports. It implies `--restrict-net`. |
+| `--allow-bind <port>` | Permits TCP listen on one port. | Repeat the option for more ports. It implies `--restrict-net`. |
+| `--restrict-net` | Confines TCP connect and bind to permitted ports. | It needs Landlock ABI 4. It does not cover UDP. |
+| `--seccomp off\|errno\|kill` | Selects the system call filter action. | The default is `errno`. `off` removes this defense layer. |
+| `--require-abi <n>` | Refuses a kernel below the specified ABI. | `--allow-degraded` does not override this value. |
+| `--allow-degraded` | Permits a run without Landlock. | It prints the missing protection for each run. It does not satisfy `--require-abi`. |
 
-### What the default profile grants
+## Default filesystem profile
 
-Read and execute on `/usr`, `/bin`, `/sbin`, `/lib`, `/lib64`, plus the running Node binary when
-a version manager has put it somewhere else. Read on `/etc`, `/proc`, and
-`/sys/devices/system/cpu`. Read and write on the character devices `/dev/null`, `/dev/zero`,
-`/dev/full`, `/dev/random`, `/dev/urandom`, `/dev/tty`. Write on the workdir, and on a private
-`.agentwall-tmp` inside it which `run` exports as `TMPDIR`.
+The default profile grants read and execute access to these paths:
 
-That is the entire list. Everything else on the filesystem is refused, and the refusals are not
-enumerated anywhere because the profile is an allowlist: your home directory, your SSH keys, your
-cloud credentials, your shell history, your browser profile, your other checkouts, `/root`,
-`/var`, and `/opt` are all absent by construction rather than by exclusion rule.
+- `/usr`
+- `/bin`
+- `/sbin`
+- `/lib`
+- `/lib64`
+- The active Node binary when a version manager stores it elsewhere
 
-Two grants in that list are wider than they look and are called out rather than buried.
+It grants read access to these paths:
 
-**`/proc` is granted whole, not as `/proc/self`.** Node reads `/proc/stat` and `/proc/cpuinfo`
-for `os.cpus()`, `/proc/meminfo` for heap sizing, and `/proc/self/maps` during startup; denying
-any of them produces failures far from their cause. What this grants beyond `/proc/self` is the
-ability to enumerate other processes running as the same uid and read their command lines and
-environments. Landlock cannot narrow it: procfs visibility is controlled by the `hidepid=` mount
-option, not by path rules. If that matters in your deployment, mount `/proc` with `hidepid=2`, or
-give the agent its own uid so there is nothing interesting to enumerate.
+- `/etc`
+- `/proc`
+- `/sys/devices/system/cpu`
 
-**Shared `/tmp` is deliberately not granted.** It is a place to drop an executable and a place to
-read what another process left behind. The private temp inside the workdir costs nothing and
-removes the category. If something you run insists on `/tmp`, `--allow-write /tmp` is there, and
-you should know that you have opened it.
+It grants read and write access to these character devices:
 
-## Proving it, rather than believing it
+- `/dev/null`
+- `/dev/zero`
+- `/dev/full`
+- `/dev/random`
+- `/dev/urandom`
+- `/dev/tty`
 
-A test that asserts a rendered profile contains `fs read /etc` proves that a string says so. It
-proves nothing about whether any kernel refused anything. The only claims worth making here are
-comparisons: the same binary, the same argument, run twice, once bare and once sandboxed.
+The profile grants write access to the work directory. It creates `.agentwall-tmp` inside that directory and exports it as `TMPDIR`.
 
-Here is one you can run yourself in under a minute. Substitute any file you own that the sandbox
-does not grant.
+The allowlist grants nothing else. It does not grant home directories, SSH keys, cloud credentials, browser profiles, other checkouts, `/root`, `/var`, or `/opt`.
+
+### `/proc` limit
+
+The profile grants all of `/proc`. Node needs `/proc/stat`, `/proc/cpuinfo`, `/proc/meminfo`, and `/proc/self/maps`.
+
+This grant can expose command lines and environments for other processes with the same uid. Landlock cannot narrow procfs visibility to `/proc/self`.
+
+Mount `/proc` with `hidepid=2` when the host supports this setting. Give the agent a separate uid when same-uid process data matters.
+
+### Temporary file limit
+
+The profile does not grant shared `/tmp`. Shared `/tmp` can expose another process's files and accept new executables.
+
+Use the private `TMPDIR` in the work directory. `--allow-write /tmp` opens the shared directory to the process tree.
+
+## Degraded behavior
+
+The sandbox never changes to a silent no-op.
+
+| Condition | Result |
+| --- | --- |
+| Launcher not built | `run` refuses. It lists each searched path and prints the build command. |
+| Kernel has no Landlock | `run` refuses. `--allow-degraded` permits the run and prints `DEGRADED: no Landlock on this kernel. The filesystem is NOT confined.` each time. |
+| Kernel ABI below `--require-abi` | `run` refuses and reports both ABI values. `--allow-degraded` does not override this result. |
+| `--restrict-net` below ABI 4 | The command runs. The launcher prints `DEGRADED` and the number of skipped network rules. Filesystem confinement remains active. |
+| ABI below 3 | The command runs. The launcher reports the missing `TRUNCATE` right. |
+| A profile path does not exist | The launcher skips that path. It prints the path and errno. |
+| Profile input is truncated | The launcher refuses the profile because it lacks the terminating `end` line. |
+| seccomp filter mode is unavailable | The launcher refuses a requested filter. It names `--seccomp off` as the explicit alternative. |
+
+A skipped path can remove access that the command needs. Read every skipped-path warning.
+
+Each started command produces one summary line on stderr:
+
+```
+agentwall-sandbox: landlock abi=4 fs-rules=17 skipped=0 net=tcp net-rules=2 ioctl-dev=unavailable seccomp=errno filter-insns=119
+```
+
+The command also receives `AGENTWALL_SANDBOX`. This environment variable contains the measured ABI and seccomp mode.
+
+Record the measured value. Do not record only the requested profile.
+
+## Enforcement design
+
+`agentwall-sandbox` applies Landlock and seccomp after `fork` and before `execve`. The launcher then becomes the requested command.
+
+Landlock restrictions pass to child processes through `fork` and `execve`. The process cannot relax them after installation.
+
+The launcher is not setuid. It uses no capability and needs no root access.
+
+### Landlock boundary
+
+Landlock controls filesystem access. ABI 4 also controls TCP connect and bind ports.
+
+A missing allowlist rule causes the kernel to return `EACCES`. AgentWall does not need a policy decision for that refusal.
+
+Landlock does not protect a remote service from a credential that the process already holds. Use the proxy, policy engine, and audit chain for remote actions.
+
+### seccomp defense layer
+
+The default seccomp mode denies 50 system calls with `SECCOMP_RET_ERRNO(EPERM)`. Run `agentwall-sandbox --list-denied` to get the authoritative current list.
+
+The denied calls cover these groups:
+
+- New namespaces: `unshare`, `setns`, and `clone` with `CLONE_NEWUSER`.
+- Mount changes: `mount`, `umount2`, `pivot_root`, `chroot`, `move_mount`, `open_tree`, `fsopen`, `fsconfig`, `fsmount`, `fspick`, and `mount_setattr`.
+- Path-free file access: `open_by_handle_at` and `name_to_handle_at`.
+- Kernel code and reboot: `init_module`, `finit_module`, `delete_module`, `kexec_load`, `kexec_file_load`, and `reboot`.
+- Large kernel surfaces: `bpf`, `perf_event_open`, `userfaultfd`, and the `io_uring` family.
+- Other process access: `ptrace`, `process_vm_readv`, `process_vm_writev`, and `kcmp`.
+- Host-wide state: `settimeofday`, `clock_settime`, `clock_adjtime`, `adjtimex`, `sethostname`, `setdomainname`, `swapon`, `swapoff`, `acct`, `quotactl`, and `syslog`.
+- Kernel keyring: `add_key`, `request_key`, and `keyctl`.
+- Hardware and legacy loaders: `ioperm`, `iopl`, `modify_ldt`, and `uselib`.
+- Terminal input injection: `ioctl` with `TIOCSTI` or `TIOCLINUX` in `args[1]`.
+- `clone3`: the filter returns `ENOSYS` for the complete call.
+
+The `clone3` flags are in a structure that seccomp cannot inspect. The `ENOSYS` result lets glibc fall back to `clone` for threads.
+
+The filter uses a denylist because a strict allowlist can break Node on delayed libuv paths. The default denylist supports common Node runtime operations.
+
+These operations include filesystem access, `crypto.randomBytes`, `os.cpus`, child processes, worker threads, the libuv thread pool, and TCP connect and listen.
+
+A denylist cannot cover every system call. Treat seccomp as defense in depth behind Landlock.
+
+`--seccomp kill` uses `SECCOMP_RET_KILL_PROCESS` instead of `EPERM`. A false positive then stops the complete process without a recoverable runtime error.
+
+## Network behavior
+
+Landlock ABI 4 scopes TCP ports. It does not scope destination addresses.
+
+Permit one proxy port when the process must use an AgentWall proxy:
+
+```
+$ agentwall sandbox run --workdir /srv/work --allow-tcp 3128 -- node agent.js
+```
+
+A measured port check produced this result:
+
+```
+                   bare              sandboxed
+connect 19731  ->  ECONNREFUSED      ECONNREFUSED   (permitted; nothing listening)
+connect 19732  ->  ECONNREFUSED      EACCES         (refused by Landlock)
+connect 3128   ->  CONNECTED         EACCES         (refused by Landlock)
+bind    19733  ->  BOUND             EACCES         (refused by Landlock)
+```
+
+The sandbox refuses TCP connect and bind outside the allowed ports. It does not redirect traffic or inspect content.
+
+### Network namespace boundary
+
+The sandbox does not create a network namespace. nftables tables belong to one network namespace.
+
+A new network namespace would leave the perimeter's `inet agentwall` table. Both controls could then report success in different namespaces.
+
+The seccomp filter denies `unshare`, `setns`, and `clone(CLONE_NEWUSER)`. A sandboxed process therefore cannot create its own network namespace through those calls.
+
+A new bare network namespace has no route by default. A connectivity helper or writable container socket could add a path later.
+
+A user namespace alone does not bypass the uid-based perimeter. The network namespace creates the composition risk.
+
+A future network namespace feature must install perimeter rules inside that namespace. Its `status` and `verify` results must inspect the agent's namespace.
+
+### DNS limits
+
+The sandbox is not a DNS control. Landlock network rules cover TCP only.
+
+The perimeter default blocks port 53 with other non-permitted traffic. Name lookup then fails for clients that need DNS.
+
+`agentwall perimeter --dns-resolver <ip>` permits port 53 to one resolver. This creates a DNS data channel that neither control inspects.
+
+An attacker can place data in DNS queries. TCP port 53 can also carry a bidirectional stream when the sandbox permits that port.
+
+Do not pass `--allow-tcp 53` unless the command needs TCP DNS. This does not close the UDP DNS channel.
+
+A per-application address override can avoid client DNS when that client supports it. The proxy still uses the hostname from SNI for its upstream connection.
+
+Do not use a host-wide `/etc/hosts` false address for this purpose. The local proxy reads the same file and can connect to the false address.
+
+The sandbox grants read access to `/etc`, so static host entries can resolve. It does not grant `/run` by default.
+
+On a systemd-resolved host, `/etc/resolv.conf` can point into `/run/systemd/resolve`. The default profile can block that resolved path.
+
+`--allow-read /run` can restore access on that layout. Treat this result as a distribution property, not as a DNS security control.
+
+When the perimeter uses an external resolver, configure the agent's `resolv.conf` for that resolver. A systemd-resolved symlink can restore its managed content.
+
+The proxy evaluates policy against the recovered hostname. It does not evaluate policy against the address that the agent dialed.
+
+The sandbox has no mount namespace. It cannot give the agent a private `/etc/hosts` while the local proxy keeps the host file.
+
+## Verify kernel enforcement
+
+Compare the same file access without and with the sandbox:
 
 ```
 $ cat ~/.ssh/config | wc -c
@@ -206,11 +306,9 @@ agentwall-sandbox: landlock abi=4 fs-rules=17 skipped=0 net=off net-rules=0 ioct
 cat: /home/you/.ssh/config: Permission denied
 ```
 
-The file has not moved, its permissions have not changed, and your uid can still read it. The
-process was refused by the kernel because no rule in its Landlock domain covered that path.
+The uid can still read the file outside the sandbox. The Landlock domain returns `EACCES` inside the sandbox.
 
-A fuller measurement, from a script that stands in for an injected agent and reports only whether
-the kernel let it look:
+A broader comparison produces this shape:
 
 ```
 =========== BASELINE: plain node, no sandbox ===========
@@ -230,376 +328,33 @@ the kernel let it look:
 /tmp/awdemo/work-file.txt          -> LEAKED: 45 bytes read
 ```
 
-`/etc/shadow` is the control: it fails in both runs, because ordinary file permissions already
-refused it. The work file is the other control: it succeeds in both, because the profile grants
-it. Everything in between changed only because of Landlock.
+`/etc/shadow` fails in both runs because normal file permissions deny it. The work file succeeds because the sandbox grants it.
 
-`tests/sandbox-kernel.test.ts` runs exactly this shape of comparison against the real LSM, and
-`tests/sandbox-profile.test.ts` covers the decisions that are text. The kernel suite needs no
-privilege, so it is a real enforcement test in CI rather than one that is skipped forever. When a
-host cannot support it, it skips by name with the measured reason printed, and a companion test
-fails if that reason is missing. A green run on a kernel without Landlock can never be mistaken
-for a green run that proved something.
+`tests/sandbox-kernel.test.ts` compares real kernel behavior. It needs no privilege.
 
-## The seccomp filter
+`tests/sandbox-profile.test.ts` checks profile decisions. A kernel suite skip includes the measured reason.
 
-A denylist of 50 syscalls, run with `SECCOMP_RET_ERRNO(EPERM)` by default. `agentwall-sandbox
---list-denied` prints the current list with numbers, and is the authority; this section explains
-the shape.
+## Security limits
 
-Denied, grouped by what each would buy an attacker who already has code execution as the agent:
+Keep each limit with the related control decision.
 
-- **New namespaces**: `unshare`, `setns`, and `clone` with `CLONE_NEWUSER` filtered out of
-  `args[0]`. This is the escape hatch that turns code execution into fresh kernel attack surface,
-  and it is also what would let a process leave the perimeter's network namespace.
-- **Mount table manipulation**: `mount`, `umount2`, `pivot_root`, `chroot`, `move_mount`,
-  `open_tree`, `fsopen`, `fsconfig`, `fsmount`, `fspick`, `mount_setattr`. Landlock rules are
-  pinned to paths, and remounting moves the paths.
-- **Path-free filesystem access**: `open_by_handle_at`, `name_to_handle_at`. These reach a file
-  without walking a path, and therefore without meeting a Landlock path rule.
-- **Kernel code loading and reboot**: `init_module`, `finit_module`, `delete_module`,
-  `kexec_load`, `kexec_file_load`, `reboot`.
-- **Large kernel attack surfaces**: `bpf`, `perf_event_open`, `userfaultfd`, and the `io_uring`
-  family. io_uring matters twice over: it is a recurring source of kernel vulnerabilities, and
-  operations submitted through its ring are not seen by a seccomp filter at all. Landlock still
-  applies to them, so this is not the boundary, but leaving a seccomp bypass open next to a
-  seccomp filter is not a defensible default.
-- **Reaching into other processes**: `ptrace`, `process_vm_readv`, `process_vm_writev`, `kcmp`.
-- **Host-wide state**: `settimeofday`, `clock_settime`, `clock_adjtime`, `adjtimex`, `sethostname`,
-  `setdomainname`, `swapon`, `swapoff`, `acct`, `quotactl`, `syslog`.
-- **Kernel keyring**: `add_key`, `request_key`, `keyctl`.
-- **Direct hardware and legacy loaders**: `ioperm`, `iopl`, `modify_ldt`, `uselib`.
-- **Terminal input injection**: `ioctl` with `TIOCSTI` or `TIOCLINUX`, filtered on `args[1]`. An
-  agent sharing a tty with its operator can otherwise push characters into that terminal's input
-  queue and type commands as the operator.
-- **`clone3`**, returned as `ENOSYS` rather than `EPERM`. Its flags live in a struct that seccomp
-  cannot dereference, so `CLONE_NEWUSER` cannot be filtered there and the call is refused whole.
-  The errno is load bearing: glibc's `__clone_internal` tries `clone3` first and falls back to
-  `clone` only on `ENOSYS`. Return anything else and every `pthread_create` fails, which means
-  every Node worker thread fails.
+| Limit | Effect | Mitigation |
+| --- | --- | --- |
+| Remote services | Existing environment credentials still work remotely. | Use proxy policy and audit controls. Remove unnecessary credentials. |
+| Granted paths | A broad `--allow-read` or `--allow-write` option creates broad access. | Review `agentwall sandbox plan` before the run. |
+| UDP, ICMP, raw sockets, and Unix sockets | Landlock TCP rules do not cover them. | Use the perimeter for UDP egress. Use a separate uid for same-uid local resources. |
+| Same-uid processes below ABI 6 | Abstract Unix sockets and process signals remain reachable. | Give the agent its own uid. |
+| `/proc` | The process can enumerate same-uid process data. | Use `hidepid=2` or a separate uid. |
+| Device ioctls below ABI 5 | Permitted device nodes allow unrestricted ioctls. | Do not grant unnecessary devices. Require ABI 5 when needed. |
+| Read-only files below ABI 3 | `truncate(2)` can empty a file. | Require ABI 3 or later. |
+| seccomp denylist | Unlisted system calls remain available. | Treat Landlock as the main boundary. |
+| Kernel defects | A kernel vulnerability can affect both controls. | Keep the kernel current. Use a virtual machine when the threat model requires a hypervisor. |
+| Root | Root can bypass controls outside Landlock hooks. | Never run the agent or launcher as root. |
+| Existing processes | The sandbox applies at `execve` and does not change an earlier process. | Start the complete process tree through `agentwall sandbox run`. |
 
-### Why a denylist, stated plainly
+## Compose with the perimeter
 
-An allowlist is the stronger construction and this is not one. The reason is that an allowlist
-tight enough to be interesting breaks Node in ways that surface hours later inside libuv, on a
-code path nobody exercised, and the operator's fix is to turn the sandbox off. That takes the
-Landlock protection with it, and Landlock is the part that actually holds. A smaller control that
-stays on is worth more than a larger one that gets disabled.
-
-So the denylist is what it is: every entry is a call no agent runtime makes in normal operation,
-chosen so a false positive would be a bug report rather than a mystery. It was tested rather than
-reasoned about. Under the full default profile with all 50 denials active, a Node 24 process
-passes filesystem reads and writes, `crypto.randomBytes`, `os.cpus`, `child_process`,
-`worker_threads`, the libuv thread pool, and TCP listen plus connect. The `clone3` and `io_uring`
-denials are the two most likely to bite a future runtime, and they are the two that were verified
-by running the runtime rather than by reading its source.
-
-**A denylist can never be complete.** Treat it as defence in depth behind Landlock, never as the
-boundary.
-
-`--seccomp kill` swaps `EPERM` for `SECCOMP_RET_KILL_PROCESS`. Louder, and usually the right
-instinct for a security control, but a false positive then becomes an agent that dies mid-task
-for reasons nobody can reproduce. `EPERM` leaves a failed syscall, an error the runtime can
-report, and a process alive to report it.
-
-## Why there is no network namespace here
-
-Pipelock lists network namespace isolation among its Linux controls, and this section explains
-why AgentWall deliberately does not have it. This is the most important paragraph in the document
-for anyone planning to add one.
-
-**nftables tables are per network namespace.** The perimeter installs its rules in an
-`inet agentwall` table in the namespace it runs in. Move the agent into a fresh network
-namespace and it is no longer in that namespace, so the uid-based redirect does not apply to it
-and neither does the default drop. The perimeter would still report itself installed, because it
-is: `nft list table inet agentwall` in the original namespace returns exactly what it did before.
-The sandbox would report itself installed, because it is.
-
-The operator would then be running two controls and protected by neither, with two green
-statuses. That is strictly worse than running only one, because the second green status is what
-convinces them to widen the task.
-
-This repository has already been burned by that exact failure shape once. An earlier perimeter
-shipped using `redirect` as an nftables chain name, which nft rejects as a reserved statement
-keyword. The ruleset failed to load, nothing downstream noticed, and the only thing that caught
-it was handing the file to a real `nft`. A silent composition failure between two controls that
-each believe they are working is the same bug wearing different clothes, and it is harder to
-catch because both halves are individually correct.
-
-So the network control here is **Landlock TCP port scoping**, which needs ABI 4 and composes
-rather than conflicts. It restricts the same process, in the same namespace, using the same
-credential-inheritance model as the filesystem rules. The perimeter keeps its redirect, the
-sandbox independently refuses connects to ports outside the profile, and the two agree without
-either depending on the other being correct:
-
-```
-$ agentwall sandbox run --workdir /srv/work --allow-tcp 3128 -- node agent.js
-```
-
-Measured on this project's development host, with only port 19731 permitted:
-
-```
-                   bare              sandboxed
-connect 19731  ->  ECONNREFUSED      ECONNREFUSED   (permitted; nothing listening)
-connect 19732  ->  ECONNREFUSED      EACCES         (refused by Landlock)
-connect 3128   ->  CONNECTED         EACCES         (refused by Landlock)
-bind    19733  ->  BOUND             EACCES         (refused by Landlock)
-```
-
-Port 3128 was a live proxy at the time, so the bare run really did connect. The sandboxed run
-never reached it.
-
-The seccomp denylist closes the other half of this: because `unshare`, `setns` and
-`clone(CLONE_NEWUSER)` are all refused, a process launched under the sandbox cannot create a
-network namespace even if something talks it into trying.
-
-### What was measured, and how big the hole actually is
-
-The namespace claim above is not reasoning. It was measured on a disposable lab VM, kernel
-`6.8.0-136-generic` with nftables 1.0.9, during the perimeter containment work on branch
-`agent/8.7-containment-proof`: inside a fresh namespace, `unshare -Urn -- nft list tables` shows
-no `agentwall` table while the host namespace has one. The perimeter's own containment was
-confirmed on the same VM across 29 probes with two independent oracles, uid-scoped nft counters
-and tcpdump on the wire, agreeing on every one.
-
-Three qualifiers keep that from being overstated, because the hole is real but smaller than the
-mechanism suggests.
-
-**A bare network namespace is self-denial, not escape.** A fresh netns has a down `lo`, no route
-and no peer interface, so `connect()` returns `ENETUNREACH`. It becomes an actual way out only
-with a userspace connectivity helper such as slirp4netns, pasta, passt or `lxc-user-nic`, or a
-writable container socket. The danger is not that the agent gains the network, it is that it
-leaves the table while every status stays green.
-
-**A user namespace alone does NOT break the perimeter.** This was the good news from the same
-measurement. With `kernel.apparmor_restrict_unprivileged_userns` lowered to 0, `unshare -Ur`
-gives uid 0 inside the namespace and the perimeter still holds: TCP to an arbitrary address and
-port is dropped, TCP to 443 is still redirected to the proxy. `meta skuid` matches the real kuid
-in the initial user namespace, not the namespace-local one. The network namespace is the part
-that matters; the user namespace is only the usual way an unprivileged process gets one.
-
-**On a stock Ubuntu 24.04 host the agent cannot get there today.** Measured on this project's
-development host: `kernel.apparmor_restrict_unprivileged_userns = 1`, and `unshare -Urn` fails
-with `write failed /proc/self/uid_map: Operation not permitted`. Worth noticing precisely what
-that means, because it is the argument for the seccomp denial rather than against it: the raw
-`unshare(CLONE_NEWUSER)` syscall still SUCCEEDS on that host (measured, `rc=0`), and only the
-later `uid_map` write is refused. The AppArmor restriction blocks the useful outcome; the seccomp
-denial blocks the syscall. So the correct claim is that this closes a real hole that is currently
-unreachable on a default Ubuntu install, not that the perimeter leaks today. An operator who
-lowers that sysctl, or runs a distribution that does not ship the restriction, is relying on the
-seccomp filter instead.
-
-If a network namespace is ever added, it has to own the perimeter's rules too, install them
-inside the new namespace, and make the perimeter's `status` and `verify` report on the namespace
-the agent is actually in. Anything short of that reintroduces the two-green-statuses failure.
-
-## Degradation
-
-An operator who believes a process is confined and is wrong is worse off than one who knows it is
-not. The first has already widened what they will let the agent attempt, and an unconfined run
-produces no signal anywhere: the work completes, the ledger fills with whatever happened to be
-observed, and the unprotected part is invisible.
-
-So there is no silent no-op anywhere in this feature.
-
-| Condition | What happens |
-|---|---|
-| Launcher not built | `run` refuses, lists every path it searched, and prints the build command. |
-| Kernel has no Landlock | `run` refuses. `--allow-degraded` overrides, and prints `DEGRADED: no Landlock on this kernel. The filesystem is NOT confined.` on every single run. |
-| Kernel ABI below `--require-abi` | `run` refuses, naming both numbers. `--allow-degraded` does NOT override this: it answers "is no Landlock acceptable", and `--require-abi` is a different question you already answered. |
-| `--restrict-net` below ABI 4 | Runs, prints `DEGRADED`, and says how many net rules were not installed. Filesystem confinement is unaffected. |
-| ABI below 3 | Runs, prints `DEGRADED` about the missing `TRUNCATE` right. |
-| A profile path does not exist | Skipped with a per-path warning naming the path and the errno. Refusing would make the sandbox unusable across distributions; skipping quietly would turn a typo in a write path into an agent that cannot work for no visible reason. |
-| Profile arrives truncated | Refused. A truncated profile can drop the trailing `seccomp` line, which would silently produce a weaker sandbox than was asked for, so the launcher requires a terminating `end` line. |
-| seccomp requested, kernel has no filter mode | Refused, with `--seccomp off` named as the way through. |
-
-Every run that starts a command also prints one summary line to stderr naming what was installed:
-
-```
-agentwall-sandbox: landlock abi=4 fs-rules=17 skipped=0 net=tcp net-rules=2 ioctl-dev=unavailable seccomp=errno filter-insns=119
-```
-
-The process also gets `AGENTWALL_SANDBOX` in its environment, holding the measured ABI and the
-seccomp mode, so a harness can record what it was actually running under rather than what it
-intended to run under.
-
-## What this does not confine
-
-Read this section as carefully as the rest. Everything below is outside the boundary.
-
-**Anything not on this host.** The sandbox restricts one process tree on one machine. Credentials
-the agent legitimately holds in its environment still work against remote services, and the
-remote service has no idea a sandbox exists. That is what the proxy, the policy engine and the
-audit chain are for.
-
-**Whatever you granted.** `--allow-read /home/you` produces a sandbox that permits reading
-`/home/you`. The default profile is the security posture; every flag that widens it is a decision
-you are making. `agentwall sandbox plan` prints the whole profile precisely so this is inspectable
-before you rely on it.
-
-**UDP, ICMP, raw sockets, and unix domain sockets.** Landlock's network support covers TCP
-`connect` and `bind` only. The perimeter's default drop does cover UDP, which is one of the
-concrete reasons to run both.
-
-**DNS, when the perimeter has been given a resolver.** This one is measured, not theoretical, and
-it is the sharpest edge in the composed posture. `agentwall perimeter --dns-resolver <ip>` opens
-port 53 to that resolver for the agent uid. On the lab VM used for the perimeter containment
-work, an attacker-chosen payload was pushed off the host inside a DNS QNAME and 142 bytes came
-back, and TCP/53 to the same resolver carried a full bidirectional stream. Neither control closes
-it. Landlock cannot: port 53 has to be permitted for DNS to work at all, so scoping it out only
-turns the hole into a broken resolver. The sandbox does close the TCP half if you simply never
-pass `--allow-tcp 53`, which leaves the UDP half open and unobserved.
-
-### Two corrections, and where that leaves DNS
-
-This section has been wrong twice, and both versions are named here rather than quietly
-rewritten, because each reads plausibly and the next person will arrive at them the same way.
-
-The first said the agent does not need to resolve anything because the proxy resolves on its
-behalf. That was wrong about the mechanism.
-
-The agent does need to resolve, because `connect()` needs a destination address before it can
-emit a SYN, and the redirect acts on that SYN. Measured on the lab VM with no resolver named:
-`curl https://example.com/` as the agent uid fails with
-`curl: (6) Could not resolve host: example.com`. It never reaches the redirect at all. So "name
-no resolver" on its own does not give you a contained agent, it gives you an agent that cannot
-open any connection.
-
-What is true is narrower. The address the AGENT resolves does not have to be correct, because the
-redirect rewrites the destination before a byte leaves the host and the proxy recovers the real
-hostname from SNI. Measured on the lab VM with
-`curl --resolve example.com:443:192.0.2.1`, where `192.0.2.1` is TEST-NET-1 and routes nowhere:
-`http=200` with real content, and the ledger recorded `example.com:443` with `bytesDown=5344`. A
-host outside the allowlist was denied and recorded as a deny. Note the scope of that override.
-It is curl-internal and per-invocation; it never reaches `getaddrinfo` and never touches
-`/etc/hosts`. That detail is the whole difference between the paragraph above and the one below.
-
-### Why that does not become a recipe
-
-An earlier version of this section turned that into three steps, the middle one being "give the
-agent a static `/etc/hosts` mapping every name it uses to a placeholder address". That recipe is
-withdrawn. It does not work, and it fails in the least helpful way possible: by breaking the
-fetch it claims succeeds, silently.
-
-The same lab VM then measured the recipe as written, which is the negative control the original
-claim never had. Same perimeter, same live proxy as uid 61002, same target, no resolver named,
-the only change being `192.0.2.1 example.com` in a host-wide `/etc/hosts` instead of the
-per-invocation override: `curl: (28) Connection timed out after 20002 milliseconds`, `http=000`,
-and NO ledger record at all, because the proxy hung on its own upstream connect and never
-reached a verdict. That last part is the operationally nasty bit. A broken hosts recipe does not
-produce a deny an operator can see; it produces silence and a hang.
-
-`/etc/hosts` is host-wide and uid-agnostic, and there is no mount namespace anywhere in this
-design. The proxy is on the same host, reached over loopback: `src/perimeter/spec.ts` emits
-`redirect to :${proxyPort}` and accepts the agent to `ip daddr 127.0.0.1 tcp dport ${proxyPort}`,
-and exempts the proxy uid so it reaches upstream directly. And the proxy resolves through NSS
-like everything else: `connectUpstream` in `src/proxy/transparent.ts` dials
-`netConnect(destination.port, destination.host, ...)`, where `destination.host` is the name
-recovered from SNI. `netConnect` is `net.connect`, aliased at the import, so grepping that file
-for `net.connect` finds nothing and the resolution is easy to miss. Node's `net.connect` resolves
-a hostname argument with `dns.lookup`, which is `getaddrinfo`, which reads `/etc/hosts`.
-
-So a host-wide entry pointing `example.com` at `192.0.2.1` is read by the proxy too, and the
-proxy's upstream connection goes to TEST-NET-1. The agent's fake address is discarded exactly as
-described; the proxy's identical fake address is not, because nothing rewrites the proxy's
-traffic. One file cannot serve a process that needs any address and a process that needs the
-right one.
-
-### What is actually true about DNS here
-
-There is no general host-wide closure for this channel today. Stating that plainly is better than
-a fourth attempt at a recipe.
-
-`src/perimeter/spec.ts` already says the operative thing about the no-resolver default: "the
-agent gets no DNS at all: the default-drop eats port 53 with everything else, and every name
-lookup fails immediately." That is a deliberate hard deny and it is coherent as a fail-closed
-default. It is not a working agent configuration, and this document should never have implied it
-was. The `curl: (6) Could not resolve host` above is that default behaving as designed.
-
-That leaves two honest options.
-
-**Name a resolver and accept the channel.** Port 53 to one address, with the QNAME exfiltration
-path documented above wide open. This is the only configuration in which a name-using agent works
-out of the box, and the cost is a channel neither control observes.
-
-**Override the address per application, where the client supports it.** This is the one that was
-actually measured: `curl --resolve example.com:443:192.0.2.1` is the `http=200` run above. Any
-client with an equivalent, or anything else scoped to the agent's own process rather than the
-host, works the same way, because the proxy keeps normal resolution when nothing global changed.
-It is per-application configuration rather than a posture, so it cannot be written down once and
-applied everywhere, and every client the agent might reach for needs its own answer.
-
-The general fix would be a **mount namespace** giving the agent a private `/etc/hosts` while the
-proxy keeps the host's. That is unimplemented and unmeasured here, and it is listed as a
-direction rather than a recommendation. Two things a future implementer needs. First, the good
-news: a MOUNT namespace does not break the perimeter the way a NETWORK namespace does, because
-nftables tables are per-netns and not per-mntns, so the uid redirect keeps applying. That
-asymmetry is the whole reason this direction is worth anything. Second: the sandbox's own seccomp
-denylist refuses `unshare`, so the launcher would have to create the namespace itself before
-installing the filter, not leave it to the agent.
-
-Two things measured on this project's own host about how any of this meets the sandbox.
-
-**Static names resolve fine under the default profile.** Landlock does not get in the way of NSS:
-`fs read /etc` covers `nsswitch.conf` and `hosts`, and `fs exec /usr` covers the NSS modules.
-Verified with TCP scoped to 80 and 443 only, so no port 53 was reachable by TCP at any point:
-`localhost` and `ip6-localhost` both resolved to `::1`. This is what makes any future
-hosts-file-based approach viable at all, and `tests/sandbox-kernel.test.ts` pins it: the same
-`getent hosts localhost` fails under a profile without `fs read /etc` and succeeds with it. That
-test is the only thing in either this suite or the perimeter's that would notice a hosts-file
-approach breaking, because a static hosts file is host configuration rather than product
-behaviour and has no natural home in a product test.
-
-**On a systemd-resolved host the default profile already removes the DNS path, incidentally.**
-`/etc/resolv.conf` is a symlink to `../run/systemd/resolve/stub-resolv.conf`, Landlock evaluates
-the resolved path rather than the link, and `/run` is not granted. Measured: `example.com` fails
-`EAI_AGAIN` under the default profile and resolves to `172.66.147.243` the moment
-`--allow-read /run` is added. Treat that as a property of this distribution layout and not as a
-DNS control: on a host where `/etc/resolv.conf` is a regular file, the default profile permits
-reading it and name resolution works normally. The sandbox is not a DNS control and should never
-be described as one.
-
-**If you do name a resolver, repoint the agent's `resolv.conf`, and know that editing it is not
-enough.** With `--dns-resolver 1.1.1.1` the perimeter permits port 53 to `1.1.1.1`, but the
-agent's libc still asks `127.0.0.53`, which is neither the permitted resolver nor reachable
-loopback, so `getaddrinfo` is dropped and the perimeter looks broken while behaving exactly as
-specified. On a systemd-resolved host `/etc/resolv.conf` is a symlink into
-`/run/systemd/resolve/`, and systemd-resolved owns and rewrites the file at the other end, so an
-operator editing through the link has the change reverted with no warning and concludes the
-perimeter is broken twice over. Replace the symlink with a real file.
-
-**And a note that outlives the DNS question.** Policy is evaluated against the hostname recovered
-from the stream, never against the address the agent dialled. Any DNS pinning or IP allowlisting
-an operator believes they have in front of this is decorative.
-
-**Abstract unix sockets and signals to same-uid processes.** Landlock gained scoping for these in
-ABI 6 (Linux 6.12). Below that, a sandboxed process can still connect to an abstract unix socket
-and signal other processes running as its uid. If that matters, give the agent its own uid.
-
-**`/proc` enumeration of same-uid processes**, as described above.
-
-**Device ioctls on granted device nodes**, below ABI 5.
-
-**Truncation of files under read-only paths**, below ABI 3.
-
-**Syscalls not on the denylist.** A denylist is not an allowlist, and this one is 50 entries
-against several hundred syscalls.
-
-**A kernel vulnerability.** Landlock and seccomp are enforced by the kernel; a bug in the kernel
-is a bug in the boundary. Both features reduce the reachable attack surface substantially, which
-is part of why `bpf`, `perf_event_open`, `userfaultfd` and `io_uring` are denied, but neither is a
-hypervisor. If your threat model needs one, use one.
-
-**Root.** Nothing here constrains root, and nothing here should be run as root. Landlock does
-apply to a root process that installs it, but root can do a great deal that never touches a
-Landlock hook.
-
-**Processes already running.** This applies at `execve`. It does not reach back to something that
-started earlier.
-
-## Composing with the perimeter
-
-The intended posture on a Linux host, in order:
+Use this order on a supported Linux host:
 
 ```
 PERIM="--agent-uid 61001 --proxy-uid 61002 --proxy-port 8080"
@@ -609,52 +364,28 @@ sudo agentwall perimeter run $PERIM -- \
   agentwall sandbox run --workdir /srv/agent/work --allow-tcp 80 --allow-tcp 443 -- node agent.js
 ```
 
-The pipe form rather than `agentwall perimeter install` is deliberate. The containment work on
-branch `agent/8.7-containment-proof` found that `install` never worked on any host: it fed the
-ruleset to nft through `spawnSync("nft", ["-f", "-"], { input })`, libuv backs child stdio with a
-unix socket, and nft stats `/dev/stdin`, finds neither a regular file nor a fifo, and refuses the
-transaction with `Not a regular file: "/dev/stdin"`. The documented pipe recipe always worked,
-which is exactly why the defect stayed hidden. Use the pipe until that fix has landed.
+The pipe sends the ruleset to a real file stream for `nft`. The current `agentwall perimeter install` path can fail because `nft` rejects its socket-backed `/dev/stdin`.
 
-`perimeter run` drops to the agent uid, then `sandbox run` applies Landlock and seccomp to that
-already-dropped process. The order matters: Landlock is inherited across `execve` and cannot be
-relaxed, so applying it before the uid change would be fine too, but dropping privilege first
-means the sandbox is applied by an unprivileged process, which is the smaller thing to trust.
+Use the pipe form until that install path changes.
 
-The profile is handed to the launcher over a pipe on file descriptor 3 rather than through a
-file, for two reasons. A temporary file is readable by anything else running as the same uid
-between the write and the exec. And in the composed form above the writer is root while the
-reader has already dropped to the agent uid, so a root-owned temporary file would be unreadable
-at exactly the moment it was needed.
+`perimeter run` changes to the agent uid first. `sandbox run` then applies Landlock and seccomp to that unprivileged process.
 
-**Stated limit on this section.** Everything above about the sandbox half has been measured. The
-composed invocation has not: installing the perimeter needs root and writes host firewall rules,
-so it was not exercised on the machine this feature was built on. What is known is that the two
-controls use independent kernel mechanisms in the same network namespace, that `perimeter run`
-drops privilege with `spawnSync` and an argument array before exec'ing whatever follows `--`, and
-that the profile-over-fd-3 design exists specifically to survive that uid change. What has not
-been observed is the whole chain running end to end. Treat the ordering above as reasoned rather
-than measured until you have run `agentwall perimeter verify` and the sandbox's own summary line
-on the same host and seen both.
+The launcher receives its profile on file descriptor 3. This pipe avoids a temporary file and survives the uid change.
 
-### The published container image does not carry the launcher
+The sandbox half was measured on the development host. The complete composed command was not measured there because perimeter installation changes host firewall rules.
 
-That is a decision rather than an omission. The image built by this repository's `Dockerfile` is
-the AgentWall control plane: its entrypoint is the server, and the agent it protects runs
-somewhere else and points at the proxy. The sandbox wraps the AGENT process, so the launcher
-belongs wherever the agent runs, not in the control plane's image. Building it there would mean
-adding a C compiler to the build stage for a command that image never issues.
+Confirm `agentwall perimeter verify` on the target host. Confirm the sandbox summary line on the same host.
 
-If your agent does run inside a container, build the launcher in that container's image with
-`npm run build:sandbox`, or build it once elsewhere and mount it with `AGENTWALL_SANDBOX_HELPER`
-pointed at the mount. Note that a container is not a substitute: the default container runtime
-profile still lets a process inside it read every file in its own filesystem, which is the exact
-thing Landlock is here to stop.
+## Container limit
 
-## Related
+The published AgentWall container image does not include the sandbox launcher. That image runs the control plane, not the protected agent process.
 
-- [The perimeter](perimeter.md): containing a uid's packets with nftables.
-- [Threat model](threat-model.md): what AgentWall defends against and what it does not.
-- [Spill watch](spill-watch.md): detecting credentials written to disk. The sentinel detects;
-  the sandbox prevents. They are complementary, and a finding from spill watch inside a sandboxed
-  workdir is a much smaller blast radius than the same finding outside one.
+Build the launcher in the agent container with `npm run build:sandbox`. You can also mount a launcher and set `AGENTWALL_SANDBOX_HELPER`.
+
+A container does not replace the sandbox. A default container profile can still read every file inside its own filesystem.
+
+## Related documents
+
+- [The perimeter](perimeter.md) explains uid packet containment with nftables.
+- [Threat model](threat-model.md) defines protected and unprotected cases.
+- [Spill watch](spill-watch.md) detects credentials written to disk. The sandbox limits where the process can write.

@@ -18,7 +18,7 @@ export interface OperatorPrincipal {
 	/** Stable id recorded in audit and approval records. Never taken from a request body. */
 	id: string;
 	/** How this principal was established. Widens as providers are added. */
-	method: "token" | "loopback-dev";
+	method: "token" | "cookie" | "loopback-dev";
 }
 
 declare module "fastify" {
@@ -38,6 +38,7 @@ export interface OperatorAuthConfig {
 }
 
 const DEFAULT_TOKEN_ENV = "AGENTWALL_OPERATOR_TOKEN";
+export const OPERATOR_COOKIE_NAME = "agentwall_operator";
 
 /** Constant-time compare that does not leak length through early return. */
 function tokensMatch(a: string, b: string): boolean {
@@ -55,6 +56,39 @@ function tokensMatch(a: string, b: string): boolean {
 function isLoopback(req: FastifyRequest): boolean {
 	const ip = req.ip;
 	return ip === "127.0.0.1" || ip === "::1" || ip === "::ffff:127.0.0.1";
+}
+
+function operatorCookie(req: FastifyRequest): string | undefined {
+	const cookieHeader = req.headers.cookie;
+	if (typeof cookieHeader !== "string") return undefined;
+
+	for (const field of cookieHeader.split(";")) {
+		const separator = field.indexOf("=");
+		if (separator < 0 || field.slice(0, separator).trim() !== OPERATOR_COOKIE_NAME) continue;
+		try {
+			return decodeURIComponent(field.slice(separator + 1).trim());
+		} catch {
+			return "";
+		}
+	}
+	return undefined;
+}
+
+/** True only when the browser names this request host and protocol as its Origin. */
+export function isSameOriginRequest(req: FastifyRequest): boolean {
+	const origin = req.headers.origin;
+	const host = req.headers.host;
+	if (typeof origin !== "string" || typeof host !== "string") return false;
+	try {
+		const parsed = new URL(origin);
+		return parsed.host === host && parsed.protocol === `${req.protocol}:`;
+	} catch {
+		return false;
+	}
+}
+
+function isSafeCookieRequest(req: FastifyRequest): boolean {
+	return req.method === "GET" || req.method === "HEAD" || isSameOriginRequest(req);
 }
 
 /**
@@ -76,9 +110,18 @@ export function resolveOperator(
 		if (presented && tokensMatch(presented, expected)) {
 			return { id: "operator", method: "token" };
 		}
-		// A wrong token is an explicit failure. Do not fall through to loopback-dev,
+		// A wrong token is an explicit failure. Do not fall through to another method,
 		// or a bad token would silently succeed on the very host that matters most.
 		return null;
+	}
+
+	if (expected) {
+		const presented = operatorCookie(req);
+		if (presented !== undefined) {
+			return presented && tokensMatch(presented, expected)
+				? { id: "operator", method: "cookie" }
+				: null;
+		}
 	}
 
 	if (cfg.allowLoopbackDev && isLoopback(req)) {
@@ -101,7 +144,14 @@ export function requireOperator(cfg: OperatorAuthConfig = {}) {
 		if (!principal) {
 			await reply.status(401).send({
 				error: "Unauthorized",
-				detail: `Provide 'Authorization: Bearer <token>' matching $${cfg.tokenEnv ?? DEFAULT_TOKEN_ENV}.`,
+				detail: `Provide 'Authorization: Bearer <token>' or the local operator cookie matching $${cfg.tokenEnv ?? DEFAULT_TOKEN_ENV}.`,
+			});
+			return;
+		}
+		if (principal.method === "cookie" && !isSafeCookieRequest(req)) {
+			await reply.status(403).send({
+				error: "Forbidden",
+				detail: "Cookie-authenticated changes must originate from this AgentWall service.",
 			});
 			return;
 		}
