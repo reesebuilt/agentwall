@@ -4,7 +4,7 @@
 
 **Goal:** Make AgentWall simple for first-time users, complete the local operator experience, add persistent MCP inventory control, and state an enterprise upgrade path.
 
-**Architecture:** Keep the existing policy, proxy, audit, and verification engines. Add a guided setup module, a typed operator action route, and a persistent MCP baseline store. Rebuild the public copy and console around the existing server contracts.
+**Architecture:** Keep the existing policy, proxy, audit, and verification engines. Add a guided setup module, a separately launchable bootstrap UI, a typed operator action route, a persistent MCP baseline store, and an exhaustive CLI-to-UI action catalog. Rebuild the public copy and console around the existing server contracts.
 
 **Tech Stack:** TypeScript 5, Node.js 22.12+, Fastify 5, Zod 4, YAML, vanilla browser JavaScript, CSS, Jest.
 
@@ -23,7 +23,7 @@
 
 ---
 
-## Task 1: Add guided local setup
+## Task 1: Add guided local setup and a bootstrap UI
 
 **Files:**
 - Create: `src/setup.ts`
@@ -31,12 +31,19 @@
 - Modify: `src/onboarding.ts:54-123`
 - Test: `tests/setup-command.test.ts`
 - Modify: `tests/cli.test.ts`
+- Create: `src/bootstrap.ts`
+- Modify: `src/server.ts:1-204` only if the bootstrap app shares static asset helpers
+- Test: `tests/bootstrap-ui.test.ts`
 
 **Interfaces:**
 - `createLocalOperatorFiles(baseDir: string, options: LocalSetupOptions): LocalSetupResult`
 - `loadGeneratedEnvironment(baseDir: string): Record<string, string>`
 - `LocalSetupOptions` uses `mode`, `host`, `port`, `allowedHosts`, `lanAccess`, and `force`.
 - `LocalSetupResult` returns `configPath`, `policyPath`, `environmentPath`, `auditPath`, `dashboardUrl`, and `created: boolean`.
+- `createBootstrapApp(options: BootstrapUiOptions): FastifyInstance`
+- `runBootstrapUi(options: BootstrapUiOptions): Promise<void>`
+- `BootstrapUiOptions` uses `baseDir`, `host`, `port`, and `servicePort`.
+- Bootstrap routes are `GET /`, `GET /api/bootstrap/status`, `POST /api/bootstrap/setup`, `POST /api/bootstrap/init`, `POST /api/bootstrap/onboard`, `POST /api/bootstrap/start`, `POST /api/bootstrap/dev`, and `POST /api/bootstrap/stop`.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -106,6 +113,52 @@ Keep `agentwall init` unchanged for compatibility.
 
 Run: `npm test -- --runInBand tests/setup-command.test.ts tests/cli.test.ts`
 Expected: PASS with zero failures.
+- [ ] **Step 7: Write failing bootstrap tests**
+
+Cover these behaviors:
+
+```ts
+it("serves setup status while the AgentWall service is stopped", async () => {
+  const response = await app.inject({ method: "GET", url: "/api/bootstrap/status" });
+  expect(response.statusCode).toBe(200);
+  expect(response.json()).toMatchObject({ service: "stopped", setup: "missing" });
+});
+
+it("starts only the fixed AgentWall entry point", async () => {
+  const response = await app.inject({ method: "POST", url: "/api/bootstrap/start", payload: { command: "node; touch /tmp/unsafe" } });
+  expect(response.statusCode).toBe(400);
+  expect(spawnMock).not.toHaveBeenCalled();
+});
+
+it("rejects a cross-origin bootstrap mutation", async () => {
+  const response = await app.inject({ method: "POST", url: "/api/bootstrap/setup", headers: { origin: "https://example.invalid" }, payload: options });
+  expect(response.statusCode).toBe(403);
+});
+```
+
+- [ ] **Step 8: Implement the loopback bootstrap app**
+
+Serve `public/bootstrap.html` and its static assets.
+Bind to loopback by default.
+Create a one-time local session token when the app starts.
+Set the token in an HttpOnly, SameSite=Strict cookie.
+Require the cookie and an allowed origin for every mutation.
+Expose setup, init, onboard, start, dev, stop, and status as typed actions.
+Start only `dist/index.js` for production and `ts-node src/index.ts` for development.
+Track child process state and return a clear stopped, starting, running, or failed status.
+Forward the generated environment without printing its token.
+
+- [ ] **Step 9: Add the `agentwall ui` command**
+
+Accept `--host`, `--port`, and `--service-port`.
+Use loopback and port `3001` by default.
+Print the bootstrap URL without printing the session token.
+Keep the process alive until an operator stops it.
+
+- [ ] **Step 10: Run setup, bootstrap, and CLI tests**
+
+Run: `npm test -- --runInBand tests/setup-command.test.ts tests/bootstrap-ui.test.ts tests/cli.test.ts`
+Expected: PASS with zero failures.
 
 ---
 
@@ -113,6 +166,8 @@ Expected: PASS with zero failures.
 
 **Files:**
 - Create: `src/routes/operator.ts`
+- Create: `src/operator/action-catalog.ts`
+- Create: `src/operator/command-allowlist.ts`
 - Modify: `src/server.ts:1-204`
 - Modify: `src/fleet/command.ts:327-599`
 - Modify: `src/config.ts` only when the route needs a typed generated path
@@ -122,7 +177,10 @@ Expected: PASS with zero failures.
 - `OperatorActionSchema` is a Zod discriminated union on `action`.
 - `OperatorActionResult` contains `ok`, `action`, `status`, `message`, `next`, and optional `data`.
 - `operatorRoutes(app, context)` registers `GET /api/operator/actions` and `POST /api/operator/actions`.
-- Supported actions are `doctor`, `verify`, `lockdown`, `reload`, `approval-mode`, `floodguard-mode`, `session`, `fleet-list`, `fleet-issue`, `fleet-rotate`, `fleet-revoke`, `intercept-status`, `intercept-init`, `intercept-trust`, `perimeter-plan`, `perimeter-status`, `perimeter-verify`, `sandbox-probe`, `sandbox-plan`, `decoy-list`, `decoy-generate`, and `setup-status`.
+- `TypedCommandAction` contains `command`, `args`, `confirm`, and `workingDirectory`.
+- `operatorActionCatalog` lists every read-only and mutating action.
+- Mutating actions are `approval-mode`, `shield`, `normal`, `session-boost`, `session-reset`, `pause`, `resume`, `terminate`, `fleet-issue`, `fleet-rotate`, `fleet-revoke`, `anchor`, `verify-capture`, `mcp-wrap`, `perimeter-install`, `perimeter-rollback`, `perimeter-run`, `sandbox-build`, `sandbox-run`, `intercept-init`, `intercept-trust`, and `decoy-generate`.
+- Read-only actions are `doctor`, `status`, `verify`, `fleet-list`, `perimeter-plan`, `perimeter-status`, `perimeter-verify`, `sandbox-probe`, `sandbox-plan`, `intercept-status`, `decoy-list`, `why`, `version`, and `help`.
 
 - [ ] **Step 1: Write failing route tests**
 
@@ -145,23 +203,37 @@ it("requires confirmation before a destructive session action", async () => {
   expect(response.statusCode).toBe(409);
   expect(response.json().next).toMatch(/confirm/i);
 });
+
+it("rejects shell syntax in a typed command action", async () => {
+  const response = await app.inject({ method: "POST", url: "/api/operator/actions", payload: { action: "sandbox-run", command: "node; touch /tmp/unsafe", args: [], confirm: true } });
+  expect(response.statusCode).toBe(400);
+});
 ```
 
-- [ ] **Step 2: Run the route tests and confirm the expected missing-route failure**
+- [ ] **Step 2: Test the exhaustive action inventory**
+
+Assert that the catalog contains every mutating CLI action in the interface list.
+Assert that `setup`, `init`, `onboard`, `start`, and `dev` appear in the bootstrap catalog.
+Assert that every read-only CLI command appears in either the bootstrap or running catalog.
+Assert that a typed command rejects shell metacharacters, absolute executable paths, undeclared binaries, and working-directory traversal.
+
+- [ ] **Step 3: Run the route tests and confirm the expected missing-route failure**
 
 Run: `npm test -- --runInBand tests/operator-routes.test.ts`
 Expected: FAIL because the route does not exist.
 
-- [ ] **Step 3: Implement the action schema and route registration**
+- [ ] **Step 4: Implement the action schema and route registration**
 
 Use Zod validation for every body.
 Reuse the existing authenticated Fastify request context.
 Reuse existing dashboard control functions for lockdown, reload, approval mode, FloodGuard, and session operations.
+Route typed command actions through `command-allowlist.ts`.
+Require confirmation before every mutating action that changes a file, process, credential, certificate, network rule, audit checkpoint, or session.
 Return status `400` for schema errors, `401` for missing operator auth, `403` for cross-origin mutations, `409` for missing confirmation, and `200` for completed actions.
 Never return raw secrets in list, status, or error data.
 Return a one-sentence message and a concrete next action.
 
-- [ ] **Step 4: Expose structured fleet operations**
+- [ ] **Step 5: Expose structured fleet operations**
 
 Add typed helpers beside `runFleetCommand`:
 
@@ -182,14 +254,15 @@ Return a newly issued secret only in the one response that creates it.
 Do not write that secret to the audit chain.
 Reuse `effectNotes` logic for the plain-language response.
 
-- [ ] **Step 5: Add safe host-operation responses**
+- [ ] **Step 6: Add safe typed command operations**
 
-Return a plan for perimeter and sandbox operations.
-Return current status for interception, decoys, and setup.
-Require `confirm: true` for `intercept-init`, `decoy-generate`, and perimeter install if that action is added.
-Do not add an arbitrary process runner.
+Return a plan before perimeter install, perimeter rollback, interception changes, sandbox build, decoy generation, and MCP wrapper start.
+Require `confirm: true` before each execution.
+Allow only the fixed AgentWall binary, the configured sandbox launcher, and declared local MCP binaries.
+Reject shell syntax, path traversal, and command substitution.
+Return status for read-only perimeter, sandbox, interception, decoy, audit, and policy actions.
 
-- [ ] **Step 6: Register the routes and run focused tests**
+- [ ] **Step 7: Register the routes and run focused tests**
 
 Run: `npm test -- --runInBand tests/operator-routes.test.ts tests/route-auth.test.ts tests/fleet-credentials.test.ts`
 Expected: PASS with zero failures.
@@ -289,15 +362,22 @@ Expected: PASS with zero failures.
 - Modify: `src/routes/ui.ts` only if a new static asset route is needed
 - Test: `tests/dashboard.test.ts`
 - Create: `tests/public-console.test.ts`
+- Create: `public/bootstrap.html`
+- Create: `public/bootstrap.js`
+- Test: `tests/bootstrap-console.test.ts`
 
 **Interfaces:**
 - Keep `/api/dashboard/state`, `/api/dashboard/events`, existing dashboard control routes, evidence routes, and approval routes.
 - Use `POST /api/operator/actions` for the new action catalog.
 - Use `data-action`, `data-confirm`, and `aria-live` attributes for operator controls.
+- The bootstrap page calls `/api/bootstrap/status` and `/api/bootstrap/*`.
+- The bootstrap page offers setup, init, onboard, start, dev, and stop controls.
+- The running page renders every action from the operator action catalog.
+- `data-action`, `data-confirm`, and `aria-live` attributes identify operator controls.
 
 - [ ] **Step 1: Write failing console contract tests**
 
-Assert that the page contains:
+Assert that the running page contains:
 
 ```ts
 expect(html.body).toContain("Agentwall status");
@@ -310,20 +390,20 @@ expect(html.body).toContain('aria-live="polite"');
 expect(html.body).toContain('data-action="operator"');
 ```
 
-Assert that the script contains:
+Assert that the running script calls `/api/operator/actions`, defines `renderOperatorAction`, and checks `prefers-reduced-motion`.
 
-```ts
-expect(script.body).toContain("/api/operator/actions");
-expect(script.body).toContain("function renderOperatorAction");
-expect(script.body).toContain("prefers-reduced-motion");
-```
+- [ ] **Step 2: Write failing bootstrap console tests**
 
-- [ ] **Step 2: Run the console tests and confirm the expected old-copy failure**
+Assert that the bootstrap page contains `Setup`, `Start Agentwall`, `Development mode`, `Stop Agentwall`, and `aria-live="polite"`.
+Assert that its script calls `/api/bootstrap/status`, `/api/bootstrap/setup`, `/api/bootstrap/start`, and `/api/bootstrap/stop`.
+Assert that the running page has a control for every mutating action returned by the catalog.
 
-Run: `npm test -- --runInBand tests/public-console.test.ts tests/dashboard.test.ts`
+- [ ] **Step 3: Run the console tests and confirm the expected old-copy failure**
+
+Run: `npm test -- --runInBand tests/public-console.test.ts tests/bootstrap-console.test.ts tests/dashboard.test.ts`
 Expected: FAIL because the new shell markers do not exist.
 
-- [ ] **Step 3: Replace the shell with five visible areas**
+- [ ] **Step 4: Replace the running shell with five visible areas**
 
 Use a single rail with Status, Approvals, Policy, Agents, Evidence, and Operations.
 Remove the default hidden Advanced User mode.
@@ -332,7 +412,7 @@ Keep the existing Knowledge Base route and show it as Help.
 Move important warnings to the top of the page.
 Show the exact mode and the last update time.
 
-- [ ] **Step 4: Add complete UI state handling**
+- [ ] **Step 5: Add complete UI state handling**
 
 Render a skeleton while the first state loads.
 Render a useful empty state when no approvals or events exist.
@@ -343,19 +423,27 @@ Use confirmation for terminate, revoke, lockdown, and other destructive actions.
 Keep all controls keyboard accessible.
 Add a small-screen breakpoint below 600 pixels.
 
-- [ ] **Step 5: Add operator action controls**
+- [ ] **Step 6: Add running operator action controls**
 
 Load the action catalog from `/api/operator/actions`.
 Render only the actions returned by the server.
-Use a form for action parameters.
+Render a typed form for every mutating action.
 Send JSON through `fetch` with the existing auth behavior.
 Show one plain-language next step after each response.
 For a returned secret, show it once with a copy button and a warning.
 Never persist the secret in browser storage.
 
-- [ ] **Step 6: Add public-console tests and run the focused suite**
+- [ ] **Step 7: Add the pre-start bootstrap shell**
 
-Run: `npm test -- --runInBand tests/public-console.test.ts tests/dashboard.test.ts tests/route-auth.test.ts`
+Build `public/bootstrap.html` and `public/bootstrap.js` with the same keyboard, connection, loading, empty, error, and success states.
+Call only the typed bootstrap routes.
+Show setup, init, onboard, start, dev, stop, and service status.
+Show the dashboard link after the service starts.
+Do not show a shell input or arbitrary command field.
+
+- [ ] **Step 8: Add console tests and run the focused suite**
+
+Run: `npm test -- --runInBand tests/public-console.test.ts tests/bootstrap-console.test.ts tests/dashboard.test.ts tests/route-auth.test.ts`
 Expected: PASS with zero failures.
 
 ---
@@ -412,8 +500,11 @@ Use no more than six sentences per paragraph.
 
 - [ ] **Step 3: Add the operator guide and feature reference**
 
-Map every CLI command to its UI action.
-State host-only actions with a reason.
+Map every CLI command to one UI workflow in a table.
+Map `setup`, `init`, `onboard`, `start`, `dev`, and `stop` to the bootstrap UI.
+Map `approval-mode`, `shield`, `normal`, `session-boost`, `session-reset`, `pause`, `resume`, `terminate`, `fleet`, `anchor`, `verify-capture`, `mcp wrap`, `perimeter`, `sandbox`, `intercept`, and `decoy generate` to typed running-UI workflows.
+Map `doctor`, `status`, `verify`, `perimeter plan`, `perimeter status`, `perimeter verify`, `sandbox probe`, `sandbox plan`, `intercept status`, `decoy list`, `why`, `version`, and `help` to read-only status views with copyable commands.
+State that no supported mutating command stays host-only.
 List the limits for TLS visibility, event streams, body size, attribution, DNS, and fleet scope.
 Document the MCP baseline modes.
 
@@ -544,9 +635,11 @@ Expected: zero failed suites and zero failed tests.
 - [ ] **Step 3: Run the integration smoke path**
 
 Run: `npm run build`
-Run: `node dist/cli.js setup --mode monitor --force` in a temporary directory.
-Run: `node dist/cli.js doctor` with the generated environment.
-Expected: setup creates local files, the token file is mode 0600, and doctor reports the generated config.
+Run: `node dist/cli.js ui --port 0` in a temporary directory.
+Use the bootstrap UI status route while the AgentWall service is stopped.
+Use the bootstrap UI to create setup files and start the service.
+Use the running UI to invoke one typed mutation and one read-only command.
+Expected: the bootstrap UI works before service startup, every mutating command has a typed workflow, and read-only commands show status and output.
 
 - [ ] **Step 4: Run the copy and asset gates**
 

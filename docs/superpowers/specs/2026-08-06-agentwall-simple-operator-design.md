@@ -71,30 +71,46 @@ The loader never prints the operator token after setup creates it.
 
 ### Operator action API
 
-Add a small operator route group for safe actions that the UI must perform.
+Add a typed operator route group for every mutating CLI action that the running service can perform.
 Each action has a Zod schema and an allowlisted operation name.
-The route never accepts a shell command or a raw executable path.
+The route never evaluates a raw shell string.
+Typed command actions accept a declared executable and an argument list.
+The server rejects shell syntax, path traversal, and undeclared executable names.
 The route returns structured status, a plain-language message, and the exact next action.
 
-The first action set covers:
+The complete mutating CLI inventory is:
 
-- setup status
-- doctor status
-- lockdown engage and release
-- policy reload
-- approval mode
-- FloodGuard mode
-- session pause, resume, and terminate
-- fleet credential list, issue, rotate, and revoke
-- interception status and trust instructions
-- perimeter plan, status, and verification
-- sandbox probe and plan
-- decoy list and generation
-- audit verification
+- `approval-mode`, `shield`, and `normal`, which change runtime controls.
+- `session-boost`, `session-reset`, `pause`, `resume`, and `terminate`, which change session controls.
+- `fleet issue`, `fleet rotate`, and `fleet revoke`, which change credentials.
+- `anchor` and `verify-capture`, which create or prove audit evidence.
+- `mcp wrap`, which starts a typed MCP wrapper.
+- `perimeter install`, `perimeter rollback`, and `perimeter run`, which change or use host network controls.
+- `sandbox build` and `sandbox run`, which build or use process controls.
+- `intercept init` and `intercept trust`, which change certificate trust.
+- `decoy generate`, which creates a decoy credential.
 
-Host changes require a visible confirmation and return a plan before an install action.
-The browser cannot run an arbitrary process.
+Read-only CLI commands remain visible in the UI with status, output, and a copyable command.
+The running UI performs every supported service-side mutation through a typed action workflow.
+No supported mutating command stays host-only.
 The API keeps an offline CLI command beside every action.
+
+Host changes require a visible plan and confirmation before execution.
+The browser never runs an arbitrary process.
+The UI can run a declared command only through a server-side allowlist and an explicit confirmation.
+
+### Bootstrap UI
+
+Add a separately launchable `agentwall ui` command.
+The bootstrap UI binds to loopback and starts before the AgentWall service.
+It shows setup, service status, start, stop, and development start controls.
+It performs `setup`, `init`, `onboard`, `start`, `dev`, and `stop` through typed server actions.
+It starts only fixed AgentWall entry points and never accepts an arbitrary executable.
+After startup, it links to the authenticated dashboard and the operator action API.
+It uses a one-time local session token and origin checks for mutations.
+
+The bootstrap UI keeps working when the AgentWall service is stopped.
+The service dashboard does not claim to own setup or service start.
 
 ### Persistent MCP baseline
 
@@ -131,13 +147,17 @@ The UI must support:
 - a confirmation step for destructive actions
 - text labels that do not depend on color alone
 
+The bootstrap UI must support the same states before service startup.
+
+
 ## Public documentation
 
 Rewrite the README as a short decision page.
 Add a simple user guide with install, setup, first run, safe mode changes, and common fixes.
 Add a feature reference that lists each capability and its limit.
-Add an operator guide that maps every CLI command to the UI action or to a stated host-only limit.
-Add an enterprise roadmap that states shipped controls, planned controls, evidence, and exit criteria.
+Add an operator guide that maps every CLI command to a UI action.
+The guide states the bootstrap UI workflow for setup, initialization, onboarding, service start, and development start.
+The guide states the running UI workflow for every other mutating command.
 Rewrite public policy and security documents in the same language style.
 Keep code blocks and API names exact.
 
@@ -179,7 +199,8 @@ Run the local `gbrain advisor` command before the final report.
 
 - A new user can install and start AgentWall with two commands after package installation.
 - Setup never overwrites existing configuration without `--force`.
-- The UI exposes every supported mutable operator action or states why the action stays host-only.
+- The UI exposes every supported mutable CLI action through a typed workflow.
+- The UI lists every read-only CLI action with status, output, and a copyable command.
 - MCP baseline learning and lock mode produce tested, auditable decisions.
 - The public README and guide use short active sentences.
 - Public repository files contain no competitor name or competitor link.
