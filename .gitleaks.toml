@@ -23,7 +23,8 @@ regexes = [
   '''0123456789abcdef0123456789abcdef0123456789abcdef''',  # generic-api-key in tests/compliance.test.ts
   '''\-\-\-\-\-BEGIN\ RSA\ PRIVATE\ KEY\-\-\-\-\-\\nMIIBOgIBAAJBAKj34GkxFhD90vcNLYLInFEX6Ppy1tPf9Cnzj4p4WGeKLs1Pt8Qu\\n\-\-\-\-\-END\ RSA\ PRIVATE\ KEY\-\-\-\-\-''',  # private-key in bench/corpus/dlp.json
   '''AKIA3TQV7ZKM2XPD6R4L''',  # aws-access-token in docs/canary.md,
-  '''sk\-abcdefghijklmnopqrstuvwxyz0123456789''',  # generic-api-key, flagged by gitleaks 8.24.3 which CI pins
+  '''sk\-abcdefghijklmnopqrstuvwxyz0123456789''',  # generic-api-key, flagged by gitleaks 8.24.3 which CI pins,
+  '''ghp_16C7e42F292c6912E7710c838347Ae178B4a''',  # github-pat, the secret the TLS interception harness plants to prove an HTTPS body is inspected
 ]
 
 # The conformance corpus signs synthetic checkpoints, so it has to carry the private key
