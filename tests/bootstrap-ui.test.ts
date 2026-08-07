@@ -348,4 +348,38 @@ describe("bootstrap UI", () => {
       await app.close();
     }
   });
+  it("rate-limits repeated file-writing initialization requests", async () => {
+    const app = createBootstrapApp({
+      baseDir: temporaryDirectory(),
+      host: "127.0.0.1",
+      port: 3001,
+      servicePort: 3000,
+    });
+
+    try {
+      const headers = await localSession(app);
+      const payload = {
+        mode: "guarded",
+        host: "127.0.0.1",
+        port: 3000,
+        allowedHosts: ["api.openai.com"],
+        lanAccess: false,
+        force: true,
+      };
+      const responses = [];
+      for (let attempt = 0; attempt < 61; attempt += 1) {
+        responses.push(await app.inject({
+          method: "POST",
+          url: "/api/bootstrap/init",
+          headers,
+          payload,
+        }));
+      }
+
+      expect(responses.slice(0, 60).every((response) => response.statusCode === 200)).toBe(true);
+      expect(responses[60].statusCode).toBe(429);
+    } finally {
+      await app.close();
+    }
+  });
 });

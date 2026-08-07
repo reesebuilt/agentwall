@@ -47,6 +47,7 @@
     "provenance": true
   },
   "dependencies": {
+    "@fastify/rate-limit": "11.2.0",
     "fastify": "5.11.0",
     "js-yaml": "5.2.3",
     "zod": "4.4.3"

@@ -3,6 +3,7 @@ import { type ChildProcess, type SpawnOptions, spawn as nodeSpawn } from "child_
 import * as fs from "fs";
 import * as path from "path";
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
+import rateLimit from "@fastify/rate-limit";
 import { z, type ZodType } from "zod";
 import { OPERATOR_COOKIE_NAME } from "./auth/operator";
 import { runOnboard } from "./onboard";
@@ -250,161 +251,169 @@ export function createBootstrapApp(options: BootstrapUiOptions): BootstrapApp {
     });
   });
 
-  const guard = mutationGuard(bootstrapToken);
+  app.register(async (scope) => {
+    await scope.register(rateLimit, { global: false });
+    const guard = mutationGuard(bootstrapToken);
 
-  app.post("/api/bootstrap/setup", {
-    preValidation: validationHook(SETUP_ACTION_SCHEMA),
-    preHandler: guard,
-  }, async (request, reply) => {
-    try {
-      const result = createLocalOperatorFiles(baseDir, request.body as z.infer<typeof SETUP_ACTION_SCHEMA>);
+    scope.post("/api/bootstrap/setup", {
+      config: { rateLimit: { max: 60, timeWindow: "1 minute" } },
+      preValidation: validationHook(SETUP_ACTION_SCHEMA),
+      preHandler: guard,
+    }, async (request, reply) => {
+      try {
+        const result = createLocalOperatorFiles(baseDir, request.body as z.infer<typeof SETUP_ACTION_SCHEMA>);
+        setBrowserCookies(reply, baseDir, bootstrapToken);
+        return reply.send({
+          ok: true,
+          action: "setup",
+          created: result.created,
+          configPath: result.configPath,
+          policyPath: result.policyPath,
+          environmentPath: result.environmentPath,
+          auditPath: result.auditPath,
+          dashboardUrl: result.dashboardUrl,
+        });
+      } catch (error) {
+        return reply.status(409).send({ error: error instanceof Error ? error.message : "AgentWall setup failed." });
+      }
+    });
+
+    scope.post("/api/bootstrap/init", {
+      config: { rateLimit: { max: 60, timeWindow: "1 minute" } },
+      preValidation: validationHook(INIT_ACTION_SCHEMA),
+      preHandler: guard,
+    }, async (request, reply) => {
+      const input = request.body as z.infer<typeof INIT_ACTION_SCHEMA>;
+      const configPath = path.join(baseDir, "agentwall.config.yaml");
+      const policyPath = path.join(baseDir, "policy.yaml");
+      if (!input.force && (fs.existsSync(configPath) || fs.existsSync(policyPath))) {
+        return reply.status(409).send({ error: "Refusing to overwrite existing AgentWall starter files. Set force to replace them." });
+      }
+      const result = writeStarterFiles(baseDir, input);
       setBrowserCookies(reply, baseDir, bootstrapToken);
-      return reply.send({
-        ok: true,
-        action: "setup",
-        created: result.created,
-        configPath: result.configPath,
-        policyPath: result.policyPath,
-        environmentPath: result.environmentPath,
-        auditPath: result.auditPath,
-        dashboardUrl: result.dashboardUrl,
-      });
-    } catch (error) {
-      return reply.status(409).send({ error: error instanceof Error ? error.message : "AgentWall setup failed." });
-    }
-  });
+      return reply.send({ ok: true, action: "init", configPath: result.configPath, policyPath: result.policyPath });
+    });
 
-  app.post("/api/bootstrap/init", {
-    preValidation: validationHook(INIT_ACTION_SCHEMA),
-    preHandler: guard,
-  }, async (request, reply) => {
-    const input = request.body as z.infer<typeof INIT_ACTION_SCHEMA>;
-    const configPath = path.join(baseDir, "agentwall.config.yaml");
-    const policyPath = path.join(baseDir, "policy.yaml");
-    if (!input.force && (fs.existsSync(configPath) || fs.existsSync(policyPath))) {
-      return reply.status(409).send({ error: "Refusing to overwrite existing AgentWall starter files. Set force to replace them." });
-    }
-    const result = writeStarterFiles(baseDir, input);
-    setBrowserCookies(reply, baseDir, bootstrapToken);
-    return reply.send({ ok: true, action: "init", configPath: result.configPath, policyPath: result.policyPath });
-  });
+    scope.post("/api/bootstrap/onboard", {
+      config: { rateLimit: { max: 60, timeWindow: "1 minute" } },
+      preValidation: validationHook(ONBOARD_ACTION_SCHEMA),
+      preHandler: guard,
+    }, async (request, reply) => {
+      const input = request.body as z.infer<typeof ONBOARD_ACTION_SCHEMA>;
+      try {
+        const generatedEnvironment = loadGeneratedEnvironment(baseDir);
+        const proxyPort = Number(generatedEnvironment.AGENTWALL_PROXY_PORT ?? 8899);
+        const result = runOnboard({
+          profileId: input.profileId,
+          agentId: input.agentId,
+          configPath: path.join(baseDir, "agentwall.config.yaml"),
+          proxyHost: generatedEnvironment.AGENTWALL_PROXY_HOST ?? "127.0.0.1",
+          proxyPort: Number.isInteger(proxyPort) && proxyPort > 0 && proxyPort <= 65535 ? proxyPort : 8899,
+          allowedHosts: [],
+          budgetWindowSeconds: 3600,
+          budgetMaxRequests: 2000,
+          force: false,
+          json: false,
+        });
+        return reply.send({
+          ok: true,
+          action: "onboard",
+          agentId: result.agentId,
+          profileId: result.profile.id,
+          env: result.envLines,
+          warning: "Copy this environment now. AgentWall does not store the credential.",
+          nextAction: `agentwall verify-capture --agent ${result.agentId}`,
+        });
+      } catch (error) {
+        return reply.status(400).send({ error: error instanceof Error ? error.message : "AgentWall onboarding failed." });
+      }
+    });
 
-  app.post("/api/bootstrap/onboard", {
-    preValidation: validationHook(ONBOARD_ACTION_SCHEMA),
-    preHandler: guard,
-  }, async (request, reply) => {
-    const input = request.body as z.infer<typeof ONBOARD_ACTION_SCHEMA>;
-    try {
-      const generatedEnvironment = loadGeneratedEnvironment(baseDir);
-      const proxyPort = Number(generatedEnvironment.AGENTWALL_PROXY_PORT ?? 8899);
-      const result = runOnboard({
-        profileId: input.profileId,
-        agentId: input.agentId,
-        configPath: path.join(baseDir, "agentwall.config.yaml"),
-        proxyHost: generatedEnvironment.AGENTWALL_PROXY_HOST ?? "127.0.0.1",
-        proxyPort: Number.isInteger(proxyPort) && proxyPort > 0 && proxyPort <= 65535 ? proxyPort : 8899,
-        allowedHosts: [],
-        budgetWindowSeconds: 3600,
-        budgetMaxRequests: 2000,
-        force: false,
-        json: false,
-      });
-      return reply.send({
-        ok: true,
-        action: "onboard",
-        agentId: result.agentId,
-        profileId: result.profile.id,
-        env: result.envLines,
-        warning: "Copy this environment now. AgentWall does not store the credential.",
-        nextAction: `agentwall verify-capture --agent ${result.agentId}`,
-      });
-    } catch (error) {
-      return reply.status(400).send({ error: error instanceof Error ? error.message : "AgentWall onboarding failed." });
-    }
-  });
+    const startService = (mode: "production" | "development", reply: FastifyReply) => {
+      if (child && (childState.service === "starting" || childState.service === "running")) {
+        return reply.status(409).send({ error: "AgentWall is already active in this bootstrap session." });
+      }
 
-  const startService = (mode: "production" | "development", reply: FastifyReply) => {
-    if (child && (childState.service === "starting" || childState.service === "running")) {
-      return reply.status(409).send({ error: "AgentWall is already active in this bootstrap session." });
-    }
-
-    const args = mode === "production"
-      ? [path.join(baseDir, "dist", "index.js")]
-      : [path.join(baseDir, "node_modules", "ts-node", "dist", "bin.js"), "src/index.ts"];
-    childState.service = "starting";
-    childState.mode = mode;
-    childState.pid = null;
-    childState.lastExitCode = null;
-    childState.error = null;
-    stopRequested = false;
-
-    try {
-      const nextChild = spawnChild(process.execPath, args, {
-        cwd: baseDir,
-        env: { ...process.env, ...loadGeneratedEnvironment(baseDir) },
-        stdio: "inherit",
-      });
-      child = nextChild;
-      childState.pid = nextChild.pid ?? null;
-      nextChild.once("spawn", () => {
-        if (child !== nextChild) return;
-        childState.service = "running";
-        childState.pid = nextChild.pid ?? null;
-      });
-      nextChild.once("error", (error) => {
-        if (child !== nextChild) return;
-        childState.service = "failed";
-        childState.error = error.message;
-        childState.pid = null;
-        child = null;
-      });
-      nextChild.once("exit", (code) => {
-        if (child !== nextChild) return;
-        childState.service = stopRequested || code === 0 ? "stopped" : "failed";
-        childState.lastExitCode = code;
-        childState.error = stopRequested || code === 0 ? null : `AgentWall exited with status ${code ?? "unknown"}.`;
-        childState.pid = null;
-        child = null;
-        stopRequested = false;
-      });
-      setBrowserCookies(reply, baseDir, bootstrapToken);
-      return reply.status(202).send({ ok: true, action: mode === "production" ? "start" : "dev", service: childState.service, pid: childState.pid });
-    } catch (error) {
-      child = null;
-      childState.service = "failed";
-      childState.error = error instanceof Error ? error.message : "AgentWall could not start.";
-      return reply.status(500).send({ error: childState.error });
-    }
-  };
-
-  app.post("/api/bootstrap/start", {
-    preValidation: validationHook(EMPTY_ACTION_SCHEMA),
-    preHandler: guard,
-  }, async (_request, reply) => startService("production", reply));
-
-  app.post("/api/bootstrap/dev", {
-    preValidation: validationHook(EMPTY_ACTION_SCHEMA),
-    preHandler: guard,
-  }, async (_request, reply) => startService("development", reply));
-
-  app.post("/api/bootstrap/stop", {
-    preValidation: validationHook(STOP_ACTION_SCHEMA),
-    preHandler: guard,
-  }, async (_request, reply) => {
-    if (!child || (childState.service !== "starting" && childState.service !== "running")) {
-      childState.service = "stopped";
+      const args = mode === "production"
+        ? [path.join(baseDir, "dist", "index.js")]
+        : [path.join(baseDir, "node_modules", "ts-node", "dist", "bin.js"), "src/index.ts"];
+      childState.service = "starting";
+      childState.mode = mode;
       childState.pid = null;
-      return reply.send({ ok: true, action: "stop", service: "stopped", message: "AgentWall is already stopped." });
-    }
-    stopRequested = true;
-    const stopped = child.kill("SIGTERM");
-    if (!stopped) {
+      childState.lastExitCode = null;
+      childState.error = null;
       stopRequested = false;
-      return reply.status(500).send({ error: "AgentWall did not accept the stop signal." });
-    }
-    return reply.send({ ok: true, action: "stop", service: childState.service, message: "The stop signal was sent." });
-  });
 
+      try {
+        const nextChild = spawnChild(process.execPath, args, {
+          cwd: baseDir,
+          env: { ...process.env, ...loadGeneratedEnvironment(baseDir) },
+          stdio: "inherit",
+        });
+        child = nextChild;
+        childState.pid = nextChild.pid ?? null;
+        nextChild.once("spawn", () => {
+          if (child !== nextChild) return;
+          childState.service = "running";
+          childState.pid = nextChild.pid ?? null;
+        });
+        nextChild.once("error", (error) => {
+          if (child !== nextChild) return;
+          childState.service = "failed";
+          childState.error = error.message;
+          childState.pid = null;
+          child = null;
+        });
+        nextChild.once("exit", (code) => {
+          if (child !== nextChild) return;
+          childState.service = stopRequested || code === 0 ? "stopped" : "failed";
+          childState.lastExitCode = code;
+          childState.error = stopRequested || code === 0 ? null : `AgentWall exited with status ${code ?? "unknown"}.`;
+          childState.pid = null;
+          child = null;
+          stopRequested = false;
+        });
+        setBrowserCookies(reply, baseDir, bootstrapToken);
+        return reply.status(202).send({ ok: true, action: mode === "production" ? "start" : "dev", service: childState.service, pid: childState.pid });
+      } catch (error) {
+        child = null;
+        childState.service = "failed";
+        childState.error = error instanceof Error ? error.message : "AgentWall could not start.";
+        return reply.status(500).send({ error: childState.error });
+      }
+    };
+
+    scope.post("/api/bootstrap/start", {
+      config: { rateLimit: { max: 60, timeWindow: "1 minute" } },
+      preValidation: validationHook(EMPTY_ACTION_SCHEMA),
+      preHandler: guard,
+    }, async (_request, reply) => startService("production", reply));
+
+    scope.post("/api/bootstrap/dev", {
+      config: { rateLimit: { max: 60, timeWindow: "1 minute" } },
+      preValidation: validationHook(EMPTY_ACTION_SCHEMA),
+      preHandler: guard,
+    }, async (_request, reply) => startService("development", reply));
+
+    scope.post("/api/bootstrap/stop", {
+      config: { rateLimit: { max: 60, timeWindow: "1 minute" } },
+      preValidation: validationHook(STOP_ACTION_SCHEMA),
+      preHandler: guard,
+    }, async (_request, reply) => {
+      if (!child || (childState.service !== "starting" && childState.service !== "running")) {
+        childState.service = "stopped";
+        childState.pid = null;
+        return reply.send({ ok: true, action: "stop", service: "stopped", message: "AgentWall is already stopped." });
+      }
+      stopRequested = true;
+      const stopped = child.kill("SIGTERM");
+      if (!stopped) {
+        stopRequested = false;
+        return reply.status(500).send({ error: "AgentWall did not accept the stop signal." });
+      }
+      return reply.send({ ok: true, action: "stop", service: childState.service, message: "The stop signal was sent." });
+    });
+  });
   app.addHook("onClose", async () => {
     if (child && (childState.service === "starting" || childState.service === "running")) {
       stopRequested = true;
@@ -413,6 +422,7 @@ export function createBootstrapApp(options: BootstrapUiOptions): BootstrapApp {
   });
 
   return app;
+
 }
 
 export async function runBootstrapUi(options: BootstrapUiOptions): Promise<void> {
