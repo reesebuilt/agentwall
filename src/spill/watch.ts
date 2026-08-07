@@ -43,6 +43,22 @@ const DEFAULT_RESCAN_INTERVAL_MS = 2_000;
  */
 const DEFAULT_RESCAN_ENTRY_CAP = 5_000;
 
+/**
+ * How far behind `Date.now()` a filesystem mtime may sit for a write that happened after it.
+ *
+ * They are not the same clock. `Date.now()` reads CLOCK_REALTIME; Linux stamps inode times
+ * from the coarse clock, which only advances on a timer tick, so a write issued strictly after
+ * a `Date.now()` reading is routinely stamped earlier than it. Measured on ext4 at
+ * CONFIG_HZ=1000: 19,999 of 20,000 writes came back with an mtime up to 1.41 ms older than the
+ * `Date.now()` reading that immediately preceded them. Coarser kernels and network
+ * filesystems that take their timestamps from a server clock are further out again.
+ *
+ * A whole second, because the two errors are not comparable in cost: too small and a
+ * credential write is dropped silently and permanently, too large and a file touched shortly
+ * before start-up is reported once.
+ */
+const MTIME_CLOCK_LAG_MS = 1_000;
+
 /** A NUL in the first 8 KiB is the cheapest reliable "this is not text" signal available. */
 const BINARY_SNIFF_BYTES = 8 * 1024;
 
@@ -309,6 +325,9 @@ class SpillWatch implements SpillWatchHandle {
    * Every path is checked before any watcher is attached. Attaching as it went would leave a
    * live inotify watch behind when a later path turned out to be a typo, and the caller has no
    * handle to close it with - the constructor threw.
+   *
+   * Resolves once every root is actually armed, which for a re-scan root means its seeding
+   * pass has finished. See the comment on that await below.
    */
   async start(paths: string[]): Promise<void> {
     if (paths.length === 0) {
@@ -330,6 +349,12 @@ class SpillWatch implements SpillWatchHandle {
       rootPaths.push(rootPath);
     }
 
+    // A re-scan root's first pass is the snapshot every later pass compares against, so until
+    // it lands the root cannot tell a write from the tree it started with and has to fall back
+    // to the mtime rule in `rescanPass`. Resolving before it lands would hand the caller a
+    // handle whose behaviour on their very first write depends on whether that write beat a
+    // `readdir`. Collected and awaited together so several roots seed concurrently.
+    const seeding: Promise<void>[] = [];
     for (const rootPath of rootPaths) {
       const root: RootState = {
         path: rootPath,
@@ -344,12 +369,13 @@ class SpillWatch implements SpillWatchHandle {
       };
       this.roots.push(root);
 
-      if (this.watchMode === "rescan") {
-        this.beginRescan(root);
-      } else {
-        this.beginWatch(root);
-      }
+      seeding.push(this.watchMode === "rescan" ? this.beginRescan(root) : this.beginWatch(root));
     }
+
+    // Neither call rejects: a native watch that cannot start degrades into a re-scan, and
+    // `rescanPass` buries its own IO failures in `skipped`. A root in native watch mode
+    // resolves immediately, so this costs nothing in the ordinary case.
+    await Promise.all(seeding);
   }
 
   stats(): SpillWatchStats {
@@ -396,7 +422,7 @@ class SpillWatch implements SpillWatchHandle {
     }
   }
 
-  private beginWatch(root: RootState): void {
+  private beginWatch(root: RootState): Promise<void> {
     try {
       const watcher = watch(root.path, { recursive: true, persistent: true }, (_event, filename) => {
         // Node delivers a null filename when it knows something changed but not what. There is
@@ -410,20 +436,23 @@ class SpillWatch implements SpillWatchHandle {
       // grows, or a watched directory removed underneath us. Falling back here is what keeps
       // "the watch died an hour ago" from being indistinguishable from "nothing happened".
       watcher.on("error", (error) => {
-        this.degrade(root, `native watch failed: ${errorMessage(error)}`);
+        // An event handler cannot await the fallback's seeding pass. It is tracked in-flight
+        // regardless, so `close()` still waits for it.
+        void this.degrade(root, `native watch failed: ${errorMessage(error)}`);
       });
 
       root.watcher = watcher;
       root.mode = "watch";
+      return Promise.resolve();
     } catch (error) {
       // Recursive watch is not available on every platform, and Node reports that by throwing
       // from watch() rather than by returning a watcher that never fires.
-      this.degrade(root, `recursive watch unavailable: ${errorMessage(error)}`);
+      return this.degrade(root, `recursive watch unavailable: ${errorMessage(error)}`);
     }
   }
 
-  private degrade(root: RootState, reason: string): void {
-    if (this.closed || root.mode === "rescan") return;
+  private degrade(root: RootState, reason: string): Promise<void> {
+    if (this.closed || root.mode === "rescan") return Promise.resolve();
     if (root.watcher) {
       try {
         root.watcher.close();
@@ -433,16 +462,25 @@ class SpillWatch implements SpillWatchHandle {
       root.watcher = null;
     }
     root.degradedReason = reason;
-    this.beginRescan(root);
+    return this.beginRescan(root);
   }
 
-  private beginRescan(root: RootState): void {
-    if (this.closed || root.timer !== undefined) return;
+  /**
+   * Put a root into periodic re-scan and hand back its seeding pass.
+   *
+   * The promise covers the FIRST pass only, never the interval: it is what a caller waits on
+   * to know the root has a snapshot. Every pass, including this one, is tracked in `inFlight`
+   * so `close()` still waits for whatever is walking.
+   */
+  private beginRescan(root: RootState): Promise<void> {
+    if (this.closed || root.timer !== undefined) return Promise.resolve();
     root.mode = "rescan";
-    this.track(this.rescanPass(root));
+    const seeding = this.rescanPass(root);
+    this.track(seeding);
     root.timer = setInterval(() => {
       this.track(this.rescanPass(root));
     }, this.rescanIntervalMs);
+    return seeding;
   }
 
   /**
@@ -452,7 +490,8 @@ class SpillWatch implements SpillWatchHandle {
    * reports writes it observes and the contents of the tree at start-up are not writes it
    * observed. Files whose mtime is newer than the spill watch's own start are the exception:
    * those did happen on its watch, and reporting them is what closes the gap when a native
-   * watch fails part-way through a run and the fallback has no prior snapshot to compare to.
+   * watch fails part-way through a run and the fallback has no prior snapshot to compare to,
+   * or when something writes into the tree while this very pass is walking it.
    */
   private async rescanPass(root: RootState): Promise<void> {
     if (this.closed || root.passInFlight) return;
@@ -514,11 +553,15 @@ class SpillWatch implements SpillWatchHandle {
           root.seen.set(absolute, fingerprint);
 
           if (previous === undefined) {
-            // `>=`, not `>`: a file written in the same millisecond the spill watch started is a
-            // write it should report, and mtime resolution is coarse enough that this happens.
-            // The cost of the inclusive bound is re-reporting a file that happened to be
-            // touched in that same millisecond before start, which is the safer error.
-            if (root.seeded || stats.mtimeMs >= this.startedAtMs) this.schedule(absolute);
+            // Once seeded, first sight is proof enough. Before that, mtime is the only evidence
+            // of whether the file predates the spill watch - and it has to be read with the
+            // clock lag allowed for. A zero-tolerance comparison files writes that landed just
+            // after start-up into `seen` without ever scanning them, and no later pass can
+            // recover them: their fingerprint never changes again, so they are invisible for
+            // the lifetime of the watch.
+            if (root.seeded || stats.mtimeMs >= this.startedAtMs - MTIME_CLOCK_LAG_MS) {
+              this.schedule(absolute);
+            }
             continue;
           }
           if (previous !== fingerprint) this.schedule(absolute);

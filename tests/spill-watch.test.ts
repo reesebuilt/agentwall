@@ -356,24 +356,30 @@ describe("spill watch shutdown", () => {
 });
 
 describe("spill watch degradation", () => {
-  // KNOWN INTERMITTENT, UNEXPLAINED. On a heavily loaded machine this case has timed out
-  // roughly one run in three when its file shares a worker with several other suites:
+  // This case was marked KNOWN INTERMITTENT: it timed out roughly one run in three when its
+  // file shared a jest worker with several other fs-heavy suites. The mechanism is understood
+  // now and fixed in src/spill/watch.ts, and it was never runner contention.
   //
-  //   npx jest tests/lockdown.test.ts tests/probe-api.test.ts \
-  //            tests/mcp-http.test.ts tests/spill-watch.test.ts --maxWorkers=1
+  // `rescanPass` decided whether a first-sight file was a write it had observed by comparing
+  // `stats.mtimeMs` against a `Date.now()` taken at construction. Those are two different
+  // clocks. `Date.now()` reads CLOCK_REALTIME; Linux stamps inode times from the coarse clock,
+  // which only advances on a timer tick. Measured on this filesystem: 19,999 of 20,000 writes
+  // issued immediately after a `Date.now()` came back with an mtime up to 1.41 ms OLDER than
+  // it. So a file written microseconds after the spill watch started could look older than the
+  // spill watch, be recorded in `seen` without being scanned, and then stay invisible for the
+  // rest of the run because its fingerprint never changed again and every later pass took the
+  // `previous === fingerprint` branch. That is why ~900 passes produced nothing at all rather
+  // than a late report.
   //
-  // Ruled out: CPU starvation (passes under 12x synthetic load in isolation), worker count
-  // (fails at --maxWorkers=1, passes at --maxWorkers=2), file-descriptor limits (1M soft),
-  // an unref'd timer (the interval is ref'd), libuv threadpool size (no change at 64), and
-  // mtime granularity (sub-millisecond on this filesystem). Reading the code, both orderings
-  // should report: if pass one reaches the file after the write, mtimeMs >= startedAtMs
-  // reports it; if pass one misses it, pass two sees previous === undefined with seeded true
-  // and reports it. Neither path can seed it silently.
+  // It took a second coincidence to bite: the seeding pass had to actually reach the file,
+  // which happens when a contended libuv threadpool delays its first `readdir` past the write.
+  // That is what made it look like load. The earlier note concluded both orderings must
+  // report and so nothing could seed silently; the third ordering - pass one sees the file and
+  // judges it pre-existing - is the one it did not enumerate.
   //
-  // It is left running rather than skipped, and deliberately NOT "fixed" by re-touching the
-  // file on an interval: that would report through the changed-fingerprint branch, which the
-  // change-detection case above already covers, and would delete the only coverage of the
-  // first-sight path while looking green. An open question beats a test that stopped asking.
+  // Two changes close it, and the two cases after this one hold each of them down: `start` now
+  // awaits the seeding pass, so a write that follows it is judged against a snapshot rather
+  // than against a clock, and the mtime comparison now allows for the clock lag.
   it("falls back to periodic re-scan when the operator asks for it", async () => {
     const dir = tempDir();
     const collector = new FindingCollector();
@@ -390,12 +396,72 @@ describe("spill watch degradation", () => {
     // An operator who chose re-scan has not lost anything, so nothing here is degraded.
     expect(stats.roots[0]?.degradedReason).toBeNull();
     expect(stats.degraded).toBe(false);
-    // 45s, not the suite default: this is the one case whose subject is a wall-clock periodic
-    // mechanism rather than a callback, so it needs real elapsed time to pass. Under the
-    // project's --maxWorkers=50% it shares cores with seven other suites, and a 15s bound
-    // failed there while passing in isolation and at --maxWorkers=2. The generous bound
-    // measures the same behaviour without turning runner contention into a product failure.
-  }, 45_000);
+    // 15s, matching the sibling case below, not the 45s this carried while the timeout was
+    // unexplained. The write is now reported one re-scan interval after it lands - measured at
+    // 22-86 ms across 60 consecutive runs - so 45s bought nothing except a slower red.
+  }, 15_000);
+
+  it("hands back a re-scan root whose seeding pass has already finished", async () => {
+    const dir = tempDir();
+    const collector = new FindingCollector();
+    for (const name of ["one.txt", "two.txt", "three.txt"]) {
+      nodeFs.writeFileSync(join(dir, name), "nothing secret here\n");
+    }
+
+    // `truncated` is written only at the end of a pass, and a one-entry cap against three files
+    // guarantees the first pass sets it. Reading it as true the instant the promise resolves is
+    // therefore proof that the pass finished before `start` returned.
+    //
+    // That ordering is the contract. Until the seeding pass lands a re-scan root has no
+    // snapshot, so the caller's first write is judged by comparing its mtime against a
+    // Date.now() reading - two clocks that disagree by around a millisecond. Resolving early
+    // makes the first write after start-up a coin flip on whether it beat a `readdir`.
+    const handle = await startSpillWatch({
+      paths: [dir],
+      onFinding: collector.onFinding,
+      mode: "rescan",
+      rescanIntervalMs: 50,
+      rescanEntryCap: 1,
+    });
+    openHandles.push(handle);
+
+    expect(handle.stats().roots[0]?.truncated).toBe(true);
+  });
+
+  it("reports a first-sight file stamped just before start-up, but not an old one", async () => {
+    const dir = tempDir();
+    const collector = new FindingCollector();
+
+    // An mtime is not comparable to Date.now() at millisecond scale, so a write that lands
+    // after the spill watch starts can carry a timestamp from before it. A 50 ms backdate
+    // stands in for that. It must still be reported: the alternative is a credential write
+    // recorded in `seen` unscanned, then invisible to every later pass because its fingerprint
+    // never changes again.
+    const recent = join(dir, "recent.env");
+    nodeFs.writeFileSync(recent, `${SYNTHETIC_AWS_KEY}\n`);
+    const justBefore = new Date(Date.now() - 50);
+    nodeFs.utimesSync(recent, justBefore, justBefore);
+
+    // And this is what seeding is for. Tree contents that predate the spill watch are not
+    // writes it observed, so allowing for clock lag must not turn start-up into a report of
+    // everything already on disk.
+    const ancient = join(dir, "ancient.env");
+    nodeFs.writeFileSync(ancient, `${SYNTHETIC_AWS_KEY}\n`);
+    const longAgo = new Date(Date.now() - 6 * 60 * 60 * 1000);
+    nodeFs.utimesSync(ancient, longAgo, longAgo);
+
+    const handle = await startWatch([dir], collector, { mode: "rescan", rescanIntervalMs: 50, debounceMs: 20 });
+    await collector.waitFor((f) => f.path === recent);
+
+    // The tripwire is written after start-up, so it reports through the seeded path. Its
+    // arrival is what makes `ancient`'s silence a decision rather than a scan still pending.
+    const tripwire = join(dir, "tripwire.env");
+    nodeFs.writeFileSync(tripwire, `${SYNTHETIC_AWS_KEY}\n`);
+    await collector.waitFor((f) => f.path === tripwire);
+
+    expect(collector.pathsSeen()).not.toContain(ancient);
+    expect(handle.stats().findings).toBe(2);
+  }, 15_000);
 
   it("falls back and declares itself degraded when recursive watch is unavailable", async () => {
     const dir = tempDir();
