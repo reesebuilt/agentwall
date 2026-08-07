@@ -34,7 +34,7 @@ worse than no tool.
   run. If it is implemented but not yet reachable, document it as not yet wired, not as
   present.
 - Do not soften a documented limit to make the project look better. The
-  [Limits](README.md#limits) table and the out-of-scope list in [SECURITY.md](SECURITY.md) are
+  [Limits](docs/limits.md) table and the out-of-scope list in [SECURITY.md](SECURITY.md) are
   load-bearing, not marketing hedges. If a limit stops being true because you fixed it, move it
   out and say what closed it.
 - Cite file and line when a doc claim depends on specific code, so the next person can check it

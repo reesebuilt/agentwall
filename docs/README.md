@@ -10,6 +10,9 @@ than a narrative document.
   the proxy.
 - [Tutorials](tutorials/): short, task-shaped walkthroughs. Each states how long it
   takes and what you should see when it works.
+- [Onboarding an agent](onboarding.md): `agentwall onboard <profile>` mints an identity for one
+  agent runtime, writes it into your config, prints the environment that runtime needs, and says
+  plainly why configuration is not capture.
 
 ## Understanding the system
 
@@ -17,6 +20,8 @@ than a narrative document.
   where decisions are made.
 - [Threat model](threat-model.md): what AgentWall defends against, what it explicitly
   does not, and the assumptions behind both. Read this before relying on it for anything.
+- [Limits](limits.md): every documented limit in one table, from monitor-by-default to
+  single-host scope. Load-bearing, not marketing hedges; read alongside the threat model.
 - [Audit evidence format](audit-format.md): the normative on-disk spec. Record hashing,
   canonicalization, rotation manifest, checkpoints, and OpenTimestamps proofs, with worked
   examples and a statement of what the format does not prove.
@@ -70,6 +75,12 @@ than a narrative document.
 - [Detection benchmark](benchmark.md): re-measuring the detection numbers yourself, why
   precision and recall are never combined into one score, and what a corpus of 190 cases
   cannot tell you.
+- [Verification](verification.md): running the four verifier implementations against a chain,
+  the conformance corpus they are checked on, and what a passing verdict does not prove.
+- [API and configuration](reference.md): the routes, environment variables, and configuration
+  schema, worked end to end from a single policy decision outward.
+- [Config and policy reload](reload.md): re-reading policy and config without a restart and
+  without dropping a connection, validated before anything is applied and recorded on the chain.
 
 ## Elsewhere in the repository
 

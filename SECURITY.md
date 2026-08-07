@@ -53,9 +53,9 @@ Anything that breaks a property the project claims. Concretely:
 
 ## Out of scope
 
-These are documented limits, not defects. They are listed in the README under
-[Limits](README.md#limits). Reporting them is not a vulnerability, though arguments about how
-they should change are welcome as normal issues.
+These are documented limits, not defects. They are listed in [docs/limits.md](docs/limits.md).
+Reporting them is not a vulnerability, though arguments about how they should change are
+welcome as normal issues.
 
 - The forward proxy records and allows. It does not block. Monitor-first is the shipped
   posture.
