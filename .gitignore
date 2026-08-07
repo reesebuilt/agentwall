@@ -52,3 +52,7 @@ __pycache__/
 *.orig
 *~
 *.swp
+
+
+# Local isolated implementation worktrees.
+/.worktrees/
