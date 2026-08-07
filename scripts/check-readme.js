@@ -50,53 +50,44 @@ function addTarget(targets, rawTarget) {
   return target;
 }
 
-function htmlAttributeValue(tag, name) {
-  const escapedName = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const attribute = new RegExp(
-    `(?:^|\\s)${escapedName}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s"'=<>\\x60]+))`,
-    'i',
-  ).exec(tag);
-  if (!attribute) return null;
-  return attribute[1] ?? attribute[2] ?? attribute[3];
+function addSourceSetTargets(sourceSet, targets, imageTargets) {
+  for (const candidate of sourceSet.split(',')) {
+    const target = addTarget(targets, candidate.trim().split(/\s+/)[0]);
+    if (target && imageTargets) imageTargets.add(target);
+  }
 }
 
-function collectHtmlTargets(html, targets, imageTargets) {
-  const renderedHtml = html.replace(/<!--[\s\S]*?-->/g, '');
+function collectHtmlTargets(html, targets, imageTargets, parseFragment) {
+  const fragment = parseFragment(html);
 
-  for (const match of renderedHtml.matchAll(/<(?:img|source)\b[^>]*>/gi)) {
-    const tag = match[0];
-    if (/^<img\b/i.test(tag)) {
-      const source = htmlAttributeValue(tag, 'src');
-      if (source !== null) {
+  function visit(node) {
+    if (node.tagName && Array.isArray(node.attrs)) {
+      const attributes = new Map(node.attrs.map((attribute) => [attribute.name, attribute.value]));
+      const source = attributes.get('src');
+      const sourceSet = attributes.get('srcset');
+
+      if (node.tagName === 'img' && source !== undefined) {
         const target = addTarget(targets, source);
         if (target) imageTargets.add(target);
       }
-    }
-    const sourceSet = htmlAttributeValue(tag, 'srcset');
-    if (sourceSet !== null) {
-      for (const candidate of sourceSet.split(',')) {
-        const target = addTarget(targets, candidate.trim().split(/\s+/)[0]);
-        if (target) imageTargets.add(target);
+      if ((node.tagName === 'img' || node.tagName === 'source') && sourceSet !== undefined) {
+        addSourceSetTargets(sourceSet, targets, imageTargets);
       }
+
+      const href = attributes.get('href');
+      if (href !== undefined) addTarget(targets, href);
+      if (source !== undefined) addTarget(targets, source);
+      if (sourceSet !== undefined) addSourceSetTargets(sourceSet, targets, null);
     }
+
+    for (const child of node.childNodes || []) visit(child);
+    if (node.content) visit(node.content);
   }
 
-  for (const match of renderedHtml.matchAll(/<[A-Za-z][^>]*>/g)) {
-    const tag = match[0];
-    for (const name of ['href', 'src']) {
-      const value = htmlAttributeValue(tag, name);
-      if (value !== null) addTarget(targets, value);
-    }
-    const sourceSet = htmlAttributeValue(tag, 'srcset');
-    if (sourceSet !== null) {
-      for (const candidate of sourceSet.split(',')) {
-        addTarget(targets, candidate.trim().split(/\s+/)[0]);
-      }
-    }
-  }
+  visit(fragment);
 }
 
-function collectTargets(markdown, lexer, walkTokens) {
+function collectTargets(markdown, lexer, walkTokens, parseFragment) {
   const targets = new Set();
   const imageTargets = new Set();
   const htmlFragments = [];
@@ -111,7 +102,7 @@ function collectTargets(markdown, lexer, walkTokens) {
     } else if (token.type === 'html') {
       const renderedHtml = token.raw.replace(/<!--[\s\S]*?-->/g, '');
       htmlFragments.push(renderedHtml);
-      collectHtmlTargets(renderedHtml, targets, imageTargets);
+      collectHtmlTargets(renderedHtml, targets, imageTargets, parseFragment);
     }
   });
 
@@ -144,8 +135,8 @@ async function main() {
   }
 
   const markdown = failures.length === 0 ? fs.readFileSync(readmePath, 'utf8') : '';
-  const { lexer, walkTokens } = await import('marked');
-  const { targets, imageTargets, htmlMarkup } = collectTargets(markdown, lexer, walkTokens);
+  const [{ lexer, walkTokens }, { parseFragment }] = await Promise.all([import('marked'), import('parse5')]);
+  const { targets, imageTargets, htmlMarkup } = collectTargets(markdown, lexer, walkTokens, parseFragment);
   for (const target of targets) resolveLocalTarget(target);
   const normalizedImageTargets = new Set(
     [...imageTargets]

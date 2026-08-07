@@ -192,6 +192,80 @@ describe("README contract checker", () => {
     expect(result.stdout).toContain("README contract check passed");
   });
 
+  it("ignores attribute-shaped text inside another quoted attribute", () => {
+    const markdown = [
+      themeAwarePicture(),
+      `![Product image 1](${manifestImages[0]})`,
+      `![Product image 2](${manifestImages[1]})`,
+      "",
+      `<img alt="example src=missing.png" src=${manifestImages[2]}>`,
+    ].join("\n");
+
+    const result = runChecker(writeRootFixture(markdown));
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("README contract check passed");
+  });
+
+  it.each([
+    ["double-quoted", `"${manifestImages[2]}"`],
+    ["single-quoted", `'${manifestImages[2]}'`],
+    ["unquoted", manifestImages[2]],
+  ])("accepts a required manifest image through a %s src attribute", (_label, attributeValue) => {
+    const markdown = [
+      themeAwarePicture(),
+      `![Product image 1](${manifestImages[0]})`,
+      `![Product image 2](${manifestImages[1]})`,
+      "",
+      `<img src=${attributeValue} alt=Product-image-3>`,
+    ].join("\n");
+
+    const result = runChecker(writeRootFixture(markdown));
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("README contract check passed");
+  });
+
+  it.each([
+    ["double-quoted", '"missing-href-target.md"'],
+    ["single-quoted", "'missing-href-target.md'"],
+    ["unquoted", "missing-href-target.md"],
+  ])("rejects a missing local target through a %s href attribute", (_label, attributeValue) => {
+    const markdown = [
+      themeAwarePicture(),
+      imageTargets(),
+      "",
+      `<a href=${attributeValue}>Missing target</a>`,
+    ].join("\n");
+
+    const result = runChecker(writeRootFixture(markdown));
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("missing-href-target.md: local target does not exist");
+  });
+
+  it.each([
+    ["double-quoted", `"${manifestImages[2]}"`],
+    ["single-quoted", `'${manifestImages[2]}'`],
+    ["unquoted", manifestImages[2]],
+  ])("accepts a required manifest image through a %s srcset attribute", (_label, attributeValue) => {
+    const markdown = [
+      themeAwarePicture(),
+      `![Product image 1](${manifestImages[0]})`,
+      `![Product image 2](${manifestImages[1]})`,
+      "",
+      "<picture>",
+      `  <source srcset=${attributeValue}>`,
+      `  <img src=${manifestImages[0]} alt=Product-image-3>`,
+      "</picture>",
+    ].join("\n");
+
+    const result = runChecker(writeRootFixture(markdown));
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("README contract check passed");
+  });
+
   it("rejects a supplied README path outside the repository before reading it", () => {
     const directory = mkdtempSync(join(tmpdir(), "agentwall-readme-check-"));
     temporaryDirectories.push(directory);
