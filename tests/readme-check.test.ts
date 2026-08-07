@@ -92,6 +92,7 @@ describe("README contract checker", () => {
       themeAwarePicture(),
       `![Product image 1](${manifestImages[0]})`,
       `![Product image 2](${manifestImages[1]})`,
+      "",
       `    ![Not rendered](${manifestImages[2]})`,
     ].join("\n");
 
@@ -99,6 +100,67 @@ describe("README contract checker", () => {
 
     expect(result.status).toBe(1);
     expect(result.stderr).toContain(`${manifestImages[2]}: README does not reference this manifest image`);
+  });
+
+  it("rejects a manifest image target inside a root tab-indented code block", () => {
+    const markdown = [
+      themeAwarePicture(),
+      `![Product image 1](${manifestImages[0]})`,
+      `![Product image 2](${manifestImages[1]})`,
+      "",
+      `\t![Not rendered](${manifestImages[2]})`,
+    ].join("\n");
+
+    const result = runChecker(writeRootFixture(markdown));
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain(`${manifestImages[2]}: README does not reference this manifest image`);
+  });
+
+  it("rejects a manifest image target inside a blockquote-indented code block", () => {
+    const markdown = [
+      themeAwarePicture(),
+      `![Product image 1](${manifestImages[0]})`,
+      `![Product image 2](${manifestImages[1]})`,
+      `>     ![Not rendered](${manifestImages[2]})`,
+    ].join("\n");
+
+    const result = runChecker(writeRootFixture(markdown));
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain(`${manifestImages[2]}: README does not reference this manifest image`);
+  });
+
+  it("accepts a Markdown image rendered inside a list item", () => {
+    const markdown = [
+      themeAwarePicture(),
+      `![Product image 1](${manifestImages[0]})`,
+      `![Product image 2](${manifestImages[1]})`,
+      "- Product evidence",
+      "",
+      `  ![Product image 3](${manifestImages[2]})`,
+    ].join("\n");
+
+    const result = runChecker(writeRootFixture(markdown));
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("README contract check passed");
+  });
+
+  it("accepts an HTML image rendered inside a list item", () => {
+    const markdown = [
+      themeAwarePicture(),
+      `![Product image 1](${manifestImages[0]})`,
+      `![Product image 2](${manifestImages[1]})`,
+      "- Product evidence",
+      "",
+      `  <img src="${manifestImages[2]}" alt="Product image 3">`,
+    ].join("\n");
+
+    const result = runChecker(writeRootFixture(markdown));
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("README contract check passed");
   });
 
   it("rejects a supplied README path outside the repository before reading it", () => {

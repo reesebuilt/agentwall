@@ -58,6 +58,7 @@
     "@jest/globals": "^30.4.1",
     "@types/node": "^22.20.1",
     "jest": "^30.4.2",
+    "marked": "^18.0.9",
     "ts-jest": "^29.4.12",
     "ts-node": "^10.9.2",
     "typescript": "^5.3.3"
