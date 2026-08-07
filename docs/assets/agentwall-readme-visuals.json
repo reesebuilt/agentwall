@@ -1,0 +1,71 @@
+[
+  {
+    "file": "docs/assets/agentwall-console-hero.png",
+    "pixelWidth": 2400,
+    "pixelHeight": 1350,
+    "route": "/",
+    "selector": "viewport",
+    "viewport": {
+      "width": 1600,
+      "height": 900
+    },
+    "deviceScaleFactor": 1.5,
+    "theme": "dark",
+    "sourceCommit": "78f5a1686617b266631fb5c9555f4f85e051997d",
+    "seedRequest": {
+      "method": "POST",
+      "path": "/api/dashboard/control/simulation",
+      "body": {
+        "action": "start"
+      }
+    },
+    "requiredVisibleState": "Top viewport with branded navigation, Review required posture, one open approval, and the simulated bash_exec next action for sim-operator; no error or loading state.",
+    "alt": "Agentwall operator console showing Review required posture and a simulated bash_exec approval for sim-operator."
+  },
+  {
+    "file": "docs/assets/agentwall-approval-in-action.png",
+    "pixelWidth": 1584,
+    "pixelHeight": 513,
+    "route": "/",
+    "selector": "#approvals",
+    "viewport": {
+      "width": 1600,
+      "height": 900
+    },
+    "deviceScaleFactor": 1.5,
+    "theme": "dark",
+    "sourceCommit": "78f5a1686617b266631fb5c9555f4f85e051997d",
+    "seedRequest": {
+      "method": "POST",
+      "path": "/api/dashboard/control/simulation",
+      "body": {
+        "action": "start"
+      }
+    },
+    "requiredVisibleState": "One open critical bash_exec approval for sim-operator with the Simulation artifact label and Approve and Deny actions.",
+    "alt": "Critical bash_exec approval awaiting operator review for sim-operator in the built-in incident simulation."
+  },
+  {
+    "file": "docs/assets/agentwall-evidence-verification.png",
+    "pixelWidth": 1584,
+    "pixelHeight": 1691,
+    "route": "/",
+    "selector": "#evidence",
+    "viewport": {
+      "width": 1600,
+      "height": 900
+    },
+    "deviceScaleFactor": 1.5,
+    "theme": "dark",
+    "sourceCommit": "78f5a1686617b266631fb5c9555f4f85e051997d",
+    "seedRequest": {
+      "method": "POST",
+      "path": "/api/dashboard/control/simulation",
+      "body": {
+        "action": "start"
+      }
+    },
+    "requiredVisibleState": "Loaded evidence records for sim-operator, including token replay, blocked C2 beacon, pending shell escalation, DLP secret match, and containment playbook results; no error or loading state.",
+    "alt": "Agentwall evidence list showing simulated token replay, blocked C2 beacon, shell escalation, secret match, and containment records for sim-operator."
+  }
+]
