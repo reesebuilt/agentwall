@@ -132,24 +132,27 @@ sealed segment deleted from disk by the manifest entry that still names it, a li
 after signing by the live tail the checkpoint committed to, and a re-signed checkpoint only by a
 pinned key.
 
-`scripts/conformance.js` runs both verifiers over every case, compares each against `expected.json`
-and against the other, and copies each case to a temp directory first so a verifier cannot alter what
-it checks. From the repository root:
+`scripts/conformance.js` runs all four verifiers over every case, compares each against
+`expected.json` and against the others, and copies each case to a temp directory first so a verifier
+cannot alter what it checks. From the repository root:
 
     npm run build
     cd verifier && go build -o agentwall-verify . && cd ..
+    cd verifier-rs && cargo build --release --locked && cd ..
     node scripts/conformance.js
 
-    26 cases, typescript and go: 26 agreed, 0 declared divergence(s), 0 failure(s)
+    27 cases across 4 implementation(s) (typescript, go, rust, python): 27 agreed, 0 case(s) with a declared divergence, 0 failure(s)
+
+The Python verifier needs no build step; it has no dependencies and runs from source.
 
 `go test ./...` in this directory runs the unit tests plus a corpus walk that asserts every case's
 `expected.json` against this verifier alone.
 
-## Where the two verifiers stand
+## Where the four verifiers stand
 
-Both verifiers return the same verdict on every case in the corpus, and the harness declares no
-divergences. That is agreement about the 26 cases the corpus contains, not a proof that the two
-implementations are equivalent: a forgery nobody has written a case for has been put to neither of
+All four verifiers return the same verdict on every case in the corpus, and the harness declares no
+divergences. That is agreement about the 27 cases the corpus contains, not a proof that the four
+implementations are equivalent: a forgery nobody has written a case for has been put to none of
 them. The harness fails the run if they ever stop agreeing on a case it does contain.
 
 On the `anchored` layer the bundled verifier recomputes each anchor record's digest from the

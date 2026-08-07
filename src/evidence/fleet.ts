@@ -335,7 +335,7 @@ function shellQuote(value: string): string {
  * The four commands that reproduce one host's verdict without trusting this page.
  *
  * All four, always, rather than one with the rest in the docs. Four implementations written
- * from the format document and agreeing on 26 conformance cases is the strongest property this
+ * from the format document and agreeing on 27 conformance cases is the strongest property this
  * project has, and it is worth strictly more in a fleet than on one laptop: an auditor
  * reproduces the aggregator's verdict without trusting the aggregator, in a language of their
  * choosing, from a checkout that shares no code with the writer.

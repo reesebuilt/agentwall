@@ -96,7 +96,7 @@ verbatim including their hashes. The Ed25519 vectors are from RFC 8032 section 7
 keccak256 and RIPEMD-160 vectors are the published ones. A test that only agreed with this code
 would be worth nothing here.
 
-`tests/test_cli.py` also runs all 26 corpus cases end to end against their `expected.json`.
+`tests/test_cli.py` also runs all 27 corpus cases end to end against their `expected.json`.
 
 Exercised on CPython 3.11 and 3.12. The 3.9 floor in `pyproject.toml` is what the syntax
 requires, not a version this has been run against.

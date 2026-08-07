@@ -5,7 +5,7 @@ at all and no `unsafe`.
 
 ## Why a third one
 
-The bundled TypeScript verifier and the Go verifier already agree on the 26 corpus cases. Two
+The bundled TypeScript verifier and the Go verifier already agree on the 27 corpus cases. Two
 implementations agreeing is evidence about the format only if they were written independently,
 and the more implementations that agree, the harder it is for a shared misreading to hide in the
 gap between the document and the code.
@@ -50,7 +50,7 @@ vectors rather than trusted:
   absorb loop with an implementation nobody here wrote. The Keccak vectors then pin the one byte
   SHA3 cannot, the padding constant.
 
-`cargo test` runs all of that plus the 26 corpus cases in process.
+`cargo test` runs all of that plus the 27 corpus cases in process.
 
 ## Usage
 

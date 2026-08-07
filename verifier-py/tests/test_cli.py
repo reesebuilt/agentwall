@@ -1,6 +1,6 @@
 """The CLI contract, and the whole corpus end to end.
 
-The corpus test is the one that matters most: it is the same 26 cases the
+The corpus test is the one that matters most: it is the same 27 cases the
 conformance harness drives, checked against the format's expected.json rather
 than against this verifier's own opinion.
 """

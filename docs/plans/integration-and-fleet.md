@@ -55,7 +55,7 @@ failure to every user who installs it.
 - **Content inspection:** plaintext HTTP request and response, 256 KiB cap, evadable by padding
   and documented as such. HTTPS bodies require opt-in interception.
 - **Evidence:** SHA-256 hash chain, Ed25519 checkpoints, OpenTimestamps anchoring, four
-  independent verifiers (TypeScript, Go, Rust, Python) agreeing on 26 conformance cases.
+  independent verifiers (TypeScript, Go, Rust, Python) agreeing on 27 conformance cases.
 - **Sandbox:** Landlock ABI 4 filesystem and TCP port scoping, seccomp denylist.
 
 ### The fact that reshapes the fleet story

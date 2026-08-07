@@ -19,7 +19,7 @@ compromised host therefore cannot report itself clean here: it would have to pro
 that survive a rehash, which is the thing the format exists to make hard.
 
 Every row is reproducible without trusting this process, in four independent implementations
-written from [the format document](audit-format.md) and agreeing on 26 conformance cases. Each
+written from [the format document](audit-format.md) and agreeing on 27 conformance cases. Each
 host's page prints all four against that host's own file:
 
 ```bash

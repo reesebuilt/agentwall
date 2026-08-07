@@ -178,10 +178,10 @@ on purpose, so catching one takes a property the forger cannot recompute:
   rewrite needs the signing key.
 - `b8-checkpoint-foreign-key` re-signs the checkpoint consistently under another key. Only a pin
   supplied from outside the evidence exposes it.
-- `b17-sealed-segment-missing` deletes a sealed segment file and leaves the manifest naming it. Both
+- `b17-sealed-segment-missing` deletes a sealed segment file and leaves the manifest naming it. All four
   verifiers report `segment-missing` on the `linked` layer, which is the layer that made the claim.
 - `b4-index-reuse-concurrent-writers` appends a second writer's records under indexes already used.
-  Both verifiers fail the `chained` layer with an index gap and a broken link, and the message names
+  All four verifiers fail the `chained` layer with an index gap and a broken link, and the message names
   a gap, restart, or reused index, because that shape is what two processes appending to one chain
   look like rather than one altered record. The single-writer lock exists to prevent it.
 
@@ -193,30 +193,31 @@ hashed under the pre-marker key order cannot be recomputed by a verifier that do
 collation tables, and reporting them as unverifiable is a different statement from reporting them as
 tampered.
 
-Run both verifiers over every case:
+Run all four verifiers over every case:
 
 ```bash
 npm run build
 cd verifier && go build -o agentwall-verify . && cd ..
+cd verifier-rs && cargo build --release --locked && cd ..
 node scripts/conformance.js
 ```
 
 The run prints one line per case. Its tail:
 
 ```
-ok         b9-anchor-digest-altered  exit=1 chained=true linked=true anchored=false
-ok         b10-proof-truncated  exit=1 chained=true linked=true anchored=false
-ok         b11-torn-tail  exit=1 chained=true linked=true anchored=false
-ok         b12-duplicate-key-shadowed  exit=1 chained=false linked=true anchored=false
-ok         b13-confirmed-without-proof  exit=1 chained=true linked=true anchored=false
-ok         b14-submission-never-reached-calendar  exit=1 chained=true linked=true anchored=false
-ok         b15-sealed-segment-rewritten  exit=1 chained=true linked=false anchored=true
-ok         b16-live-tail-rewritten-after-checkpoint  exit=1 chained=true linked=true anchored=false
-ok         b17-sealed-segment-missing  exit=1 chained=true linked=false anchored=true
-ok         l1-confirmed-with-pending-proof  exit=0 chained=true linked=true anchored=true
-ok         l2-legacy-canon-unmarked  exit=1 chained=false linked=true anchored=false
+ok         b9-anchor-digest-altered  exit=1 chained=true linked=true anchored=false  pending=1 confirmed=0 failed=0  4/4 agree
+ok         b10-proof-truncated  exit=1 chained=true linked=true anchored=false  pending=1 confirmed=0 failed=0  4/4 agree
+ok         b11-torn-tail  exit=1 chained=true linked=true anchored=false  pending=0 confirmed=0 failed=0  4/4 agree
+ok         b12-duplicate-key-shadowed  exit=1 chained=false linked=true anchored=false  pending=1 confirmed=0 failed=0  4/4 agree
+ok         b13-confirmed-without-proof  exit=1 chained=true linked=true anchored=false  pending=0 confirmed=1 failed=0  4/4 agree
+ok         b14-submission-never-reached-calendar  exit=1 chained=true linked=true anchored=false  pending=0 confirmed=0 failed=1  4/4 agree
+ok         b15-sealed-segment-rewritten  exit=1 chained=true linked=false anchored=true  pending=1 confirmed=0 failed=0  4/4 agree
+ok         b16-live-tail-rewritten-after-checkpoint  exit=1 chained=true linked=true anchored=false  pending=1 confirmed=0 failed=0  4/4 agree
+ok         b17-sealed-segment-missing  exit=1 chained=true linked=false anchored=true  pending=1 confirmed=0 failed=0  4/4 agree
+ok         l1-confirmed-with-pending-proof  exit=0 chained=true linked=true anchored=true  pending=0 confirmed=1 failed=0  4/4 agree
+ok         l2-legacy-canon-unmarked  exit=1 chained=false linked=true anchored=false  pending=0 confirmed=0 failed=0  4/4 agree
 
-26 cases, typescript and go: 26 agreed, 0 declared divergence(s), 0 failure(s)
+27 cases across 4 implementation(s) (typescript, go, rust, python): 27 agreed, 0 case(s) with a declared divergence, 0 failure(s)
 ```
 
 Each case is copied to a temp directory before it runs, so a verifier cannot alter what it checks.
@@ -228,9 +229,9 @@ npm run gen:corpus && git status --porcelain verifier/testdata
 
 That prints nothing, because the regenerated tree is byte identical to the committed one.
 
-Both verifiers return the same verdict on every case, which is why the summary declares no
-divergences. That is agreement across the 26 cases the corpus contains, not a proof that the two
-implementations are equivalent: a forgery nobody has written a case for has been put to neither of
+All four verifiers return the same verdict on every case, which is why the summary declares no
+divergences. That is agreement across the 27 cases the corpus contains, not a proof that the four
+implementations are equivalent: a forgery nobody has written a case for has been put to none of
 them. The harness fails the run if they ever stop agreeing on a case it does contain
 ([`scripts/conformance.js:40-50`](../scripts/conformance.js)).
 
@@ -244,7 +245,7 @@ them. The harness fails the run if they ever stop agreeing on a case it does con
   format mistake. The document is [docs/audit-format.md](audit-format.md), which is why it is
   written at the byte level and kept short enough to read in one sitting.
 - **Inclusion in a Bitcoin block, while an anchor is pending.** Pending means a calendar accepted a
-  submission. Both verifiers report pending as pending, and the Go verifier reports a Bitcoin
+  submission. All four verifiers report pending as pending, and the Go verifier reports a Bitcoin
   attestation as a block height plus the derived value for you to compare against that block's
   merkle root, which it does not fetch.
 

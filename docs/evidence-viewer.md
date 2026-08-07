@@ -186,7 +186,7 @@ findings:
   written before the `cu1` marker land here. A verifier without ICU collation tables cannot
   rebuild that hash, so unverifiable and edited are indistinguishable from outside.
 
-Both fail the chained layer, exactly as both verifiers fail them, because the verdict must not
+Both fail the chained layer, exactly as all four verifiers fail them, because the verdict must not
 soften. Only the stated cause differs, so an operator with old history is not told somebody
 tampered with it. Corpus case `l2-legacy-canon-unmarked` is this case.
 
