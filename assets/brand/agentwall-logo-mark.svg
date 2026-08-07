@@ -1,7 +1,7 @@
 <svg width="512" height="512" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="agentwall-mark-title agentwall-mark-description">
   <title id="agentwall-mark-title">Agentwall mark</title>
-  <desc id="agentwall-mark-description">A mint protected center inside a graphite frame.</desc>
-  <rect x="32" y="32" width="448" height="448" rx="96" fill="#0F131B"/>
-  <path fill="#5FE6C8" fill-rule="evenodd" clip-rule="evenodd" d="M170 118H342L394 170V342L342 394H170L118 342V170L170 118ZM204 187L187 204V308L204 325H308L325 308V204L308 187H204Z"/>
-  <rect x="230" y="230" width="52" height="52" rx="8" fill="#5FE6C8"/>
+  <desc id="agentwall-mark-description">A mint octagonal control frame and square protected action inside a graphite field.</desc>
+  <rect data-mark-part="field" x="32" y="32" width="448" height="448" rx="104" fill="#0F131B"/>
+  <path data-mark-part="frame" fill="#5FE6C8" fill-rule="evenodd" clip-rule="evenodd" d="M176 112H336L400 176V336L336 400H176L112 336V176L176 112ZM208 176L176 208V304L208 336H304L336 304V208L304 176H208Z"/>
+  <rect data-mark-part="action" x="228" y="228" width="56" height="56" fill="#5FE6C8"/>
 </svg>

@@ -1,5 +1,7 @@
-<svg width="64" height="64" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Agentwall">
-  <rect x="2" y="2" width="28" height="28" rx="6" fill="#0F131B"/>
-  <path fill="#5FE6C8" fill-rule="evenodd" clip-rule="evenodd" d="M10.5 7.5H21.5L24.5 10.5V21.5L21.5 24.5H10.5L7.5 21.5V10.5L10.5 7.5ZM12.75 11.75L11.75 12.75V19.25L12.75 20.25H19.25L20.25 19.25V12.75L19.25 11.75H12.75Z"/>
-  <rect x="14.25" y="14.25" width="3.5" height="3.5" rx="0.75" fill="#5FE6C8"/>
+<svg width="512" height="512" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="agentwall-favicon-title agentwall-favicon-description">
+  <title id="agentwall-favicon-title">Agentwall</title>
+  <desc id="agentwall-favicon-description">The compact Agentwall protected-center mark.</desc>
+  <rect data-mark-part="field" x="32" y="32" width="448" height="448" rx="104" fill="#0F131B"/>
+  <path data-mark-part="frame" fill="#5FE6C8" fill-rule="evenodd" clip-rule="evenodd" d="M176 112H336L400 176V336L336 400H176L112 336V176L176 112ZM208 176L176 208V304L208 336H304L336 304V208L304 176H208Z"/>
+  <rect data-mark-part="action" x="228" y="228" width="56" height="56" fill="#5FE6C8"/>
 </svg>
