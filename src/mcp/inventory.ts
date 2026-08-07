@@ -5,10 +5,10 @@ const McpToolDescriptorSchema = z.object({
   name: z.string(),
   description: z.string().optional(),
   inputSchema: z.unknown().optional(),
-});
+}).passthrough();
 
 const McpToolInventoryPageSchema = z.object({
-  tools: z.array(z.unknown()),
+  tools: z.array(McpToolDescriptorSchema),
   nextCursor: z.string().optional(),
 });
 
@@ -22,10 +22,7 @@ export function parseMcpToolInventoryPage(value: unknown): McpToolInventoryPage 
   if (!parsed.success) return null;
 
   return {
-    tools: parsed.data.tools.flatMap((tool) => {
-      const parsedTool = McpToolDescriptorSchema.safeParse(tool);
-      return parsedTool.success ? [parsedTool.data] : [];
-    }),
+    tools: parsed.data.tools,
     ...(parsed.data.nextCursor === undefined ? {} : { nextCursor: parsed.data.nextCursor }),
   };
 }

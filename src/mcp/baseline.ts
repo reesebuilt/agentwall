@@ -13,6 +13,8 @@ import { randomUUID } from "crypto";
 import { dirname, resolve } from "path";
 import { z } from "zod";
 
+import { scanText } from "../planes/identity/dlp";
+
 import type {
   McpBaselineKey,
   McpToolDescriptor,
@@ -72,7 +74,21 @@ function sanitizeTools(value: unknown): McpToolDescriptor[] {
   if (encoded === undefined) {
     throw new Error("the tool inventory is not JSON serializable");
   }
-  return JSON.parse(encoded) as McpToolDescriptor[];
+
+  const dlp = scanText(encoded, true);
+  if (!dlp.containsSecrets) return tools;
+  const redacted = dlp.redactedText;
+  if (redacted === undefined) {
+    throw new Error("the tool inventory could not be safely redacted");
+  }
+
+  try {
+    return JSON.parse(redacted) as McpToolDescriptor[];
+  } catch (error) {
+    throw new Error(
+      `the tool inventory could not be safely redacted: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
 }
 
 function parseDocument(raw: string): BaselineDocument {

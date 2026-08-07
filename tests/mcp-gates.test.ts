@@ -36,6 +36,54 @@ describe("MCP gate pipeline", () => {
     expect(evaluation.riskLevel).toBe("critical");
   });
 
+  it("scans nested tool schema content for inventory injection", () => {
+    const frame = toolsListResult([
+      {
+        name: "fetch_notes",
+        inputSchema: { type: "object", description: INJECTION },
+      },
+    ]);
+
+    const evaluation = evaluateFrame(frame, "server_to_client", ctx);
+
+    expect(evaluation.decision).toBe("deny");
+    expect(evaluation.blockingGate).toBe("tool_inventory");
+    expect(evaluation.detectionIds).toContain("det.mcp.tool.poisoned");
+  });
+
+  it("scans unknown descriptor fields before forwarding an inventory", () => {
+    const frame: JsonRpcFrame = {
+      jsonrpc: "2.0",
+      id: 1,
+      result: {
+        tools: [{
+          name: "fetch_notes",
+          outputSchema: { description: INJECTION },
+        }],
+      },
+    };
+
+    const evaluation = evaluateFrame(frame, "server_to_client", ctx);
+
+    expect(evaluation.decision).toBe("deny");
+    expect(evaluation.blockingGate).toBe("tool_inventory");
+    expect(evaluation.detectionIds).toContain("det.mcp.tool.poisoned");
+  });
+
+  it("scans malformed tool inventory content for response injection", () => {
+    const frame: JsonRpcFrame = {
+      jsonrpc: "2.0",
+      id: 1,
+      result: { tools: [{ name: 42, description: INJECTION }] },
+    };
+
+    const evaluation = evaluateFrame(frame, "server_to_client", ctx);
+
+    expect(evaluation.decision).toBe("deny");
+    expect(evaluation.blockingGate).toBe("response_scan");
+    expect(evaluation.detectionIds).toContain("det.mcp.response.injection");
+  });
+
   it("stops the pipeline at the first deny", () => {
     const frame = toolsListResult([{ name: "fetch_notes", description: INJECTION }]);
 
@@ -113,6 +161,19 @@ describe("MCP gate pipeline", () => {
     expect(JSON.stringify(evaluation.redactedFrame?.result)).not.toContain(AWS_KEY);
   });
 
+  it("redacts credential material in a valid tool inventory", () => {
+    const frame = toolsListResult([
+      { name: "fetch_notes", description: `Use key ${AWS_KEY}` },
+    ]);
+
+    const evaluation = evaluateFrame(frame, "server_to_client", ctx);
+
+    expect(evaluation.decision).toBe("redact");
+    expect(evaluation.blockingGate).toBeUndefined();
+    expect(evaluation.detectionIds).toContain("det.mcp.response.secret");
+    expect(JSON.stringify(evaluation.redactedFrame?.result)).not.toContain(AWS_KEY);
+  });
+
   it("runs every applicable gate on a clean tool call and does not deny it", () => {
     const frame: JsonRpcFrame = {
       jsonrpc: "2.0",
@@ -186,6 +247,23 @@ describe("MCP gate pipeline", () => {
     expect(drifted.detectionIds).toContain("det.mcp.tool.drift");
     expect(drifted.blockingGate).toBeUndefined();
     expect(drifted.riskLevel).toBe("high");
+  });
+
+  it("does not report drift when the same secret-bearing inventory returns", () => {
+    const frame = toolsListResult([
+      { name: "read_file", description: `Use key ${AWS_KEY}` },
+    ]);
+
+    const first = evaluateFrame(frame, "server_to_client", ctx);
+    expect(first.decision).toBe("redact");
+    const forwardedTools = (first.redactedFrame?.result as { tools: Array<{ name: string; description?: string }> }).tools;
+    expect(forwardedTools[0]?.description).not.toContain(AWS_KEY);
+    recordToolInventory(ctx, forwardedTools);
+
+    const second = evaluateFrame(frame, "server_to_client", ctx);
+
+    expect(second.decision).toBe("redact");
+    expect(second.detectionIds).not.toContain("det.mcp.tool.drift");
   });
 
   it("flags a withdrawn tool as drift", () => {

@@ -131,6 +131,11 @@ export interface GateContext {
 interface GateRun {
   markers: Record<string, string>;
   redactedFrame?: JsonRpcFrame;
+  pendingBaselineLearn?: {
+    store: McpBaselineStore;
+    key: McpBaselineKey;
+    tools: McpToolDescriptor[];
+  };
 }
 
 /**
@@ -256,6 +261,26 @@ function inventoryDrift(
   return drift;
 }
 
+function normalizeInventoryForForwarding(tools: McpToolDescriptor[]): McpToolDescriptor[] {
+  const encoded = JSON.stringify(tools);
+  if (encoded === undefined) {
+    throw new Error("the MCP tool inventory is not JSON serializable");
+  }
+
+  const dlp = scanText(encoded, true);
+  if (!dlp.containsSecrets) return tools;
+  const redacted = dlp.redactedText;
+  if (redacted === undefined) {
+    throw new Error("the MCP tool inventory could not be safely redacted");
+  }
+
+  const reparsed: unknown = JSON.parse(redacted);
+  if (!Array.isArray(reparsed)) {
+    throw new Error("the redacted MCP tool inventory is not an array");
+  }
+  return reparsed as McpToolDescriptor[];
+}
+
 function gateToolInventory(
   frame: JsonRpcFrame,
   direction: FrameDirection,
@@ -272,7 +297,7 @@ function gateToolInventory(
   let decision: Decision = "allow";
   let riskLevel: RiskLevel = "low";
   for (const tool of page.tools) {
-    const scanned = scanInjection(`${tool.name}\n${tool.description ?? ""}`);
+    const scanned = scanInjection(JSON.stringify(tool) ?? "");
     if (!scanned.containsInjection) continue;
 
     decision = maxDecision(decision, "deny");
@@ -301,9 +326,10 @@ function gateToolInventory(
   const baselineMode = ctx.baselineMode ?? "off";
   if (baselineMode === "off") {
     const sessionBaseline = ctx.approvedTools;
+    const forwardedTools = normalizeInventoryForForwarding(tools);
     const drift = sessionBaseline === undefined
       ? []
-      : inventoryDrift(sessionBaseline, tools, false);
+      : inventoryDrift(sessionBaseline, forwardedTools, false);
     ctx.baselineDecision = sessionBaseline === undefined
       ? { state: "missing", drift: [] }
       : drift.length === 0
@@ -320,6 +346,8 @@ function gateToolInventory(
     if (ctx.baselineStore === undefined || ctx.baselineKey === undefined) {
       throw new Error(`${baselineMode} mode needs a baseline store and baseline key`);
     }
+
+    const baselineTools = normalizeInventoryForForwarding(tools);
 
     let baseline: McpToolDescriptor[] | undefined;
     try {
@@ -342,15 +370,13 @@ function gateToolInventory(
       if (decision === "deny") {
         ctx.baselineDecision = { state: "missing", drift: [] };
       } else if (baselineMode === "learn") {
-        try {
-          ctx.baselineStore.write(ctx.baselineKey, tools);
-          ctx.baselineDecision = { state: "learned", drift: [] };
-          reasons.push(`Learned the first clean inventory with ${tools.length} tool(s)`);
-        } catch (error) {
-          const warning = error instanceof Error ? error.message : String(error);
-          ctx.baselineDecision = { state: "missing", drift: [warning] };
-          reasons.push(`The clean inventory was not learned: ${warning}`);
-        }
+        run.pendingBaselineLearn = {
+          store: ctx.baselineStore,
+          key: ctx.baselineKey,
+          tools: baselineTools,
+        };
+        ctx.baselineDecision = { state: "missing", drift: [] };
+        reasons.push(`Prepared the first clean inventory with ${tools.length} tool(s) for final gate acceptance`);
       } else {
         const drift = tools.map((tool) => `"${tool.name}" is new because no baseline exists`);
         if (drift.length === 0) drift.push("No accepted baseline exists for this server");
@@ -362,7 +388,7 @@ function gateToolInventory(
         reasons.push(`No locked tool inventory exists: ${drift.join("; ")}`);
       }
     } else {
-      const drift = inventoryDrift(baseline, tools, true);
+      const drift = inventoryDrift(baseline, baselineTools, true);
       ctx.baselineDecision = drift.length === 0
         ? { state: "matched", drift: [] }
         : { state: "drift", drift };
@@ -623,10 +649,6 @@ function gateResponseScan(
   const carriesResult = hasKey(frame, "result");
   const carriesError = hasKey(frame, "error");
   if (!carriesResult && !carriesError) return null;
-  // Inventory frames belong to gate 2; scanning them here as well would report
-  // the same finding twice under two different gate names.
-  if (carriesResult && parseMcpToolInventoryPage(frame.result) !== null) return null;
-
   const serialized = JSON.stringify(carriesResult ? frame.result : frame.error) ?? "null";
   const injection = scanInjection(serialized);
   const dlp = scanText(serialized, true);
@@ -636,7 +658,7 @@ function gateResponseScan(
   let decision: Decision = "allow";
   let riskLevel: RiskLevel = "low";
 
-  if (injection.containsInjection) {
+  if (injection?.containsInjection) {
     decision = maxDecision(decision, "deny");
     riskLevel = maxRisk(riskLevel, "critical");
     detectionIds.push("det.mcp.response.injection");
@@ -771,6 +793,22 @@ export function evaluateFrame(
     riskLevel = maxRisk(riskLevel, outcome.riskLevel);
     reasons.push(...outcome.reasons);
     detectionIds.push(...outcome.detectionIds);
+  }
+
+  if (run.pendingBaselineLearn !== undefined) {
+    const pending = run.pendingBaselineLearn;
+    run.pendingBaselineLearn = undefined;
+
+    if (decision === "allow" || decision === "redact") {
+      try {
+        pending.store.write(pending.key, pending.tools);
+        ctx.baselineDecision = { state: "learned", drift: [] };
+      } catch (error) {
+        const warning = error instanceof Error ? error.message : String(error);
+        ctx.baselineDecision = { state: "missing", drift: [warning] };
+        reasons.push(`The clean inventory was not learned: ${warning}`);
+      }
+    }
   }
 
   const evaluation: McpEvaluation = {
