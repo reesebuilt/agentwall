@@ -16,7 +16,7 @@ import {
   McpServerIdentity,
   McpToolDescriptor,
 } from "./types";
-import { parseMcpToolInventoryPage } from "./inventory";
+import { McpToolDescriptorSchema, parseMcpToolInventoryPage } from "./inventory";
 import type { McpBaselineStore } from "./baseline";
 
 /**
@@ -126,6 +126,8 @@ export interface GateContext {
   inventoryCandidate?: McpToolDescriptor[];
   /** False until the server returns the final tools/list page. */
   inventoryComplete?: boolean;
+  /** Sequence or schema failure supplied by the transport correlation layer. */
+  inventoryError?: string;
 }
 
 interface GateRun {
@@ -230,6 +232,7 @@ function inventoryDrift(
   baseline: McpToolDescriptor[],
   advertised: McpToolDescriptor[],
   compareFullDescriptor: boolean,
+  inventoryComplete = true,
 ): string[] {
   const approvedByName = new Map(baseline.map((tool) => [tool.name, tool]));
   const advertisedNames = new Set<string>();
@@ -253,9 +256,11 @@ function inventoryDrift(
       );
     }
   }
-  for (const approved of baseline) {
-    if (!advertisedNames.has(approved.name)) {
-      drift.push(`"${approved.name}" was withdrawn since approval`);
+  if (inventoryComplete) {
+    for (const approved of baseline) {
+      if (!advertisedNames.has(approved.name)) {
+        drift.push(`"${approved.name}" was withdrawn since approval`);
+      }
     }
   }
   return drift;
@@ -268,17 +273,16 @@ function normalizeInventoryForForwarding(tools: McpToolDescriptor[]): McpToolDes
   }
 
   const dlp = scanText(encoded, true);
-  if (!dlp.containsSecrets) return tools;
-  const redacted = dlp.redactedText;
-  if (redacted === undefined) {
+  const normalized = dlp.containsSecrets ? dlp.redactedText : encoded;
+  if (normalized === undefined) {
     throw new Error("the MCP tool inventory could not be safely redacted");
   }
 
-  const reparsed: unknown = JSON.parse(redacted);
+  const reparsed: unknown = JSON.parse(normalized);
   if (!Array.isArray(reparsed)) {
     throw new Error("the redacted MCP tool inventory is not an array");
   }
-  return reparsed as McpToolDescriptor[];
+  return reparsed.map((tool) => McpToolDescriptorSchema.parse(tool));
 }
 
 function gateToolInventory(
@@ -287,9 +291,28 @@ function gateToolInventory(
   ctx: GateContext,
   run: GateRun
 ): McpGateOutcome | null {
+  if (ctx.inventoryError !== undefined) {
+    return {
+      gate: "tool_inventory",
+      decision: "deny",
+      riskLevel: "high",
+      reasons: [ctx.inventoryError],
+      detectionIds: ["det.mcp.tool.malformed"],
+    };
+  }
   if (direction !== "server_to_client") return null;
-  const page = parseMcpToolInventoryPage(frame.result);
-  if (page === null) return null;
+  const parsedPage = parseMcpToolInventoryPage(frame.result);
+  if (parsedPage.status === "not-inventory") return null;
+  if (parsedPage.status === "malformed") {
+    return {
+      gate: "tool_inventory",
+      decision: "deny",
+      riskLevel: "high",
+      reasons: [`Malformed MCP tool inventory: ${parsedPage.error}`],
+      detectionIds: ["det.mcp.tool.malformed"],
+    };
+  }
+  const page = parsedPage.page;
   const tools = ctx.inventoryCandidate ?? page.tools;
 
   const reasons: string[] = [];
@@ -310,18 +333,6 @@ function gateToolInventory(
     );
   }
 
-  if (ctx.inventoryComplete === false) {
-    if (reasons.length === 0) {
-      reasons.push(`Received ${page.tools.length} tool(s); waiting for the final tools/list page`);
-    }
-    return {
-      gate: "tool_inventory",
-      decision,
-      riskLevel,
-      reasons,
-      detectionIds: dedupe(detectionIds),
-    };
-  }
 
   const baselineMode = ctx.baselineMode ?? "off";
   if (baselineMode === "off") {
@@ -329,7 +340,7 @@ function gateToolInventory(
     const forwardedTools = normalizeInventoryForForwarding(tools);
     const drift = sessionBaseline === undefined
       ? []
-      : inventoryDrift(sessionBaseline, forwardedTools, false);
+      : inventoryDrift(sessionBaseline, forwardedTools, true, ctx.inventoryComplete !== false);
     ctx.baselineDecision = sessionBaseline === undefined
       ? { state: "missing", drift: [] }
       : drift.length === 0
@@ -369,7 +380,7 @@ function gateToolInventory(
     if (baseline === undefined) {
       if (decision === "deny") {
         ctx.baselineDecision = { state: "missing", drift: [] };
-      } else if (baselineMode === "learn") {
+      } else if (baselineMode === "learn" && ctx.inventoryComplete !== false) {
         run.pendingBaselineLearn = {
           store: ctx.baselineStore,
           key: ctx.baselineKey,
@@ -377,6 +388,8 @@ function gateToolInventory(
         };
         ctx.baselineDecision = { state: "missing", drift: [] };
         reasons.push(`Prepared the first clean inventory with ${tools.length} tool(s) for final gate acceptance`);
+      } else if (baselineMode === "learn") {
+        ctx.baselineDecision = { state: "missing", drift: [] };
       } else {
         const drift = tools.map((tool) => `"${tool.name}" is new because no baseline exists`);
         if (drift.length === 0) drift.push("No accepted baseline exists for this server");
@@ -388,7 +401,7 @@ function gateToolInventory(
         reasons.push(`No locked tool inventory exists: ${drift.join("; ")}`);
       }
     } else {
-      const drift = inventoryDrift(baseline, baselineTools, true);
+      const drift = inventoryDrift(baseline, baselineTools, true, ctx.inventoryComplete !== false);
       ctx.baselineDecision = drift.length === 0
         ? { state: "matched", drift: [] }
         : { state: "drift", drift };
@@ -400,6 +413,19 @@ function gateToolInventory(
         reasons.push(`Advertised tool inventory drifted from the locked set: ${drift.join("; ")}`);
       }
     }
+  }
+
+  if (ctx.inventoryComplete === false) {
+    if (reasons.length === 0) {
+      reasons.push(`Received ${page.tools.length} tool(s); waiting for the final tools/list page`);
+    }
+    return {
+      gate: "tool_inventory",
+      decision,
+      riskLevel,
+      reasons,
+      detectionIds: dedupe(detectionIds),
+    };
   }
 
   if (reasons.length === 0) {
@@ -841,9 +867,10 @@ export function evaluateFrame(
  * next poisoned description would compare clean.
  */
 export function recordToolInventory(ctx: GateContext, tools: McpToolDescriptor[]): void {
-  ctx.approvedTools = tools.map((tool) => ({
-    name: tool.name,
-    description: tool.description,
-    inputSchema: tool.inputSchema === undefined ? undefined : structuredClone(tool.inputSchema),
-  }));
+  ctx.approvedTools = tools.map((tool) => {
+    const parsed = McpToolDescriptorSchema.parse(tool);
+    const encoded = JSON.stringify(parsed);
+    if (encoded === undefined) throw new Error("the MCP tool descriptor is not JSON serializable");
+    return McpToolDescriptorSchema.parse(JSON.parse(encoded));
+  });
 }

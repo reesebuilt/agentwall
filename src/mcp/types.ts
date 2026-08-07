@@ -157,11 +157,18 @@ export interface McpServerIdentity {
   commandHash?: string;
 }
 
-/** A tool as advertised by the server in a tools/list response. */
+/** A complete tool descriptor as advertised by the server in a tools/list response. */
 export interface McpToolDescriptor {
   name: string;
+  title?: string;
   description?: string;
   inputSchema?: unknown;
+  outputSchema?: unknown;
+  annotations?: Record<string, unknown>;
+  icons?: unknown[];
+  _meta?: Record<string, unknown>;
+  meta?: Record<string, unknown>;
+  [extension: string]: unknown;
 }
 
 /** Persistent tool inventory behavior for one wrapped MCP server. */

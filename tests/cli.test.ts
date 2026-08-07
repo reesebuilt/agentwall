@@ -11,6 +11,7 @@ import {
   formatStatusReport,
   parseFlags,
   printHelp,
+  reportCliFailure,
   resolveApprovalMode,
 } from "../src/cli";
 
@@ -41,6 +42,17 @@ describe("Agentwall CLI helpers", () => {
     expect(log).toHaveBeenCalledWith(expect.stringContaining("setup               Create safe local operator files"));
     expect(log).toHaveBeenCalledWith(expect.stringContaining("ui                  Start the loopback setup"));
     expect(log).toHaveBeenCalledWith(expect.stringContaining("--service-port <port>"));
+  });
+
+  it("prints a fatal command error before exiting", () => {
+    const error = jest.spyOn(console, "error").mockImplementation(() => undefined);
+    const exit = jest.spyOn(process, "exit").mockImplementation(((code?: number) => {
+      throw new Error(`exit:${code}`);
+    }) as never);
+
+    expect(() => reportCliFailure(new Error("capture command timed out"))).toThrow("exit:1");
+    expect(error).toHaveBeenCalledWith("capture command timed out");
+    expect(exit).toHaveBeenCalledWith(1);
   });
 
   it("prefers explicit url when creating API base url", () => {

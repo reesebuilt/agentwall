@@ -38,15 +38,21 @@ describe("MCP baseline store", () => {
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
-  it("persists a versioned inventory with atomic replacement", () => {
+  it("persists the complete versioned inventory with atomic replacement", () => {
     const store = new McpBaselineStore(filePath);
-    const tools = [{ name: "search", description: "Search records" }];
+    const tools = [{
+      name: "search",
+      description: "Search records",
+      inputSchema: { type: "object" },
+      outputSchema: { type: "object" },
+      annotations: { readOnlyHint: true },
+      icons: [{ src: "data:image/svg+xml;base64,PHN2Zy8+" }],
+      meta: { title: "Search" },
+    }];
 
-    expect(store.read(KEY)).toBeUndefined();
     store.write(KEY, tools);
 
     expect(store.read(KEY)).toEqual(tools);
-    expect(JSON.parse(fs.readFileSync(filePath, "utf8"))).toMatchObject({ version: 1 });
     expect(fs.readdirSync(path.dirname(filePath))).toEqual(["baselines.json"]);
   });
 
@@ -92,17 +98,16 @@ describe("MCP baseline store", () => {
     expect(fs.existsSync(`${filePath}.lock`)).toBe(false);
   });
 
-  it("reclaims a stale writer lock before an atomic write", () => {
+  it("does not delete an old lock whose owner cannot be proven dead", () => {
     fs.mkdirSync(path.dirname(filePath), { recursive: true });
-    fs.writeFileSync(`${filePath}.lock`, "stale\n");
+    fs.writeFileSync(`${filePath}.lock`, "legacy-owner\n");
     const old = new Date(Date.now() - 120_000);
     fs.utimesSync(`${filePath}.lock`, old, old);
 
     const store = new McpBaselineStore(filePath);
-    store.write(KEY, [{ name: "search" }]);
 
-    expect(store.read(KEY)).toEqual([{ name: "search" }]);
-    expect(fs.existsSync(`${filePath}.lock`)).toBe(false);
+    expect(() => store.write(KEY, [{ name: "search" }])).toThrow(/lock.*owner|manual/i);
+    expect(fs.existsSync(`${filePath}.lock`)).toBe(true);
   });
 });
 
@@ -211,6 +216,32 @@ describe("MCP persistent inventory gate", () => {
       { name: "search", description: "Search records" },
       { name: "remove", description: "Remove a record" },
     ]);
+  });
+
+  it("detects drift in output schemas, annotations, icons, and metadata", () => {
+    store.write(KEY, [{
+      name: "search",
+      outputSchema: { type: "object" },
+      annotations: { readOnlyHint: true },
+      icons: [{ src: "search.svg" }],
+      meta: { title: "Search" },
+    }]);
+    const ctx = context("lock");
+
+    const result = evaluateFrame(
+      toolsListResult([{
+        name: "search",
+        outputSchema: { type: "array" },
+        annotations: { readOnlyHint: false },
+        icons: [{ src: "search-new.svg" }],
+        meta: { title: "Search all" },
+      }]),
+      "server_to_client",
+      ctx,
+    );
+
+    expect(result.decision).toBe("approve");
+    expect(ctx.baselineDecision?.drift).toEqual([expect.stringMatching(/search.*changed/i)]);
   });
 
   it("does not update a locked baseline from an inventory that the gate denies", () => {

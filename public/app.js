@@ -52,7 +52,12 @@ const DESTRUCTIVE_ACTIONS = new Set([
   "decoy-generate",
 ]);
 
-const { GROUP_TARGETS, normalizeActionGroup } = globalThis.AgentwallActionCatalog;
+const {
+  GROUP_TARGETS,
+  normalizeActionGroup,
+  renderStructuredActionFailure,
+  actionResultOutput,
+} = globalThis.AgentwallActionCatalog;
 
 const GROUP_LABELS = {
   runtime: "Runtime controls",
@@ -750,10 +755,11 @@ function renderActionResult(form, result) {
     target.append(panel);
   }
 
-  if (result?.data !== undefined && !secret) {
+  const visibleOutput = actionResultOutput(result);
+  if (visibleOutput !== undefined && !secret) {
     const output = document.createElement("pre");
     output.className = "action-output";
-    output.textContent = responseOutput(result.data);
+    output.textContent = responseOutput(visibleOutput);
     target.append(output);
   }
 }
@@ -778,12 +784,17 @@ async function submitOperatorAction(form) {
     showFeedback("success", result.message || "Action complete", result.next || "Get the latest status to confirm the result.");
     await refreshState({ quiet: true });
   } catch (error) {
+    const rendered = renderStructuredActionFailure(
+      error,
+      String(payload.action || "unknown"),
+      (_action, result) => renderActionResult(form, result)
+    );
     if (state) {
       state.classList.add("form-state-error");
       state.textContent = error.message || "Agentwall could not complete the action.";
     }
     showFeedback("error", "Action failed", error.message || "Check the values, then try again.");
-    if (error instanceof RequestError && authMessage(error.status)) showGlobalError(error);
+    if (!rendered && error instanceof RequestError && authMessage(error.status)) showGlobalError(error);
   } finally {
     if (button) {
       button.disabled = false;

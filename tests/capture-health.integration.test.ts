@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "@jest/globals";
 import { spawn, spawnSync, type ChildProcess } from "child_process";
 import { createServer as createHttpServer, request as httpRequest, type Server } from "http";
-import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from "fs";
+import { mkdtempSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import type { AddressInfo } from "net";
@@ -267,11 +267,9 @@ describeLinux("doctor reports capture from a chain a real server wrote", () => {
       ].join("\n"),
     );
 
-    // The install checks doctor already ran before this change are cwd-relative, so the
-    // command is run from a directory where they legitimately pass. `dist` is a symlink to
-    // the real build rather than a stub, so the check is answering the question it asks.
+    // Doctor runs from a temporary project whose cwd intentionally has no dist directory.
+    // Its package-root check must resolve the installed Agentwall package, not this project.
     writeFileSync(join(workdir, "policy.yaml"), "rules: []\n");
-    symlinkSync(join(__dirname, "..", "dist"), join(workdir, "dist"), "dir");
 
     const shimPath = join(workdir, "resolver-shim.js");
     writeFileSync(shimPath, RESOLVER_SHIM);
@@ -370,6 +368,7 @@ describeLinux("doctor reports capture from a chain a real server wrote", () => {
     expect(payload.capture.unavailable).toBeNull();
     expect(payload.capture.fleetError).toBeNull();
     expect(payload.capture.watermarkError).toBeNull();
+    expect(payload.checks.find((check) => check.name === "dist/index.js exists")?.ok).toBe(true);
     expect(health?.chainPresent).toBe(true);
     expect(health?.fleetDeclared).toBe(true);
 

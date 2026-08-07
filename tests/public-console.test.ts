@@ -1,6 +1,6 @@
 import { readFileSync } from "fs";
 import { join } from "path";
-import { describe, expect, it } from "@jest/globals";
+import { describe, expect, it, jest } from "@jest/globals";
 
 const publicDir = join(__dirname, "..", "public");
 const html = readFileSync(join(publicDir, "index.html"), "utf8");
@@ -79,11 +79,33 @@ describe("public operator console contract", () => {
   it("maps real server catalog group names to visible UI areas", () => {
     const actionCatalog = require("../public/assets/action-catalog.js") as {
       normalizeActionGroup: (group: unknown) => string;
+      renderStructuredActionFailure: (
+        error: unknown,
+        action: string,
+        render: (action: string, result: unknown) => void,
+      ) => boolean;
     };
 
     expect(actionCatalog.normalizeActionGroup("Runtime")).toBe("runtime");
     expect(actionCatalog.normalizeActionGroup("Sessions")).toBe("sessions");
     expect(actionCatalog.normalizeActionGroup("MCP")).toBe("mcp");
     expect(actionCatalog.normalizeActionGroup("Decoys")).toBe("decoy");
+  });
+
+  it("renders a structured non-2xx action result instead of discarding it", () => {
+    const { renderStructuredActionFailure, actionResultOutput } = require("../public/assets/action-catalog.js") as {
+      renderStructuredActionFailure: (
+        error: unknown,
+        action: string,
+        render: (action: string, result: unknown) => void,
+      ) => boolean;
+      actionResultOutput: (result: unknown) => unknown;
+    };
+    const render = jest.fn();
+    const result = { action: "anchor", ok: false, failed: 1, message: "Anchor failed." };
+
+    expect(renderStructuredActionFailure({ data: result }, "anchor", render)).toBe(true);
+    expect(render).toHaveBeenCalledWith("anchor", result);
+    expect(actionResultOutput(result)).toBe(result);
   });
 });

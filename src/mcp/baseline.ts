@@ -14,6 +14,7 @@ import { dirname, resolve } from "path";
 import { z } from "zod";
 
 import { scanText } from "../planes/identity/dlp";
+import { McpToolDescriptorSchema } from "./inventory";
 
 import type {
   McpBaselineKey,
@@ -46,13 +47,7 @@ const BaselineKeySchema = z.object({
   commandHash: z.string().optional(),
 });
 
-const ToolDescriptorSchema = z.object({
-  name: z.string(),
-  description: z.string().optional(),
-  inputSchema: z.unknown().optional(),
-});
-
-const ToolInventorySchema = z.array(ToolDescriptorSchema);
+const ToolInventorySchema = z.array(McpToolDescriptorSchema);
 const BaselineDocumentSchema = z.object({
   version: z.literal(STORE_VERSION),
   entries: z.record(
@@ -149,19 +144,27 @@ export class McpBaselineStore {
     const lockPath = `${this.path}.lock`;
     mkdirSync(dirname(this.path), { recursive: true, mode: 0o700 });
     const deadline = Date.now() + WRITE_LOCK_TIMEOUT_MS;
+    const owner = `${JSON.stringify({ pid: process.pid, token: randomUUID(), createdAt: new Date().toISOString() })}\n`;
     let descriptor: number | undefined;
 
     while (descriptor === undefined) {
       try {
         descriptor = openSync(lockPath, "wx", 0o600);
+        writeFileSync(descriptor, owner, { encoding: "utf8" });
       } catch (error) {
         const code = (error as NodeJS.ErrnoException).code;
+        if (descriptor !== undefined) {
+          closeSync(descriptor);
+          descriptor = undefined;
+          rmSync(lockPath, { force: true });
+        }
         if (code !== "EEXIST") throw error;
 
         try {
           if (Date.now() - statSync(lockPath).mtimeMs > STALE_LOCK_TIMEOUT_MS) {
-            rmSync(lockPath, { force: true });
-            continue;
+            throw new Error(
+              `MCP baseline file ${this.path} has an old lock whose owner cannot be proven dead; remove it manually`,
+            );
           }
         } catch (statError) {
           if ((statError as NodeJS.ErrnoException).code !== "ENOENT") throw statError;
@@ -179,7 +182,13 @@ export class McpBaselineStore {
       return operation();
     } finally {
       closeSync(descriptor);
-      rmSync(lockPath, { force: true });
+      try {
+        if (readFileSync(lockPath, "utf8") === owner) {
+          rmSync(lockPath);
+        }
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      }
     }
   }
   private readDocument(): BaselineDocument {

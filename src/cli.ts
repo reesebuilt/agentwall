@@ -284,10 +284,9 @@ export function parseFlags(args: string[]): ParsedArgs {
 
   return { flags, positionals };
 }
-
 function packageEntry(...parts: string[]): string {
   const entry = path.resolve(__dirname, "..", ...parts);
-  if (!fs.existsSync(entry)) throw new Error(`AgentWall package entry is missing: ${entry}`);
+  if (!fs.existsSync(entry)) throw new Error(`Agentwall package entry is missing: ${entry}`);
   return entry;
 }
 
@@ -812,7 +811,7 @@ function commandDoctor(flags: CliFlags) {
     },
     {
       name: "dist/index.js exists",
-      ok: fs.existsSync(path.resolve(process.cwd(), "dist/index.js")),
+      ok: fs.existsSync(path.resolve(__dirname, "..", "dist", "index.js")),
       detail: "npm run build",
     },
     {
@@ -1816,6 +1815,11 @@ function commandWhy(flags: CliFlags, positionals: string[]): void {
 }
 
 
+export function reportCliFailure(error: unknown): never {
+  console.error(error instanceof Error ? error.message : String(error));
+  process.exit(1);
+}
+
 async function main() {
   const [, , command = "help", ...args] = process.argv;
   const { flags, positionals } = parseFlags(args);
@@ -1931,8 +1935,5 @@ async function main() {
 }
 
 if (require.main === module) {
-  main().catch((error) => {
-    console.error(error instanceof Error ? error.message : String(error));
-    process.exit(1);
-  });
+  main().catch(reportCliFailure);
 }

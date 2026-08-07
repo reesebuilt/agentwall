@@ -194,7 +194,7 @@ gate that needs to see what the earlier gates found.
 | Gate | Applies to | What it checks |
 | --- | --- | --- |
 | `frame_integrity` | every frame | The JSON-RPC envelope: the version is exactly `2.0`, a request carries a method, a response carries exactly one of result or error. Everything here is a property of the envelope, so it holds before anything inside the frame is trusted. The frame-size ceiling and the newline delimiting are enforced earlier still, by the parser: a line that does not parse never becomes a frame and is never forwarded. |
-| `tool_inventory` | `tools/list` results | Every advertised tool's name and description, injection-scanned, and the whole list compared against the inventory this session already accepted. A description is read by the model as guidance, which makes it executable text in all but name, and a tool that appears or changes its description mid-session is drift - which is how a server quietly expands what it can be asked to do. |
+| `tool_inventory` | `tools/list` results | Every advertised descriptor is injection-scanned. Agentwall compares the complete standard descriptor, including input and output schemas, annotations, icons, and metadata. New, removed, or changed fields are drift. A malformed page is denied before it crosses the boundary. |
 | `input_scan` | `tools/call` requests | The call's arguments, serialized first so nested structures get the same treatment as top-level strings, then run through the secret and PII scanner and the injection patterns across every normalization pass (zero-width characters, homoglyphs, leetspeak, whitespace, base64, hex). Normalization is why an obfuscated instruction trips the same pattern as a plain one. Secrets redact rather than deny: the call is usually legitimate and the credential inside it is the problem. |
 | `policy` | every frame | The existing PolicyEngine, on the existing rules, with the frame expressed as an `AgentContext` and the earlier gates' findings attached as metadata. Tool calls are the `tool` plane; tool results are the `content` plane, tagged untrusted tool output. There is no separate MCP rule language. The engine's default-deny for actions no rule models is deliberately not inherited here: a frame no rule describes is recorded as a miss, and an operator who wants default-deny for MCP writes it as a rule, so the audit record can name the rule that decided. |
 | `response_scan` | every server frame | The server's result, and its error too, because an error message is server-controlled text the agent reads. Injection denies at critical: the content has reached the point where the model consumes it and there is no gate downstream. Secrets redact instead, because a server returning a credential is usually doing its job badly rather than maliciously and the rest of the response is still useful. |
@@ -205,11 +205,10 @@ gate that fails outright denies and names itself: a control that failed open wou
 "inspected" while inspecting nothing, which is worse than no control, and the price is that a bug
 in a scanner refuses frames instead of quietly passing them.
 
-The recorded tool inventory is baselined only from a `tools/list` result that was actually
-forwarded. An inventory that was blocked never becomes the approved baseline, because a poisoned
-list that quietly became the reference would make every later comparison come back clean. The
-first `tools/list` of a session reports no drift, because there is nothing yet for it to have
-drifted from.
+The recorded tool inventory is baselined only from a complete `tools/list` result that was
+actually forwarded. Agentwall keeps concurrent cursor sequences separate and compares additions
+before it forwards each page. An unknown cursor, a malformed descriptor, or a malformed page fails
+closed. An inventory that was blocked never becomes the approved baseline.
 
 ## What a blocked call looks like
 
