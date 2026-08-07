@@ -23,6 +23,7 @@ It uses `agentwall ui` as the first-run path.
 - [Emergency stop](lockdown.md) explains each stop source and its scope.
 - [FloodGuard](runtime-floodguard.md) explains runtime rate and burst controls.
 - [Fleet governance](fleet.md) explains per-agent identity, credentials, allowlists, and budgets.
+- [Limits](limits.md) lists documented limits that apply to these controls.
 
 ## Understand decisions
 

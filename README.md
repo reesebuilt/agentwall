@@ -26,6 +26,8 @@ A valid hash chain proves later record integrity, not record completeness.
 AgentWall does not provide a clustered control plane.
 Fleet identity, policy, and budgets have per-instance scope.
 
+See [documented limits](docs/limits.md) before relying on these controls.
+
 ## Install and setup
 
 AgentWall requires Node.js 22.12 or newer.
@@ -58,6 +60,16 @@ agentwall doctor
 ```
 
 From a source checkout, run `node dist/cli.js` where this page uses `agentwall`.
+The unscoped npm package `agentwall` is a different, unrelated project. This one is
+`@repsecure/agentwall`.
+
+`init` writes `agentwall.config.yaml` and `policy.yaml` without overwriting work you already
+have. `doctor` checks the install and reports **capture**: which declared agent was last seen
+and at what binding tier, its standing against budget, and any egress no declared agent claims.
+Exit 0 clear, 1 traffic policy said to refuse reached the network, 2 it cannot tell the two
+apart, as it says plainly rather than guessing.
+
+From a checkout instead, run `node dist/cli.js` wherever this file says `agentwall`.
 
 ```bash
 git clone https://github.com/repsecure/agentwall.git
@@ -78,7 +90,6 @@ The Operations view contains host and process controls.
 Each action shows its matching offline CLI command.
 
 For a manual environment, use these variables before `agentwall start`.
-
 ```bash
 export AGENTWALL_OPERATOR_TOKEN="$(openssl rand -hex 32)"   # without this, every route 401s
 export AGENTWALL_AUDIT_FILE="$PWD/audit.jsonl"              # without this, the chain is stdout only
@@ -198,12 +209,16 @@ AgentWall writes SHA-256 hash-chained JSONL records.
 Rotation manifests link closed segments.
 Signed checkpoints can anchor the current history outside the host.
 
+A verifier written by the same people in the same language as the writer only proves the code
+agrees with itself. Agentwall ships three independent verifiers in Go, Rust, and Python. A
+corpus of deliberate forgeries runs all four against each other on every push.
+
 ```bash
 agentwall verify                                                   # bundled TypeScript verifier
 cd verifier && go build -o agentwall-verify . && ./agentwall-verify --audit <path>
 ```
 
-The verifier reports three separate layers.
+The verifier reports three separate layers, because they fail independently and one verdict would hide which guarantee you actually have.
 
 ```
 PASS  chained   records link within each segment, so an edit inside one is detectable

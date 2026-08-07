@@ -32,7 +32,7 @@ Follow these rules for every capability claim:
 - Give a command that another person can run.
 - Document an unreachable implementation as unavailable.
 - Keep each documented limit beside its capability.
-- Update [Limits](README.md#limits) and [SECURITY.md](SECURITY.md) when a limit changes.
+- Update [Limits](docs/limits.md) and [SECURITY.md](SECURITY.md) when a limit changes.
 - Cite the file and line when a claim depends on specific code.
 - Make verification output report every failure accurately.
 

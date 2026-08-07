@@ -1,0 +1,33 @@
+# Limits
+
+Stated plainly, because a security tool that oversells itself is worse than no tool.
+
+These are documented limits, not defects. [SECURITY.md](../SECURITY.md) states what that
+means for a vulnerability report. If a limit stops being true because someone fixed it,
+move it out of this file and say what closed it.
+
+| Limit | What it means |
+| --- | --- |
+| Monitor by default | Enforcement is real but opt-in. Out of the box the proxy evaluates, records, and allows; `guarded` and `strict` are configured, not automatic. Installing this does not block anything until you say so. See [enforcement.md](enforcement.md). |
+| Only `deny` is enforceable on a socket | `approve` and `redact` verdicts are recorded and the request is allowed. A proxy has nowhere to put a held request and no way to rewrite a CONNECT body, so pretending otherwise would be worse than saying it. |
+| Cooperative capture, unless you install a perimeter | By default the proxy is found through environment variables a process may simply ignore. `agentwall perimeter` removes that with a dedicated UID and nftables redirection, but it is opt-in, needs root, and is Linux-only. Without it, unobserved egress stays possible. See [perimeter.md](perimeter.md). |
+| The perimeter does not contain DNS | The agent resolves names before it connects, so port 53 has to be permitted for anything to work. DNS is itself an exfiltration channel and this model does not close it. |
+| The perimeter ruleset is parser-verified, not kernel-verified | `nft` accepts the generated file as valid syntax, and a test checks that wherever `nft` is installed. Whether the kernel accepts the chain types, hooks, and `inet` NAT support at load time is settled by your first `install`. Run `plan`, read it, then install somewhere you can afford a refusal. |
+| Anchoring is pending, not instant | An OpenTimestamps anchor stays `pending` until a Bitcoin block confirms, roughly one to six hours. Pending is not proof. |
+| Anchoring proves no alteration, not completeness | An anchor shows that what was written was not altered afterwards. It cannot show that everything which should have been written was. |
+| A signature is necessary, not sufficient | On a host where the audited principal can read the signing key, an agent with root can sign anything the operator can. Off-box anchoring is what closes that gap. |
+| Verifier agreement is bounded by the corpus | All four verifiers return the same verdict on all 27 conformance cases. That is agreement about those cases, not a proof of equivalence, and it says nothing about a forgery none of them has been asked to judge. |
+| TLS interception is off by default, and https is opaque until you turn it on | With no `interception` section in the config there is no CA, nothing is minted, and a CONNECT tunnel is relayed undecoded: visible at hostname, port and negotiated SNI, opaque at path, header and body. Enabling it per host makes those readable, at the stated cost that whoever holds the CA private key can impersonate every site to that host. Read [tls-interception.md](tls-interception.md) first. |
+| The SNI cross-check is not domain-fronting detection | The proxy compares the CONNECT authority against the negotiated SNI and re-evaluates policy on the latter, which catches a client that names one host and negotiates another. Domain fronting puts its real destination in the HTTP Host header inside the session, and nothing short of interception can read that. Fronted traffic agrees at every layer this can see. |
+| Proxy content inspection is plaintext HTTP only, unless interception is on for that host | An http request and response through the forward proxy are read and scanned. An https one is not, because it is encrypted, and neither is anything inside a CONNECT tunnel, until interception is enabled for that host and decrypts it into the same scan path. The transparent listener relays raw TCP and inspects no content on either scheme. |
+| The proxy content scan is capped at 256 KiB per body, and the cap is evadable | Past it the prefix is scanned and the remainder is forwarded uninspected, with the record saying so. Refusing large bodies instead would break ordinary agent traffic to buy protection that padding defeats anyway. Treat it as a control against accident and unsophisticated theft, not against an adversary choosing their transport. |
+| Event streams are exempt from body inspection | `text/event-stream` and friends are passed through unbuffered on purpose. MCP carries SSE, and buffering an event stream to scan it hangs it. Their headers are still scanned and the record says the body was not. |
+| Attribution is Linux-only | It reads `/proc/net/tcp` and `/proc/<pid>/fd`. There is no macOS or Windows equivalent. The rest of the server is portable; process attribution is not. |
+| Channel containment is Telegram only | Slack and Discord appear in the platform schema with no route implementation behind them. |
+| The watchdog does not auto-deny | It exposes heartbeat age and a stop flag, and a rule denies on the `watchdog_timeout` label, but nothing wires staleness to that label automatically. Treat it as a signal you act on. |
+| Telemetry is off by default | The OTLP/HTTP decision-trace exporter is disabled unless configured. |
+| Bearer tokens, not identity | A shared token, not OIDC or mTLS. No identity-provider integration. |
+| Per-agent identity is only as strong as its signal | A fleet agent is bound by a presented credential, by the socket's uid, or by the process name. A credential separates cooperating agents and does not contain one that can read the secret; `comm` is a label the process sets for itself. Which signal matched is on every record so the claim is never stronger than the evidence. See [fleet.md](fleet.md). |
+| Fleet budgets are per-instance and in-memory | Ceilings are enforced by the instance that saw the traffic, and the running windows reset when the process does. The records are durable; the counters are not. Byte budgets refuse the next connection rather than truncating a live one. |
+| No fleet identity on the transparent path | A kernel-redirected connection carries no process name, no uid, and no proxy credential, so it resolves to the undeclared agent. `fleet.unmatched: "deny"` therefore refuses everything the perimeter redirects. |
+| Single host | Within one instance, identity, allowlists, and budgets are per-agent. Across instances there is nothing: no shared identity, no shared budget, and no clustered or highly-available control plane. Multiple instances can be polled into one read-only summary view. [fleet.md](fleet.md) states what multi-host would actually require. |

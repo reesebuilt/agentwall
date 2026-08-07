@@ -61,6 +61,10 @@ Use that environment variable only for local development.
 
 ## Documented limits
 
+These are documented limits, not defects. They are listed in [docs/limits.md](docs/limits.md).
+Reporting them is not a vulnerability, though arguments about how they should change are
+welcome as normal issues.
+
 These limits are not vulnerabilities by themselves.
 Report a documentation bug if the public claim is broader than the limit.
 Propose a control change in a normal issue.
