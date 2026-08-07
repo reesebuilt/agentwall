@@ -11,6 +11,8 @@ import {
   FrameDirection,
   JsonRpcFrame,
   MCP_BLOCKED_ERROR_CODE,
+  McpBaselineDecision,
+  McpBaselineMode,
   McpEvaluation,
   McpToolDescriptor,
 } from "../src/mcp/types";
@@ -28,13 +30,21 @@ import {
  * Everything else is real: a real child process, the real stdio transport, the real audit logger
  * and its hash chain.
  */
-type GateHook = (frame: JsonRpcFrame, direction: FrameDirection) => McpEvaluation;
+type GateHook = (
+  frame: JsonRpcFrame,
+  direction: FrameDirection,
+  context: { baselineDecision?: McpBaselineDecision },
+) => McpEvaluation;
 
 let mockEvaluate: GateHook = () => mockAllow();
 const mockInventories: McpToolDescriptor[][] = [];
 
 jest.mock("../src/mcp/gates", () => ({
-  evaluateFrame: (frame: JsonRpcFrame, direction: FrameDirection) => mockEvaluate(frame, direction),
+  evaluateFrame: (
+    frame: JsonRpcFrame,
+    direction: FrameDirection,
+    context: { baselineDecision?: McpBaselineDecision },
+  ) => mockEvaluate(frame, direction, context),
   recordToolInventory: (ctx: { approvedTools?: McpToolDescriptor[] }, tools: McpToolDescriptor[]) => {
     ctx.approvedTools = [...tools];
     mockInventories.push([...tools]);
@@ -106,7 +116,10 @@ interface WrapHarness {
 
 const tempPaths: string[] = [];
 
-function startWrap(script: string = CHILD_SERVER): WrapHarness {
+function startWrap(
+  script: string = CHILD_SERVER,
+  baseline?: { mode: McpBaselineMode; file: string },
+): WrapHarness {
   const client = new PassThrough();
   const toClient = new PassThrough();
   const childErrors = new PassThrough();
@@ -146,6 +159,8 @@ function startWrap(script: string = CHILD_SERVER): WrapHarness {
     stdin: client,
     stdout: toClient,
     stderr: childErrors,
+    baselineMode: baseline?.mode,
+    baselineFile: baseline?.file,
   });
 
   // A server that dies before it answers should fail a test with that fact rather than with a bare
@@ -461,6 +476,44 @@ describe("runMcpWrap", () => {
     expect(await shutdown(harness)).toBe(0);
   }, 15000);
 
+  it("records the baseline mode, state, path, and drift without frame content", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "aw-mcp-baseline-audit-"));
+    tempPaths.push(dir);
+    const baselineFile = path.join(dir, "baselines.json");
+    const harness = startWrap(CHILD_SERVER, { mode: "lock", file: baselineFile });
+    mockEvaluate = (_frame, direction, context) => {
+      if (direction === "server_to_client") {
+        context.baselineDecision = {
+          state: "drift",
+          drift: ['"write_file" is new since approval'],
+        };
+        return mockAllow({
+          decision: "approve",
+          riskLevel: "high",
+          reasons: ["tool inventory drifted"],
+          detectionIds: ["det.mcp.tool.drift"],
+        });
+      }
+      return mockAllow();
+    };
+
+    send(harness, { jsonrpc: "2.0", id: 12, method: "tools/list" });
+    await harness.awaitFrames(1);
+
+    const response = harness.events.find(
+      (event) => event.metadata?.direction === "server_to_client",
+    );
+    expect(response?.metadata).toMatchObject({
+      mcpBaselineMode: "lock",
+      mcpBaselineState: "drift",
+      mcpBaselinePath: baselineFile,
+      mcpBaselineDrift: JSON.stringify(['"write_file" is new since approval']),
+    });
+    expect(JSON.stringify(response)).not.toContain("Read a file");
+
+    expect(await shutdown(harness)).toBe(0);
+  }, 15000);
+
   it("exits with the server's own status", async () => {
     const harness = startWrap(CHILD_FAILING_SERVER);
 
@@ -494,6 +547,30 @@ describe("mcp CLI arguments", () => {
       agentId: "desktop-client",
       command: ["npx", "-y", "server", "/tmp"],
     });
+  });
+
+  it("parses persistent baseline options before the server command", () => {
+    expect(
+      parseMcpArgs([
+        "wrap",
+        "--baseline-mode",
+        "lock",
+        "--baseline-file",
+        "/tmp/mcp-baselines.json",
+        "--",
+        "server",
+      ])
+    ).toEqual({
+      baselineMode: "lock",
+      baselineFile: "/tmp/mcp-baselines.json",
+      command: ["server"],
+    });
+  });
+
+  it("rejects an invalid baseline mode before launch", () => {
+    expect(() =>
+      parseMcpArgs(["wrap", "--baseline-mode", "strict", "--", "server"])
+    ).toThrow(/--baseline-mode must be off, learn, or lock/);
   });
 
   it("does not interpret the server's own flags as ours", () => {

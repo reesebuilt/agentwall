@@ -549,6 +549,111 @@ function commandList(context: FleetContext, json: boolean): number {
   return EXIT_OK;
 }
 
+export type FleetActionInput =
+  | { operation: "list"; configPath?: string; storePath?: string }
+  | { operation: "issue"; agentId: string; configPath?: string; storePath?: string }
+  | { operation: "rotate"; agentId: string; overlapSeconds?: number; configPath?: string; storePath?: string }
+  | { operation: "revoke"; agentId?: string; credentialId?: string; reason?: string; configPath?: string; storePath?: string };
+
+export interface FleetActionResult {
+  operation: "list" | "issue" | "rotate" | "revoke";
+  agentId?: string;
+  credentialId?: string;
+  secret?: string;
+  previousCredentialId?: string;
+  previousAcceptedUntil?: string;
+  credentials?: Array<{
+    agentId: string;
+    credentialId: string;
+    state: string;
+    issuedAt: string;
+    expiresAt?: string;
+    revokedAt?: string;
+    revokedReason?: string;
+  }>;
+  notes: string[];
+}
+
+/**
+ * Structured credential operations for the authenticated operator API.
+ * Secrets leave this function only in the issue or rotate result that created them.
+ */
+export function runFleetAction(input: FleetActionInput): FleetActionResult {
+  const flags: Record<string, string> = {};
+  if (input.configPath) flags["config"] = input.configPath;
+  if (input.storePath) flags["store"] = input.storePath;
+  const context = openFleet(flags);
+  const notes = effectNotes(context);
+
+  if (input.operation === "list") {
+    const now = Date.now();
+    return {
+      operation: "list",
+      credentials: context.store.list().map((credential) => ({
+        agentId: credential.agentId,
+        credentialId: credential.credentialId,
+        state: credentialState(credential, now),
+        issuedAt: credential.issuedAt,
+        ...(credential.expiresAt ? { expiresAt: credential.expiresAt } : {}),
+        ...(credential.revokedAt ? { revokedAt: credential.revokedAt } : {}),
+        ...(credential.revokedReason ? { revokedReason: credential.revokedReason } : {}),
+      })),
+      notes,
+    };
+  }
+
+  if (input.operation === "issue") {
+    const declared = requireDeclaredAgent(context, { agent: input.agentId });
+    const { credential, secret } = context.store.issue(declared.id);
+    return {
+      operation: "issue",
+      agentId: credential.agentId,
+      credentialId: credential.credentialId,
+      secret,
+      notes,
+    };
+  }
+
+  if (input.operation === "rotate") {
+    const declared = requireDeclaredAgent(context, { agent: input.agentId });
+    const overlapSeconds = input.overlapSeconds ?? DEFAULT_OVERLAP_SECONDS;
+    if (!Number.isInteger(overlapSeconds) || overlapSeconds < 0 || overlapSeconds > MAX_OVERLAP_SECONDS) {
+      throw new UsageError(`overlap must be a whole number from 0 to ${MAX_OVERLAP_SECONDS} seconds`);
+    }
+    const { previous, credential, secret } = context.store.rotate(declared.id, overlapSeconds);
+    return {
+      operation: "rotate",
+      agentId: credential.agentId,
+      credentialId: credential.credentialId,
+      secret,
+      previousCredentialId: previous.credentialId,
+      previousAcceptedUntil: previous.expiresAt ?? undefined,
+      notes,
+    };
+  }
+
+  if (Boolean(input.agentId) === Boolean(input.credentialId)) {
+    throw new UsageError("revoke needs exactly one agentId or credentialId");
+  }
+  const revoked = input.credentialId
+    ? [context.store.revoke(input.credentialId, input.reason)]
+    : context.store.revokeAgent(input.agentId as string, input.reason);
+  const now = Date.now();
+  return {
+    operation: "revoke",
+    credentials: revoked.map((credential) => ({
+      agentId: credential.agentId,
+      credentialId: credential.credentialId,
+      state: credentialState(credential, now),
+      issuedAt: credential.issuedAt,
+      ...(credential.expiresAt ? { expiresAt: credential.expiresAt } : {}),
+      ...(credential.revokedAt ? { revokedAt: credential.revokedAt } : {}),
+      ...(credential.revokedReason ? { revokedReason: credential.revokedReason } : {}),
+    })),
+    notes,
+  };
+}
+
 export function runFleetCommand(argv: string[]): number {
   // A bare `agentwall fleet` is somebody asking what this does, not a mistake.
   if (argv.length === 0) {

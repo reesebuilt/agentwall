@@ -12,7 +12,7 @@ Describe the bug clearly.
 - Node version:
 - OS:
 
-## Reproduction
+## Steps to reproduce
 1.
 2.
 3.
@@ -21,5 +21,5 @@ Describe the bug clearly.
 
 ## Actual behavior
 
-## Logs / evidence
-Include sanitized logs or policy decisions if possible.
+## Evidence
+Remove secrets from logs before you include them.

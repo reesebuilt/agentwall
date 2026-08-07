@@ -1,0 +1,220 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#0b0e12" />
+    <title>Start Agentwall</title>
+    <link rel="icon" type="image/svg+xml" href="/assets/brand/favicon.svg" />
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body class="bootstrap-page">
+    <a class="skip-link" href="#bootstrap-main">Skip to setup</a>
+
+    <div class="bootstrap-layout">
+      <aside class="bootstrap-rail" aria-label="Agentwall bootstrap status">
+        <a class="brand" href="#bootstrap-main" aria-label="Start Agentwall">
+          <img src="/assets/brand/agentwall-logo-mark.svg" alt="" width="28" height="28" />
+          <span>Agentwall</span>
+        </a>
+        <div class="bootstrap-rail-copy">
+          <p class="context-label">Local bootstrap</p>
+          <p>Prepare local files, then start the service.</p>
+        </div>
+        <div class="rail-status">
+          <span id="bootstrap-connection-dot" class="state-dot state-pending" aria-hidden="true"></span>
+          <div>
+            <strong id="bootstrap-connection">Connect</strong>
+            <span id="bootstrap-last-update">No status yet</span>
+          </div>
+        </div>
+      </aside>
+
+      <main id="bootstrap-main" class="bootstrap-main" tabindex="-1">
+        <header class="console-header bootstrap-header">
+          <div>
+            <p class="context-label">Pre-start controls</p>
+            <h1>Start Agentwall</h1>
+          </div>
+          <div class="header-state" aria-label="Current service state">
+            <span id="bootstrap-service-dot" class="state-dot state-pending" aria-hidden="true"></span>
+            <strong id="bootstrap-service-state">Wait for status</strong>
+          </div>
+        </header>
+
+        <div id="bootstrap-feedback" class="notice" role="status" aria-live="polite" aria-atomic="true" hidden></div>
+        <div id="bootstrap-error" class="notice notice-error" role="alert" aria-live="assertive" hidden>
+          <div>
+            <strong id="bootstrap-error-title">The bootstrap service did not return status.</strong>
+            <p id="bootstrap-error-detail">Check this local process, then try again.</p>
+          </div>
+          <button class="button button-secondary" type="button" data-bootstrap-retry>Try again</button>
+        </div>
+
+        <section class="console-section section-status" aria-labelledby="bootstrap-status-title">
+          <div class="section-heading">
+            <div>
+              <p class="context-label">Current local state</p>
+              <h2 id="bootstrap-status-title">Service status</h2>
+            </div>
+            <span id="bootstrap-status-time" class="section-meta">No update</span>
+          </div>
+
+          <div id="bootstrap-loading" class="status-skeleton" data-state="loading" aria-label="Wait for bootstrap status">
+            <span></span><span></span><span></span>
+          </div>
+
+          <div id="bootstrap-status-content" hidden>
+            <div class="status-summary">
+              <div class="status-primary">
+                <span id="bootstrap-protection-dot" class="state-dot state-pending" aria-hidden="true"></span>
+                <div>
+                  <p class="field-label">Agentwall service</p>
+                  <strong id="bootstrap-service-value">Unknown</strong>
+                  <p id="bootstrap-service-copy">The local service has not sent a state.</p>
+                </div>
+              </div>
+              <dl class="status-facts">
+                <div><dt>Setup</dt><dd id="bootstrap-setup-value">Unknown</dd></div>
+                <div><dt>Service</dt><dd id="bootstrap-process-value">Unknown</dd></div>
+                <div><dt>Host</dt><dd id="bootstrap-host-value">127.0.0.1</dd></div>
+                <div><dt>Port</dt><dd id="bootstrap-port-value">3000</dd></div>
+              </dl>
+            </div>
+            <div id="dashboard-handoff" class="next-action" hidden>
+              <div>
+                <p class="field-label">Next action</p>
+                <p>Agentwall is ready. Open the authenticated operator console.</p>
+              </div>
+              <a id="dashboard-link" class="button button-primary" href="/dashboard">Open console</a>
+            </div>
+          </div>
+        </section>
+
+        <section class="console-section" aria-labelledby="setup-title">
+          <div class="section-heading">
+            <div>
+              <p class="context-label">Step one</p>
+              <h2 id="setup-title">Setup</h2>
+            </div>
+            <span class="section-meta">Safe local defaults</span>
+          </div>
+          <p class="section-intro">Setup creates local configuration and a protected operator credential. It does not enable network access by default.</p>
+          <form id="setup-form" class="typed-form bootstrap-form" data-bootstrap-action="setup">
+            <div class="form-grid">
+              <label class="form-field">
+                <span>Mode</span>
+                <select name="mode">
+                  <option value="monitor">Monitor</option>
+                  <option value="guarded">Guarded</option>
+                  <option value="strict">Enforce</option>
+                </select>
+              </label>
+              <label class="form-field">
+                <span>Host</span>
+                <input name="host" type="text" required value="127.0.0.1" autocomplete="off" />
+              </label>
+              <label class="form-field">
+                <span>Port</span>
+                <input name="port" type="number" required value="3000" min="1" max="65535" inputmode="numeric" />
+              </label>
+              <label class="form-field">
+                <span>Allowed hosts</span>
+                <input name="allowedHosts" type="text" autocomplete="off" placeholder="api.example.com, models.example.com" />
+                <small>Use commas between host names.</small>
+              </label>
+            </div>
+            <label class="check-field"><input name="lanAccess" type="checkbox" /> Allow access from the local network</label>
+            <label class="check-field"><input name="force" type="checkbox" /> Replace existing local setup files</label>
+            <div class="form-actions">
+              <button class="button button-primary" type="submit">Create local setup</button>
+              <span class="form-state" aria-live="polite"></span>
+            </div>
+          </form>
+        </section>
+
+        <section class="console-section" aria-labelledby="prepare-title">
+          <div class="section-heading">
+            <div>
+              <p class="context-label">Step two</p>
+              <h2 id="prepare-title">Prepare an agent</h2>
+            </div>
+            <span class="section-meta">Fixed Agentwall actions</span>
+          </div>
+
+          <div class="bootstrap-action-block">
+            <div>
+              <h3>Initialize files</h3>
+              <p>Write the starter configuration files for this directory.</p>
+            </div>
+            <form data-bootstrap-action="init">
+              <button class="button button-secondary" type="submit">Initialize files</button>
+              <span class="form-state" aria-live="polite"></span>
+            </form>
+          </div>
+
+          <div class="bootstrap-action-block">
+            <div>
+              <h3>Run onboarding</h3>
+              <p>Create one agent profile and its first local environment.</p>
+            </div>
+            <form class="typed-form" data-bootstrap-action="onboard">
+              <div class="form-grid">
+                <label class="form-field">
+                  <span>Profile ID</span>
+                  <input name="profileId" type="text" required value="generic" pattern="[A-Za-z0-9][A-Za-z0-9_-]*" autocomplete="off" />
+                </label>
+                <label class="form-field">
+                  <span>Agent ID</span>
+                  <input name="agentId" type="text" required value="generic" pattern="[A-Za-z0-9][A-Za-z0-9_-]*" autocomplete="off" />
+                </label>
+              </div>
+              <div class="form-actions">
+                <button class="button button-secondary" type="submit">Run onboarding</button>
+                <span class="form-state" aria-live="polite"></span>
+              </div>
+              <div class="bootstrap-secret" aria-live="polite"></div>
+            </form>
+          </div>
+        </section>
+
+        <section class="console-section" aria-labelledby="service-actions-title">
+          <div class="section-heading">
+            <div>
+              <p class="context-label">Step three</p>
+              <h2 id="service-actions-title">Service controls</h2>
+            </div>
+            <span class="section-meta">Loopback only</span>
+          </div>
+
+          <div class="bootstrap-control-list">
+            <div class="bootstrap-action-block">
+              <div><h3>Start Agentwall</h3><p>Start the built local service.</p></div>
+              <form data-bootstrap-action="start">
+                <button class="button button-primary" type="submit">Start Agentwall</button>
+                <span class="form-state" aria-live="polite"></span>
+              </form>
+            </div>
+            <div class="bootstrap-action-block">
+              <div><h3>Development mode</h3><p>Start Agentwall from the TypeScript source.</p></div>
+              <form data-bootstrap-action="dev">
+                <button class="button button-secondary" type="submit">Start development mode</button>
+                <span class="form-state" aria-live="polite"></span>
+              </form>
+            </div>
+            <div class="bootstrap-action-block">
+              <div><h3>Stop Agentwall</h3><p>Stop the local Agentwall service.</p></div>
+              <form data-bootstrap-action="stop" data-confirm="true">
+                <label class="check-field"><input name="confirm" type="checkbox" required /> Confirm that Agentwall will stop.</label>
+                <button class="button button-danger" type="submit">Stop Agentwall</button>
+                <span class="form-state" aria-live="polite"></span>
+              </form>
+            </div>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <script type="module" src="/bootstrap.js?v=simple-bootstrap-2026-08-06"></script>
+  </body>
+</html>

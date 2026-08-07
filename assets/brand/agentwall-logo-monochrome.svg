@@ -1,6 +1,8 @@
-<svg width="1200" height="320" viewBox="0 0 1200 320" fill="none" xmlns="http://www.w3.org/2000/svg">
-  <rect x="40" y="32" width="224" height="224" rx="28" fill="#111111"/>
-  <path d="M88 196L152 92L216 196" stroke="#FFFFFF" stroke-width="20" stroke-linecap="round" stroke-linejoin="round"/>
-  <path d="M120 164H184" stroke="#FFFFFF" stroke-width="16" stroke-linecap="round"/>
-  <text x="312" y="190" fill="#111111" font-family="Inter, 'Segoe UI', system-ui, sans-serif" font-size="108" font-weight="700" letter-spacing="-2">Agentwall</text>
+<svg width="960" height="256" viewBox="0 0 960 256" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="agentwall-monochrome-title agentwall-monochrome-description">
+  <title id="agentwall-monochrome-title">Agentwall</title>
+  <desc id="agentwall-monochrome-description">The monochrome Agentwall protected-center frame and wordmark.</desc>
+  <rect x="32" y="24" width="208" height="208" rx="48" fill="#0F131B"/>
+  <path fill="#F1F5FA" fill-rule="evenodd" clip-rule="evenodd" d="M96 64H176L200 88V168L176 192H96L72 168V88L96 64ZM112 96L104 104V152L112 160H160L168 152V104L160 96H112Z"/>
+  <rect x="124" y="116" width="24" height="24" rx="4" fill="#F1F5FA"/>
+  <text x="280" y="158" fill="#0F131B" font-family="Inter, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="96" font-weight="700" letter-spacing="-2">Agentwall</text>
 </svg>

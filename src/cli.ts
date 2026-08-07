@@ -6,8 +6,11 @@ import { spawnSync } from "child_process";
 import { loadConfig, resolveConfigSource } from "./config";
 import { defaultConfig, OnboardingMode, writeStarterFiles } from "./onboarding";
 import { runOnboardCommand } from "./onboard";
+import { createLocalOperatorFiles, loadGeneratedEnvironment } from "./setup";
+import { runBootstrapUi } from "./bootstrap";
 import { runAnchorPass, runVerify, resolvePaths } from "./audit/anchor-service";
 import { runMcpWrap, runMcpHttpWrap } from "./mcp/wrap";
+import type { McpBaselineMode } from "./mcp/types";
 import { runDecoyCommand } from "./decoy";
 import { runPerimeterCommand } from "./perimeter";
 import { runSandboxCommand } from "./sandbox";
@@ -97,13 +100,15 @@ interface DashboardState {
   priorityQueue: PriorityQueueItem[];
 }
 
-function printHelp() {
+export function printHelp() {
   console.log(`Agentwall CLI
 
 Usage:
   agentwall <command> [options]
 
 Commands:
+  setup               Create safe local operator files with monitor defaults
+  ui                  Start the loopback setup and service control page
   init                Create agentwall.config.yaml and policy.yaml
   onboard             Mint an identity for one agent runtime and print the env it needs
   start               Start Agentwall server from current directory config
@@ -114,6 +119,8 @@ Commands:
   verify              Check the three audit integrity layers independently
   verify-capture      Prove one agent's traffic really passes through Agentwall
   mcp wrap            Wrap a local MCP server and gate its stdio traffic
+  mcp stop <wrapper-id>  Stop one MCP HTTP wrapper managed by Agentwall
+  mcp status             List managed MCP HTTP wrappers
   approval-mode       Set approval mode (auto|always|never)
   shield              Enable FloodGuard shield mode
   normal              Return FloodGuard to normal mode
@@ -134,6 +141,19 @@ Commands:
 Shared options:
   --config <path>                     Read config from a specific file
   --url <http://host:port>            Override server URL instead of config host/port
+
+Setup options:
+  --mode <monitor|guarded|strict>     Operating mode (default: monitor)
+  --host <host>                       Service bind host (default: 127.0.0.1)
+  --port <port>                       Service bind port (default: 3000)
+  --allow-hosts <a,b,c>               Comma-separated egress allowlist (default: none)
+  --lan                               Bind the service to 0.0.0.0
+  --force                             Replace generated setup files
+
+UI options:
+  --host <host>                       Bootstrap bind host (default: 127.0.0.1)
+  --port <port>                       Bootstrap bind port (default: 3001)
+  --service-port <port>               AgentWall service port (default: 3000)
 
 Init options:
   --mode <monitor|guarded|strict>     Operating mode (default: guarded)
@@ -179,6 +199,8 @@ Session control options:
 MCP wrap options:
   --server-name <name>                Name recorded for the wrapped server (default: command basename)
   --agent-id <id>                     Agent the wrapped traffic is attributed to in the audit chain
+  --baseline-mode <off|learn|lock>    Select inventory behavior (default: off)
+  --baseline-file <path>              Set the inventory file (default: .agentwall/mcp-baselines.json)
   -- <command> [args...]              The MCP server to launch; everything after -- is passed through
   --http-upstream <url>               Wrap a remote MCP server over Streamable HTTP instead of stdio
   --http-port <n>                     Port for the local listener clients connect to (0 = ephemeral)
@@ -263,9 +285,51 @@ export function parseFlags(args: string[]): ParsedArgs {
   return { flags, positionals };
 }
 
-function runNodeScript(args: string[]) {
-  const result = spawnSync(process.execPath, args, { stdio: "inherit" });
+function runNodeScript(args: string[]): void {
+  const result = spawnSync(process.execPath, args, {
+    stdio: "inherit",
+    env: { ...process.env, ...loadGeneratedEnvironment(process.cwd()) },
+  });
   process.exit(result.status ?? 1);
+}
+
+export function commandSetup(flags: CliFlags): void {
+  const modeInput = String(flags.mode || "monitor").toLowerCase();
+  const mode: OnboardingMode = modeInput === "guarded" || modeInput === "strict" ? modeInput : "monitor";
+  const port = Number(flags.port || defaultConfig.port);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    throw new Error("--port must be an integer from 1 through 65535.");
+  }
+
+  const result = createLocalOperatorFiles(process.cwd(), {
+    mode,
+    host: String(flags.host || defaultConfig.host),
+    port,
+    allowedHosts: String(flags["allow-hosts"] || "")
+      .split(",")
+      .map((item) => item.trim())
+      .filter(Boolean),
+    lanAccess: Boolean(flags.lan),
+    force: Boolean(flags.force),
+  });
+
+  console.log("Created AgentWall local operator files:");
+  console.log(`- ${result.configPath}`);
+  console.log(`- ${result.policyPath}`);
+  console.log(`- ${result.environmentPath}`);
+  console.log(`- ${result.auditPath}`);
+  console.log(`Dashboard: ${result.dashboardUrl}`);
+  console.log("Next: agentwall start");
+  console.log("Then: agentwall doctor");
+}
+
+export async function commandUi(flags: CliFlags): Promise<void> {
+  await runBootstrapUi({
+    baseDir: process.cwd(),
+    host: String(flags.host || "127.0.0.1"),
+    port: Number(flags.port || 3001),
+    servicePort: Number(flags["service-port"] || defaultConfig.port),
+  });
 }
 
 function commandInit(flags: CliFlags) {
@@ -1407,14 +1471,23 @@ async function commandVerify(flags: CliFlags): Promise<void> {
 }
 
 const MCP_USAGE = [
-  "Usage: agentwall mcp wrap [--server-name <name>] [--agent-id <id>] -- <command> [args...]",
-  "       agentwall mcp wrap --http-upstream <url> --http-port <n> [--http-host <h>]",
-  "                          [--http-auth-token-file <path>] [--server-name <name>] [--agent-id <id>]",
+  "Usage: agentwall mcp wrap [options] -- <command> [args...]",
+  "       agentwall mcp wrap [options] --http-upstream <url> --http-port <n> [--http-host <h>]",
+  "       agentwall mcp stop <wrapper-id> [--url <base-url>] [--config <path>]",
+  "       agentwall mcp status [--url <base-url>] [--config <path>]",
+  "Options:",
+  "  --server-name <name>       Set the server name.",
+  "  --agent-id <id>            Set the agent identity.",
+  "  --baseline-mode <mode>     Use off, learn, or lock. The default is off.",
+  "  --baseline-file <path>     Set the inventory file. The default is .agentwall/mcp-baselines.json.",
+  "  --http-auth-token-file <path>  Read the HTTP client token from this file.",
 ].join("\n");
 
 export interface McpWrapArgs {
   serverName?: string;
   agentId?: string;
+  baselineMode?: McpBaselineMode;
+  baselineFile?: string;
   /** The server command for the stdio form. Empty when wrapping over HTTP. */
   command: string[];
   /** Set only for the HTTP form. Its presence is what selects that transport. */
@@ -1438,10 +1511,10 @@ export interface McpWrapArgs {
 export function parseMcpArgs(args: string[]): McpWrapArgs {
   const [subcommand, ...rest] = args;
   if (!subcommand) {
-    throw new Error(`mcp subcommand required. Supported: wrap.\n${MCP_USAGE}`);
+    throw new Error(`mcp subcommand required. Supported: wrap, status, stop.\n${MCP_USAGE}`);
   }
   if (subcommand !== "wrap") {
-    throw new Error(`Unknown mcp subcommand: ${subcommand}. Supported: wrap.\n${MCP_USAGE}`);
+    throw new Error(`Unknown mcp subcommand: ${subcommand}. Supported: wrap, status, stop.\n${MCP_USAGE}`);
   }
 
   const separator = rest.indexOf("--");
@@ -1461,6 +1534,8 @@ export function parseMcpArgs(args: string[]): McpWrapArgs {
     "--http-port": true,
     "--http-host": true,
     "--http-auth-token-file": true,
+    "--baseline-mode": true,
+    "--baseline-file": true,
   };
 
   for (let i = 0; i < ours.length; i += 1) {
@@ -1474,6 +1549,12 @@ export function parseMcpArgs(args: string[]): McpWrapArgs {
     }
     if (token === "--server-name") parsed.serverName = value;
     else if (token === "--agent-id") parsed.agentId = value;
+    else if (token === "--baseline-mode") {
+      if (value !== "off" && value !== "learn" && value !== "lock") {
+        throw new Error(`--baseline-mode must be off, learn, or lock; got "${value}".\n${MCP_USAGE}`);
+      }
+      parsed.baselineMode = value;
+    } else if (token === "--baseline-file") parsed.baselineFile = value;
     else if (token === "--http-upstream") upstreamUrl = value;
     else if (token === "--http-port") listenPort = value;
     else if (token === "--http-host") listenHost = value;
@@ -1518,6 +1599,96 @@ export function parseMcpArgs(args: string[]): McpWrapArgs {
 
   return parsed;
 }
+interface McpStopArgs {
+  wrapId: string;
+  flags: CliFlags;
+}
+
+interface McpServiceArgs {
+  flags: CliFlags;
+}
+
+function parseMcpStopArgs(args: string[]): McpStopArgs {
+  const [subcommand, wrapId, ...rest] = args;
+  if (subcommand !== "stop" || !wrapId || wrapId.startsWith("--")) {
+    throw new Error(`Usage: agentwall mcp stop <wrapper-id> [--url <base-url>] [--config <path>]\n${MCP_USAGE}`);
+  }
+  const parsed = parseFlags(rest);
+  if (parsed.positionals.length > 0) {
+    throw new Error(`Unexpected mcp stop argument: ${parsed.positionals[0]}.\n${MCP_USAGE}`);
+  }
+  return { wrapId, flags: parsed.flags };
+}
+
+function parseMcpServiceArgs(args: string[], subcommand: "status"): McpServiceArgs {
+  const [actual, ...rest] = args;
+  if (actual !== subcommand) {
+    throw new Error(`Usage: agentwall mcp ${subcommand} [--url <base-url>] [--config <path>]\n${MCP_USAGE}`);
+  }
+  const parsed = parseFlags(rest);
+  if (parsed.positionals.length > 0) {
+    throw new Error(`Unexpected mcp ${subcommand} argument: ${parsed.positionals[0]}.\n${MCP_USAGE}`);
+  }
+  return { flags: parsed.flags };
+}
+
+function responseMessage(body: unknown): string | undefined {
+  if (body === null || typeof body !== "object" || !("message" in body)) return undefined;
+  return typeof body.message === "string" ? body.message : undefined;
+}
+
+function responseOutput(body: unknown): string | undefined {
+  if (body === null || typeof body !== "object" || !("data" in body)) return undefined;
+  const data = body.data;
+  if (data === null || typeof data !== "object" || !("output" in data)) return undefined;
+  return typeof data.output === "string" ? data.output : undefined;
+}
+
+function operatorToken(): string {
+  const generatedEnvironment = loadGeneratedEnvironment(process.cwd());
+  const token = process.env.AGENTWALL_OPERATOR_TOKEN ?? generatedEnvironment.AGENTWALL_OPERATOR_TOKEN;
+  if (!token) {
+    throw new Error("This MCP control needs AGENTWALL_OPERATOR_TOKEN or a generated operator environment.");
+  }
+  return token;
+}
+
+async function postOperatorAction(flags: CliFlags, payload: Record<string, unknown>): Promise<{ message?: string; output?: string }> {
+  const response = await fetch(`${createBaseUrl(flags)}/api/operator/actions`, {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${operatorToken()}`,
+      "content-type": "application/json",
+    },
+    body: JSON.stringify(payload),
+  });
+  const raw = await response.text();
+  let body: unknown = {};
+  try {
+    body = JSON.parse(raw) as unknown;
+  } catch {
+    body = {};
+  }
+  if (!response.ok) {
+    throw new Error(responseMessage(body) ?? `Agentwall returned HTTP ${response.status} for the MCP control.`);
+  }
+  return { message: responseMessage(body), output: responseOutput(body) };
+}
+
+async function commandMcpStop(args: string[]): Promise<void> {
+  const parsed = parseMcpStopArgs(args);
+  const response = await postOperatorAction(parsed.flags, { action: "mcp-http-stop", wrapId: parsed.wrapId, confirm: true });
+  console.log(response.message ?? `MCP HTTP wrapper ${parsed.wrapId} stopped.`);
+  if (response.output) console.log(response.output);
+}
+
+async function commandMcpStatus(args: string[]): Promise<void> {
+  const parsed = parseMcpServiceArgs(args, "status");
+  const response = await postOperatorAction(parsed.flags, { action: "mcp-http-list" });
+  if (response.output) console.log(response.output);
+  else console.log(response.message ?? "MCP HTTP wrapper status is ready.");
+}
+
 
 /**
  * `agentwall mcp wrap` - gate every JSON-RPC frame to and from an MCP server.
@@ -1532,7 +1703,21 @@ export function parseMcpArgs(args: string[]): McpWrapArgs {
  * form in a test harness and an ephemeral port nobody can discover is not useful.
  */
 async function commandMcp(args: string[]): Promise<void> {
+  if (args[0] === "status") {
+    await commandMcpStatus(args);
+    return;
+  }
+  if (args[0] === "stop") {
+    await commandMcpStop(args);
+    return;
+  }
   const parsed = parseMcpArgs(args);
+  const baselineMode = parsed.baselineMode ?? "off";
+  const baselineFile = path.resolve(
+    parsed.baselineFile ?? path.join(".agentwall", "mcp-baselines.json"),
+  );
+  console.error(`MCP baseline mode: ${baselineMode}`);
+  console.error(`MCP baseline file: ${baselineFile}`);
 
   if (parsed.http) {
     // Read the token from a file rather than an argument. A token on the command line is
@@ -1552,6 +1737,8 @@ async function commandMcp(args: string[]): Promise<void> {
       authToken,
       serverName: parsed.serverName,
       agentId: parsed.agentId,
+      baselineMode,
+      baselineFile,
     });
     console.log(
       `Agentwall MCP HTTP wrap listening on ${parsed.http.listenHost ?? "127.0.0.1"}:${handle.port}` +
@@ -1569,6 +1756,8 @@ async function commandMcp(args: string[]): Promise<void> {
     command: parsed.command,
     serverName: parsed.serverName,
     agentId: parsed.agentId,
+    baselineMode,
+    baselineFile,
   });
   process.exit(exitCode);
 }
@@ -1632,6 +1821,12 @@ async function main() {
     case "--version":
     case "-v":
       console.log(packageVersion);
+      return;
+    case "setup":
+      commandSetup(flags);
+      return;
+    case "ui":
+      await commandUi(flags);
       return;
     case "init":
       commandInit(flags);

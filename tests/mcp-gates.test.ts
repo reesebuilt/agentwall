@@ -19,6 +19,7 @@ describe("MCP gate pipeline", () => {
       sessionId: "session-1",
       server: { serverName: "notes-server", command: ["node", "notes-server.js"] },
       engine: new PolicyEngine(),
+      baselineMode: "off",
     };
   });
 

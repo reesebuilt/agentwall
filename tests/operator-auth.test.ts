@@ -16,10 +16,14 @@ import type { FastifyReply, FastifyRequest } from "fastify";
 
 const ENV = "AGENTWALL_OPERATOR_TOKEN_TEST";
 
-function req(headers: Record<string, string> = {}, ip = "203.0.113.10"): FastifyRequest {
-	// Only the fields resolveOperator reads. Narrow cast at a test boundary where the
+function req(
+	headers: Record<string, string> = {},
+	ip = "203.0.113.10",
+	method = "GET",
+): FastifyRequest {
+	// Only the fields the guard reads. Narrow cast at a test boundary where the
 	// full Fastify request is neither available nor relevant.
-	return { headers, ip } as unknown as FastifyRequest;
+	return { headers, ip, method, protocol: "http" } as unknown as FastifyRequest;
 }
 
 function reply() {
@@ -77,6 +81,73 @@ describe("operator auth", () => {
 		expect(
 			resolveOperator(req({}, "203.0.113.20"), { tokenEnv: ENV, allowLoopbackDev: true }),
 		).toBeNull();
+	});
+
+	it("accepts the configured token from the strict browser cookie", () => {
+		process.env[ENV] = "s3cret-token-value";
+		const p = resolveOperator(
+			req({ cookie: "theme=dark; agentwall_operator=s3cret-token-value" }),
+			{ tokenEnv: ENV },
+		);
+		expect(p).toEqual({ id: "operator", method: "cookie" });
+	});
+
+	it("does not let a cookie hide an explicitly wrong bearer token", () => {
+		process.env[ENV] = "s3cret-token-value";
+		const p = resolveOperator(req({
+			authorization: "Bearer wrong",
+			cookie: "agentwall_operator=s3cret-token-value",
+		}), { tokenEnv: ENV });
+		expect(p).toBeNull();
+	});
+
+	it("allows a cookie-authenticated safe read without an Origin header", async () => {
+		process.env[ENV] = "s3cret-token-value";
+		const guard = requireOperator({ tokenEnv: ENV });
+		const r = req({ cookie: "agentwall_operator=s3cret-token-value" });
+		const { reply: rep, sent } = reply();
+
+		await guard(r, rep);
+
+		expect(sent.code).toBeUndefined();
+		expect(r.operator).toEqual({ id: "operator", method: "cookie" });
+	});
+
+	it("rejects a cookie-authenticated mutation without a same-origin Origin header", async () => {
+		process.env[ENV] = "s3cret-token-value";
+		const guard = requireOperator({ tokenEnv: ENV });
+
+		const headersList: Array<Record<string, string>> = [
+			{ host: "127.0.0.1:3000", cookie: "agentwall_operator=s3cret-token-value" },
+			{
+				host: "127.0.0.1:3000",
+				origin: "https://example.invalid",
+				cookie: "agentwall_operator=s3cret-token-value",
+			},
+		];
+		for (const headers of headersList) {
+			const r = req(headers, "127.0.0.1", "POST");
+			const { reply: rep, sent } = reply();
+			await guard(r, rep);
+			expect(sent.code).toBe(403);
+			expect(r.operator).toBeUndefined();
+		}
+	});
+
+	it("accepts a cookie-authenticated mutation from the request host", async () => {
+		process.env[ENV] = "s3cret-token-value";
+		const guard = requireOperator({ tokenEnv: ENV });
+		const r = req({
+			host: "127.0.0.1:3000",
+			origin: "http://127.0.0.1:3000",
+			cookie: "agentwall_operator=s3cret-token-value",
+		}, "127.0.0.1", "POST");
+		const { reply: rep, sent } = reply();
+
+		await guard(r, rep);
+
+		expect(sent.code).toBeUndefined();
+		expect(r.operator).toEqual({ id: "operator", method: "cookie" });
 	});
 
 	it("the guard 401s and attaches no principal when unauthenticated", async () => {

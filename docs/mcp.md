@@ -84,22 +84,39 @@ record. That is the property worth holding on to: a decision must not depend on 
 carried the frame, so a call refused over stdio is refused over HTTP for the same reason and with
 the same evidence.
 
-There is no CLI subcommand for HTTP mode yet. It is reachable from a host process that has
-AgentWall on its module path:
+Use the CLI form:
+
+```bash
+agentwall mcp wrap \
+  --http-upstream https://mcp.example.com/mcp \
+  --http-host 127.0.0.1 \
+  --http-port 8931 \
+  --server-name example-remote \
+  --agent-id desktop-client
+```
+
+Point the MCP client to `http://127.0.0.1:8931/mcp`.
+Press `Ctrl-C` to stop a wrapper that the CLI starts.
+
+The running dashboard can also manage an HTTP wrapper.
+Open **Operations**, select **Start MCP HTTP wrapper**, and confirm the plan.
+The dashboard shows the local endpoint and a wrapper ID.
+Use **List MCP HTTP wrappers** to copy the endpoint or ID.
+Use **Stop MCP HTTP wrapper** to close one managed wrapper.
+
+The programmatic API remains available for host integrations:
 
 ```ts
 import { runMcpHttpWrap } from "@repsecure/agentwall/dist/mcp/wrap";
 
 const listener = await runMcpHttpWrap({
-  upstreamUrl: "https://mcp.example.com/mcp", // --http-upstream
-  listenHost: "127.0.0.1",                    // --http-host
-  listenPort: 8931,                           // --http-port
+  upstreamUrl: "https://mcp.example.com/mcp",
+  listenHost: "127.0.0.1",
+  listenPort: 8931,
   serverName: "example-remote",
   agentId: "desktop-client",
 });
 
-// The client is now configured with http://127.0.0.1:8931/ instead of the upstream URL.
-// listener.port is the bound port, which matters when listenPort was 0.
 await listener.close();
 ```
 

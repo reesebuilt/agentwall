@@ -225,7 +225,13 @@ export interface CaptureReport {
   hits: CanaryHit[];
   records: MatchedRecord[];
   /** Present in --command mode. A fetch that never ran explains an inconclusive result. */
-  fetch: { mode: "command" | "interactive"; command?: string; exitCode?: number | null; stderr?: string };
+  fetch: {
+    mode: "command" | "interactive";
+    command?: string;
+    commandArgv?: string[];
+    exitCode?: number | null;
+    stderr?: string;
+  };
   outcome: CaptureOutcome;
   captured: boolean;
   limits: string[];
@@ -237,6 +243,8 @@ export interface VerifyCaptureOptions {
   configPath?: string;
   /** Shell string run to make the agent fetch the canary. Absent selects interactive mode. */
   command?: string;
+  /** Typed argv used by the operator API. This path never starts a shell. */
+  commandArgv?: string[];
   /** Interface the canary binds. Loopback unless the agent reaches this host by another address. */
   host: string;
   /** Proxy the agent is configured to use, for the peer-pid corroboration only. */
@@ -909,6 +917,12 @@ function namePeers(hits: CanaryHit[]): string {
  * configuration, and would report "captured" for an agent that is not configured at all.
  */
 export async function runVerifyCapture(options: VerifyCaptureOptions): Promise<CaptureReport> {
+  if (options.command !== undefined && options.commandArgv !== undefined) {
+    throw new Error("verify-capture takes command or commandArgv, not both.");
+  }
+  const typedCommand = options.commandArgv === undefined
+    ? undefined
+    : validateCaptureCommandArgv(options.commandArgv);
   const log = options.log ?? (() => {});
   const configPath = resolveConfigSource(options.configPath);
 
@@ -966,12 +980,22 @@ export async function runVerifyCapture(options: VerifyCaptureOptions): Promise<C
     );
   }
 
-  const fetch: CaptureReport["fetch"] = options.command
-    ? { mode: "command", command: options.command }
-    : { mode: "interactive" };
+  const fetch: CaptureReport["fetch"] = typedCommand
+    ? { mode: "command", commandArgv: [...typedCommand] }
+    : options.command
+      ? { mode: "command", command: options.command }
+      : { mode: "interactive" };
 
   try {
-    if (options.command) {
+    if (typedCommand) {
+      const result = await runCommandArgv(typedCommand, canary.url, options.timeoutMs);
+      fetch.exitCode = result.exitCode;
+      fetch.stderr = result.stderr;
+      if (result.exitCode !== 0) {
+        log(`the fetch command exited ${result.exitCode ?? "on a signal"}.`);
+        if (result.stderr.trim()) log(result.stderr.trim().split("\n").slice(-5).join("\n"));
+      }
+    } else if (options.command) {
       const result = await runCommand(options.command, canary.url, options.timeoutMs);
       fetch.exitCode = result.exitCode;
       fetch.stderr = result.stderr;
@@ -1059,6 +1083,56 @@ function runCommand(command: string, url: string, timeoutMs: number): Promise<Co
   let stderr = "";
   child.stderr?.on("data", (chunk) => {
     // Bounded: a chatty agent must not be able to make this command hold its whole log.
+    if (stderr.length < 64 * 1024) stderr += String(chunk);
+  });
+  const timer = setTimeout(() => child.kill("SIGKILL"), timeoutMs);
+  child.on("error", (err) => {
+    clearTimeout(timer);
+    done.resolve({ exitCode: null, stderr: `${stderr}${String(err)}` });
+  });
+  child.on("close", (code) => {
+    clearTimeout(timer);
+    done.resolve({ exitCode: code, stderr });
+  });
+  return done.promise;
+}
+
+const CAPTURE_SHELL_SYNTAX = /[\0\r\n;&|`$<>]/;
+
+export function validateCaptureCommandArgv(commandArgv: readonly string[]): string[] {
+  if (commandArgv.length === 0) {
+    throw new Error("verify-capture commandArgv is empty.");
+  }
+  for (const value of commandArgv) {
+    if (value.length === 0) {
+      throw new Error("verify-capture commandArgv contains an empty value.");
+    }
+    if (CAPTURE_SHELL_SYNTAX.test(value.replaceAll("{url}", ""))) {
+      throw new Error("verify-capture commandArgv contains shell syntax.");
+    }
+  }
+  return [...commandArgv];
+}
+
+function runCommandArgv(commandArgv: readonly string[], url: string, timeoutMs: number): Promise<CommandResult> {
+  const safe = validateCaptureCommandArgv(commandArgv);
+  const executable = safe[0];
+  let substituted = false;
+  const args = safe.slice(1).map((value) => {
+    if (!value.includes("{url}")) return value;
+    substituted = true;
+    return value.replaceAll("{url}", url);
+  });
+  if (!substituted) args.push(url);
+
+  const done = deferred<CommandResult>();
+  const child = spawn(executable, args, {
+    env: { ...process.env, AGENTWALL_CANARY_URL: url },
+    stdio: ["ignore", "ignore", "pipe"],
+    shell: false,
+  });
+  let stderr = "";
+  child.stderr?.on("data", (chunk) => {
     if (stderr.length < 64 * 1024) stderr += String(chunk);
   });
   const timer = setTimeout(() => child.kill("SIGKILL"), timeoutMs);

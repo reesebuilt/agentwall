@@ -1,15 +1,21 @@
-# Install Agentwall
+# Install AgentWall
+
+Use this guide to install AgentWall and start its local operator UI.
 
 ## Requirements
 
-- Node.js 22.12+
-- npm 10+
-- Linux, for process-level egress attribution. The proxy reads `/proc` to resolve a
-  connection back to the process that opened it, so that feature is Linux-only.
-  Everything else runs anywhere Node does.
-- python3, needed only by `npm run verify:live`
+- Use Node.js 22.12 or later.
+- Use npm 10 or later.
+- Install `python3` only if you use `npm run verify:live`.
+- Use Linux if you need process-level egress attribution.
 
-## Local source install
+AgentWall reads `/proc` to map a connection to its source process. This attribution feature works only on Linux. Other features run on each platform that Node.js supports.
+
+## Build from source
+
+**Goal:** Build the AgentWall service and command-line interface.
+
+**Command:**
 
 ```bash
 git clone https://github.com/repsecure/agentwall
@@ -18,26 +24,75 @@ npm install
 npm run build
 ```
 
-Initialize config/policy:
+**Expected result:** npm creates the compiled files in `dist`.
 
-```bash
-node dist/cli.js init --mode guarded --allow-hosts api.openai.com
-```
+**Common fix:** Install Node.js 22.12 or later if npm reports an unsupported engine.
 
-Start service:
+## Install the `agentwall` launcher
 
-```bash
-node dist/cli.js start
-```
+**Goal:** Make the `agentwall` command available to the local shell.
 
-## Install `agentwall` launcher command
+**Command:**
 
 ```bash
 ./scripts/agentwall-install.sh --yes
 agentwall help
 ```
 
-If your shell PATH includes `/usr/local/bin`, you can now run:
+**Expected result:** `agentwall help` prints the command list.
+
+**Common fix:** Add `/usr/local/bin` to `PATH` if the shell cannot find `agentwall`.
+
+## Complete the first run in the local UI
+
+**Goal:** Create safe local files and start AgentWall from the primary setup path.
+
+**Command:**
+
+```bash
+agentwall ui
+```
+
+**Expected result:** AgentWall prints `http://127.0.0.1:3001` and serves the bootstrap UI there.
+
+1. Open the printed URL in a local browser.
+2. Select **Setup** to create the local operator files.
+3. Select **Start** to start the service.
+4. Open the dashboard link after the service reaches the `running` state.
+
+The setup action uses monitor mode and local bind addresses by default. The bootstrap UI binds to `127.0.0.1:3001`. The service binds to `127.0.0.1:3000`.
+
+Setup creates `agentwall.config.yaml`, `policy.yaml`, and `.agentwall/operator.env`. It also creates the audit path that the environment file names. Setup does not replace an existing configuration unless you use `--force`.
+
+AgentWall creates `.agentwall` with mode `0700` where the platform supports file modes. It writes `.agentwall/operator.env` with mode `0600` where the platform supports file modes. AgentWall never prints the generated operator token.
+
+AgentWall parses only known `KEY=value` entries from `.agentwall/operator.env`. It does not run the file as shell code. An explicit environment variable takes priority over the same generated value.
+
+The UI sends mutations through typed actions. It does not accept an arbitrary shell command. A read-only action shows its status, output, and a copyable CLI command.
+
+**Common fix:** Run `agentwall ui --port 3002` if port `3001` is in use.
+
+Use `--host` only when the bootstrap UI must use another bind address. Use `--service-port` only when the service must use another port. Local-only access is the default.
+
+## Use the direct CLI without the browser
+
+**Goal:** Create the same local files when a browser is unavailable.
+
+**Command:**
+
+```bash
+agentwall setup --mode monitor
+agentwall start
+agentwall doctor
+```
+
+**Expected result:** Setup prints the created paths and the next commands. Start loads the generated environment and starts the local service. Doctor reports the local install state.
+
+**Common fix:** Add `--force` to `agentwall setup` only when you intend to replace existing setup files.
+
+Use `--lan` only when you intend to expose the service beyond loopback. Review the host firewall and operator token before you enable LAN access.
+
+The older `init` command remains available for an explicit configuration path.
 
 ```bash
 agentwall init --mode strict --allow-hosts api.openai.com
@@ -45,59 +100,71 @@ agentwall doctor
 agentwall start
 ```
 
-## Verify health
+**Expected result:** `init` creates a strict configuration for the named host.
+
+**Common fix:** Use `agentwall setup --mode monitor` for a safer first run if strict mode blocks required traffic.
+
+## Run directly from `dist`
+
+**Goal:** Use the compiled CLI without the installed launcher.
+
+Initialize the configuration and policy files.
+
+```bash
+node dist/cli.js init --mode guarded --allow-hosts api.openai.com
+```
+
+**Expected result:** AgentWall creates `agentwall.config.yaml` and `policy.yaml` in the current directory.
+
+Start the service.
+
+```bash
+node dist/cli.js start
+```
+
+**Expected result:** The service listens on the host and port in `agentwall.config.yaml`.
+
+**Common fix:** Run the command from the directory that contains `agentwall.config.yaml`.
+
+## Check service health
+
+**Goal:** Confirm that the local service responds.
+
+**Command:**
 
 ```bash
 curl http://127.0.0.1:3000/health
 ```
 
-## The `agentwall-verify` binary
+**Expected result:** The `/health` route returns a successful health response.
 
-`agentwall-verify` is the independent Go implementation of `docs/audit-format.md`. It shares no
-code with the bundled TypeScript verifier, uses only the Go standard library, makes no network
-calls, and writes no files. It exists so that a party who does not trust Agentwall, or us, can
-still check an audit chain. That purpose is defeated if you cannot check the binary itself, so the
-procedure for doing so is below rather than assumed.
+**Common fix:** Start AgentWall or use the configured host and port if the connection fails.
 
-Each release attaches five binaries and two manifests:
+## Install the independent audit verifier
+
+`agentwall-verify` implements `docs/audit-format.md` in Go. It shares no code with the TypeScript verifier. It uses only the Go standard library. It makes no network calls and writes no files.
+
+Each release provides these verifier assets.
 
 | Asset | Platform | Linkage | Install path |
 | --- | --- | --- | --- |
-| `agentwall-verify-linux-amd64` | Linux x86-64 | static | Homebrew, or download |
-| `agentwall-verify-linux-arm64` | Linux ARM64 | static | Homebrew, or download |
-| `agentwall-verify-darwin-amd64` | macOS Intel | libSystem | Homebrew, or download |
-| `agentwall-verify-darwin-arm64` | macOS Apple Silicon | libSystem | Homebrew, or download |
-| `agentwall-verify-windows-amd64.exe` | Windows x86-64 | system DLLs | Download only |
+| `agentwall-verify-linux-amd64` | Linux x86-64 | static | Homebrew or download |
+| `agentwall-verify-linux-arm64` | Linux ARM64 | static | Homebrew or download |
+| `agentwall-verify-darwin-amd64` | macOS Intel | libSystem | Homebrew or download |
+| `agentwall-verify-darwin-arm64` | macOS Apple Silicon | libSystem | Homebrew or download |
+| `agentwall-verify-windows-amd64.exe` | Windows x86-64 | system DLLs | download only |
 
-Only the Linux binaries are statically linked, and that is stated rather than rounded up because
-"static" is the difference between a binary that runs anywhere and one that depends on its host.
-`file` reports the two Linux binaries as `statically linked`. The darwin binaries are Mach-O
-`DYLDLINK` against `/usr/lib/libSystem.B.dylib`, and the Windows binary imports the usual system
-DLLs including `kernel32.dll`, `advapi32.dll` and `ws2_32.dll`. Go cannot emit a fully static
-binary for macOS or Windows, because those libraries are the syscall interface on those platforms.
+Only the Linux binaries are statically linked. The macOS binaries use `/usr/lib/libSystem.B.dylib`. The Windows binary uses standard Windows system DLLs.
 
-In practice this costs you nothing: all five are built `CGO_ENABLED=0`, so none needs a Go
-toolchain, a package install, or any third-party runtime. Each needs only what its own operating
-system already ships.
+All five binaries use `CGO_ENABLED=0`. They need no Go toolchain or third-party runtime. Windows has no Homebrew install path.
 
-`checksums.txt` covers every release asset. `SHA256SUMS-verifier.txt` covers the five binaries
-only, and is the file the Homebrew formula's digests are generated from.
+`checksums.txt` covers every release asset. `SHA256SUMS-verifier.txt` covers only the five verifier binaries.
 
-Windows has no package-manager path. Homebrew does not support Windows, so a Windows user
-downloads the `.exe` and verifies it by hand with the steps below. That is a real asymmetry and
-not an oversight.
+### Check one downloaded binary
 
-### Verify a downloaded verifier binary
+**Goal:** Detect an incomplete or corrupt download.
 
-Three checks, in increasing order of how little they ask you to trust us. They are not
-substitutes for one another.
-
-**1. The download is intact.** Cheap, and the weakest of the three.
-
-You will normally have downloaded one binary, not all five. Both manifests list every file, and
-`-c` treats a listed file that is absent as a failure, so checking a whole manifest against a
-single download exits non-zero and prints `FAILED open or read` for the other four. Verify the one
-line you care about:
+**Command:**
 
 ```bash
 # Linux, and anywhere else with GNU coreutils.
@@ -107,8 +174,17 @@ grep 'agentwall-verify-linux-amd64$' SHA256SUMS-verifier.txt | sha256sum -c -
 grep 'agentwall-verify-darwin-arm64$' SHA256SUMS-verifier.txt | shasum -a 256 -c -
 ```
 
-If you did download every asset, check the whole thing. `--ignore-missing` works in both tools if
-you want the manifest to skip what you did not download rather than fail on it:
+**Expected result:** The selected binary reports `OK`.
+
+**Common fix:** Select the manifest line that matches the downloaded platform asset.
+
+Run the check from the download directory. A checksum proves file consistency. It does not prove who built the file.
+
+### Check downloaded release assets
+
+**Goal:** Check all present assets against a release manifest.
+
+**Command:**
 
 ```bash
 sha256sum -c checksums.txt                                  # all release assets
@@ -116,15 +192,15 @@ sha256sum --ignore-missing -c SHA256SUMS-verifier.txt        # only what is pres
 shasum -a 256 --ignore-missing -c SHA256SUMS-verifier.txt    # same, on macOS
 ```
 
-Run these from the directory you downloaded into, since both manifests use bare filenames.
+**Expected result:** Each present asset reports a matching digest.
 
-Be clear about what this proves. If you fetched the binary and the checksum file from the same
-release page, then anyone who could tamper with the binary could also have edited the checksum
-file to match. This check catches truncated downloads, a corrupting proxy, and a mirror serving
-the wrong bytes. It does not establish that the release is honest, and it is not evidence about
-who built it.
+**Common fix:** Use `--ignore-missing` when you did not download every listed asset.
 
-**2. This workflow built it from this tag.** Removes the maintainer, though not the project.
+### Check release provenance
+
+**Goal:** Confirm that the release workflow built the binary from the stated tag.
+
+**Command:**
 
 ```bash
 slsa-verifier verify-artifact agentwall-verify-linux-amd64 \
@@ -133,11 +209,17 @@ slsa-verifier verify-artifact agentwall-verify-linux-amd64 \
   --source-tag v0.2.0
 ```
 
-The provenance is signed against the release workflow's own OIDC identity, so this fails if the
-binary was built on somebody's laptop and attached by hand, and it fails if the attestation came
-from a different repository or a different tag. It still trusts GitHub's signing infrastructure.
+**Expected result:** `slsa-verifier` accepts the workflow identity, repository, and tag.
 
-**3. Rebuild it yourself.** Removes us from the chain.
+**Common fix:** Use the provenance asset and source tag from the same release.
+
+This check trusts the release platform identity and its signature service.
+
+### Rebuild the verifier
+
+**Goal:** Compare a local build with the release binary.
+
+**Command:**
 
 ```bash
 git clone --branch v0.2.0 --depth 1 https://github.com/repsecure/agentwall
@@ -146,30 +228,19 @@ scripts/build-verifier.sh 0.2.0 /tmp/rebuilt
 cat /tmp/rebuilt/SHA256SUMS-verifier.txt   # compare against the release's copy
 ```
 
-The digests should match the release exactly. `scripts/build-verifier.sh` is the same script the
-release workflow runs, which is deliberate: when the build lived inline in the workflow YAML, the
-documented way to reproduce a release was to read that YAML and retype it, and a procedure nobody
-runs is a procedure that quietly stops working.
+**Expected result:** The local digests match the release digests.
 
-Two things will make a correct rebuild produce different bytes, both of them expected:
+**Common fix:** Run `scripts/build-verifier.sh --print-go-version` and install that exact Go patch release.
 
-- **A different Go version.** The script pins one exact patch release and refuses to run on
-  another, because Go's output changes between them. `scripts/build-verifier.sh
-  --print-go-version` prints the required version.
-- **Editing the build flags.** `-trimpath` and `-buildvcs=false` are both load-bearing. Without
-  the second, Go stamps the git revision into the binary, and a build from a source tarball with
-  no `.git` can never match a build from a clone. The release enforces this: it rebuilds from a
-  `.git`-less tree at a different path on every run and fails if the digests move.
+Do not change `-trimpath` or `-buildvcs=false`. A different Go version or different flags can produce different bytes.
 
-### Install via Homebrew
+### Install the verifier with Homebrew
 
-Covers macOS and Linux. The formula is generated per release from `SHA256SUMS-verifier.txt`, so
-its digests always match the binaries it installs, and it is attached to the release as
-`agentwall-verify.rb`.
+**Goal:** Install the release verifier on macOS or Linux.
 
-There is no published tap yet. Homebrew refuses to install a formula that is not in a tap, so
-`brew install ./agentwall-verify.rb` does not work and fails with "Homebrew requires formulae to
-be in a tap". Put it in a local tap instead:
+The release includes `agentwall-verify.rb`. No published tap exists, so create a local tap.
+
+**Command:**
 
 ```bash
 brew tap-new repsecure/tap --no-git
@@ -179,64 +250,62 @@ brew install repsecure/tap/agentwall-verify
 agentwall-verify --version     # agentwall-verify 0.2.0
 ```
 
-Homebrew verifies the formula's digest against the binary it downloads, and aborts on a mismatch.
-That inherits the limit from check 1 above: if you took the formula and the binary from the same
-release page, matching digests prove consistency, not provenance. Run check 2 or 3 for that.
+**Expected result:** Homebrew verifies the digest and installs `agentwall-verify`.
 
-To remove the tap afterwards: `brew uninstall agentwall-verify && brew untap repsecure/tap`.
+**Common fix:** Copy the formula into the local tap before you run `brew install`.
 
-### Use it
+Remove the tap with `brew uninstall agentwall-verify && brew untap repsecure/tap`.
+
+### Verify an audit chain
+
+**Goal:** Check every audit-chain layer without a network connection.
+
+**Command:**
 
 ```bash
 agentwall-verify --audit /path/to/audit.jsonl --json
 ```
 
-Exit status is 0 only when every layer holds. The `--json` output reports the `chained`, `linked`,
-and `anchored` layers separately, so a chain that is internally valid but not yet anchored
-off-box is distinguishable from a chain that has been edited.
+**Expected result:** Exit status `0` means that every required layer holds. JSON reports `chained`, `linked`, and `anchored` separately.
 
-## Container
+**Common fix:** Read the failed JSON layer before you repair or replace any audit file.
 
-### What the image gives you, and what it does not
+## Run AgentWall in a container
 
-Everything except host-process egress attribution works in a container exactly as it does
-on a host: policy evaluation, DLP, approvals, the dashboard, the runtime guards, and the
-tamper-evident audit chain.
+A container supports policy evaluation, DLP, approvals, the dashboard, runtime guards, and the audit chain. A default container cannot attribute host egress to a host process.
 
-Attribution is the exception, and it is the product's headline capability, so read this
-before deciding the image is what you want. Naming the process behind an outbound
-connection is a two-step read of `/proc`: `/proc/net/tcp` maps the client's port to a
-socket inode, then `/proc/<pid>/fd` finds the process holding that inode. The first file
-is per network namespace. The second is per PID namespace, and resolving its symlinks
-additionally requires `PTRACE_MODE_READ`, which means matching the target process's uid
-and gid or holding `CAP_SYS_PTRACE`. A default container has its own network namespace,
-its own PID namespace, and runs as uid 1000, so all three conditions fail.
+AgentWall needs the host network namespace, host PID namespace, and sufficient `/proc` access for host attribution. A default container has none of these conditions.
 
-A default container therefore records host egress like this:
+A default container records host egress without process identity.
 
 ```json
 {"host":"example.com","port":443,"scheme":"https","method":"CONNECT",
  "client":{"pid":null,"comm":null},"decision":"allow"}
 ```
 
-and the matching audit event carries `agentId: "unattributed"`, `pid: "unknown"`,
-`comm: "unknown"`. The destination, the byte counts, the decision, and the hash chain are
-all still there. The identity of the caller is not. The README already lists attribution as
-Linux-only for the same underlying reason, that it is a `/proc` read; a container is a
-second way to lose it, on a Linux host that would otherwise have it. It is recorded rather
-than hidden, but a monitor that cannot say which process called out is doing less than the
-one this project describes. If naming the process is why you are here, run Agentwall on the
-host.
+The related audit event uses `agentId: "unattributed"`, `pid: "unknown"`, and `comm: "unknown"`. Destination, byte counts, decision, and hash-chain data remain available.
 
-### Run it
+Run AgentWall on the host if you need reliable host-process attribution.
 
-Build from a checkout:
+### Build the image
+
+**Goal:** Build a local AgentWall container image.
+
+**Command:**
 
 ```bash
 docker build -t agentwall .
 ```
 
-Run the control plane with the dashboard published:
+**Expected result:** Docker creates the local `agentwall` image.
+
+**Common fix:** Run the command from the repository root so Docker can read the build context.
+
+### Start the container
+
+**Goal:** Start the control plane and publish the dashboard.
+
+**Command:**
 
 ```bash
 docker run -d --name agentwall \
@@ -248,57 +317,51 @@ docker run -d --name agentwall \
 curl -fsS http://127.0.0.1:3000/health
 ```
 
-Without `AGENTWALL_OPERATOR_TOKEN`, every route except `/health` answers 401. `/health` is
-unauthenticated so that orchestrators can probe it.
+**Expected result:** Docker starts the container and `/health` returns success.
 
-The CLI is in the image but is not its entrypoint, because the entrypoint is the server
-and `cli.js start` would run it as a child process that never receives `docker stop`:
+**Common fix:** Set `AGENTWALL_OPERATOR_TOKEN` if protected routes return `401`.
+
+Without `AGENTWALL_OPERATOR_TOKEN`, every route except `/health` returns `401`. `/health` stays unauthenticated for orchestrator probes.
+
+The image entrypoint starts the server. Use these commands to run the CLI instead.
 
 ```bash
 docker run --rm --entrypoint node agentwall /app/dist/cli.js --version
 docker run --rm --entrypoint node agentwall /app/dist/cli.js --help
 ```
 
-### Attribution inside a container: measured
+**Expected result:** The commands print the image CLI version or help.
 
-Measured on Linux 6.8 with Docker 29.1.3 and AppArmor enabled, a host client running as
-uid 1001 gid 1001, one HTTPS CONNECT through the container's forward proxy each time.
+**Common fix:** Build or pull the `agentwall` image before you run these commands.
+
+### Understand container attribution limits
+
+These results use Linux 6.8, Docker 29.1.3, and AppArmor. The host client used user ID 1001 and group ID 1001.
 
 | Flags | Result |
 | --- | --- |
-| (default) | `pid null`. The client's socket is not in the container's network namespace at all. |
-| `--network=host` | `pid null`. The socket is found; only one process is visible, so no owner. |
-| `--network=host --pid=host` | `pid null`. 457 of 460 `/proc/<pid>/fd` are unreadable as uid 1000. |
-| `--network=host --pid=host --user 1001` | `pid null`. Bare `--user <uid>` assigns gid 0, and the gid must match too. |
-| `--network=host --pid=host --user 1001:1001` | `pid null`. AppArmor's `docker-default` profile denies the `/proc/<pid>/fd` symlink read. |
-| `--network=host --pid=host --user 1001:1001 --security-opt apparmor=unconfined` | `pid 1300177 comm curl`. Attributes processes of that uid and gid only. |
-| `--network=host --pid=host --user 0 --cap-add=SYS_PTRACE --security-opt apparmor=unconfined` | `pid 1300177 comm curl`. Attributes every process on the host. |
-| `--pid=host --user 1001:1001 --security-opt apparmor=unconfined` | `pid null`. Without `--network=host` the socket is invisible, so the PID namespace does not matter. |
+| default | `pid null`. The socket is outside the container network namespace. |
+| `--network=host` | `pid null`. The socket is visible, but the owner process is not visible. |
+| `--network=host --pid=host` | `pid null`. The container user cannot read most process descriptors. |
+| `--network=host --pid=host --user 1001` | `pid null`. The group ID does not match. |
+| `--network=host --pid=host --user 1001:1001` | `pid null`. The default AppArmor profile denies descriptor link reads. |
+| `--network=host --pid=host --user 1001:1001 --security-opt apparmor=unconfined` | Attribution works for processes with that user ID and group ID. |
+| `--network=host --pid=host --user 0 --cap-add=SYS_PTRACE --security-opt apparmor=unconfined` | Attribution works for all host processes. |
+| `--pid=host --user 1001:1001 --security-opt apparmor=unconfined` | `pid null`. The socket stays outside the container network namespace. |
 
-Two combinations work, and both are expensive:
+The lower-privilege option needs matching user and group IDs. It also needs host network and PID namespaces. It attributes only processes with those IDs.
 
-- `--network=host --pid=host --user <uid>:<gid> --security-opt apparmor=unconfined`
-  attributes only processes running as that uid and gid. Lower privilege, narrower reach.
-- Adding `--user 0 --cap-add=SYS_PTRACE` attributes every process on the host. Count what
-  that run gives up: the network namespace, the PID namespace, the non-root user, and the
-  AppArmor profile, and then add the capability to read any process's descriptors and
-  memory. What remains of the container is the filesystem and the cgroup. Whether that
-  trade is worth making is a judgement about your threat model, but it is not a smaller
-  decision than installing Agentwall on the host directly, and it should not be presented
-  as one.
+The root option also needs `CAP_SYS_PTRACE` and an unconfined AppArmor profile. It can read descriptors and memory for every host process. Use it only after a threat-model review.
 
-`--security-opt apparmor=unconfined` is needed on hosts running Docker's default AppArmor
-profile, which Debian and Ubuntu enable out of the box. The profile permits `ptrace` and
-`read` only against peers in the same profile, so `readdir` of `/proc/<pid>/fd` succeeds
-while `readlink` of its entries returns `EACCES`, and attribution silently returns null
-even for a root container holding `CAP_SYS_PTRACE`.
+Debian and Ubuntu enable Docker's default AppArmor profile. That profile can make attribution return `null` even when the container has `CAP_SYS_PTRACE`.
 
-### Sidecar: attribution without host privileges
+### Use a sidecar for one agent container
 
-Sharing namespaces with one agent container, rather than with the host, gives full
-attribution of that agent and needs neither host namespace nor an AppArmor change, because
-`docker-default` allows the read between two containers under the same profile. Run the
-agent as the same uid and gid as Agentwall.
+**Goal:** Attribute one agent without host namespaces or an AppArmor change.
+
+Run AgentWall and the agent with the same user ID and group ID.
+
+**Command:**
 
 ```bash
 docker run -d --name agentwall \
@@ -315,40 +378,37 @@ docker run --rm \
   your-agent-image
 ```
 
-Recorded egress then names the process:
+**Expected result:** The audit record names the process inside the shared namespaces.
 
 ```json
 {"host":"example.com","port":80,"scheme":"http","method":"GET",
  "client":{"pid":31,"comm":"wget"},"decision":"allow"}
 ```
 
-### Image behaviour worth knowing
+**Common fix:** Use the same user ID and group ID in both containers if attribution remains `null`.
 
-- Runs as uid 1000 (`node`). `/app` is root-owned and unwritable by the process, so code
-  execution inside Agentwall cannot rewrite the dashboard JavaScript it serves.
-- `/app/state` is the only writable path. Mount it. Approvals, approved manifest hashes,
-  and the audit chain live there, and an audit chain that dies with the container is not
-  evidence of much. A run using `--user <uid>:<gid>` must bind-mount a host directory that
-  uid owns.
-- The image runs `examples/container.config.yaml`, which is the monitor-first posture with
-  two changes: it binds `0.0.0.0`, because a container's loopback is private and a server
-  on `127.0.0.1` inside one is unreachable through `-p`, and it uses port 3000. Under
-  `--network=host` there is no network namespace to bound that bind, so pass your own
-  config there. Override with `-e AGENTWALL_CONFIG=/etc/agentwall/config.yaml` and a
-  read-only mount.
-- `HEALTHCHECK` calls `GET /health` with node's built-in `fetch` and checks the response
-  body, not just the status code. If you change the config's port, set
-  `AGENTWALL_HEALTHCHECK_URL` to match or the container reports unhealthy forever.
-- The forward proxy has no default port and does not start until `AGENTWALL_PROXY_PORT` is
-  set. Publish that port too when you enable it.
-- The base image is pinned by digest, so a rebuild produces the same runtime until the pin
-  is deliberately moved.
+### Container file limits
 
-Published images and their signature verification are documented alongside the release
-workflow.
+- The image runs as user ID 1000.
+- `/app` is root-owned and not writable by the process.
+- `/app/state` is the only writable path.
+- Mount `/app/state` to retain approvals, manifest hashes, and the audit chain.
+- A custom user needs a host directory that the same user owns.
+- The image binds `0.0.0.0:3000` because container loopback cannot serve a published port.
+- Use `AGENTWALL_CONFIG` with a read-only mount to supply another configuration.
+- Set `AGENTWALL_HEALTHCHECK_URL` when you change the service port.
+- Set `AGENTWALL_PROXY_PORT` before you expect the forward proxy to start.
+- Publish the proxy port when clients outside the container need it.
+- The base image uses a fixed digest until the project updates that digest.
 
 ## Uninstall
 
-- User-level launcher only: remove `/usr/local/bin/agentwall`
-- Service + common Linux artifacts: `sudo ./scripts/agentwall-uninstall.sh --yes`
+**Goal:** Remove the launcher or the service files.
 
+Remove only the user-level launcher with `rm /usr/local/bin/agentwall`.
+
+Remove the service and common Linux files with `sudo ./scripts/agentwall-uninstall.sh --yes`.
+
+**Expected result:** The selected AgentWall installation files no longer remain.
+
+**Common fix:** Use `sudo` when the installer placed files in system directories.

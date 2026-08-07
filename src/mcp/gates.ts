@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { isDeepStrictEqual } from "util";
 import { AgentContext, Decision, RiskLevel } from "../types";
 import { PolicyEngine } from "../policy/engine";
 import { scanText } from "../planes/identity/dlp";
@@ -6,12 +7,16 @@ import { scanInjection } from "../policy/injection";
 import {
   FrameDirection,
   JsonRpcFrame,
+  McpBaselineDecision,
+  McpBaselineKey,
+  McpBaselineMode,
   McpEvaluation,
   McpGateName,
   McpGateOutcome,
   McpServerIdentity,
   McpToolDescriptor,
 } from "./types";
+import type { McpBaselineStore } from "./baseline";
 
 /**
  * The MCP gate pipeline: one frame in, one decision out.
@@ -118,11 +123,17 @@ export interface GateContext {
   engine: PolicyEngine;
   /**
    * The tool inventory this session has already accepted. Undefined means no
-   * baseline exists yet, which is why the first tools/list of a session reports
-   * no drift: there is nothing for it to have drifted from, and an approval
-   * prompt on every cold start teaches operators to click through approvals.
+   * session baseline exists yet. This remains the complete behavior in off mode.
    */
   approvedTools?: McpToolDescriptor[];
+  /** Persistent inventory behavior. Undefined preserves off-mode compatibility. */
+  baselineMode?: McpBaselineMode;
+  /** Persistent store used by learn and lock mode. */
+  baselineStore?: McpBaselineStore;
+  /** Agent, server, and command identity used to select the persistent inventory. */
+  baselineKey?: McpBaselineKey;
+  /** Most recent inventory comparison, used by the audit composition layer. */
+  baselineDecision?: McpBaselineDecision;
 }
 
 /**
@@ -248,6 +259,41 @@ function gateFrameIntegrity(frame: JsonRpcFrame): McpGateOutcome {
  * on its own, but it is precisely what an attack looks like afterwards, so it
  * goes to a human instead of being reconciled automatically.
  */
+function inventoryDrift(
+  baseline: McpToolDescriptor[],
+  advertised: McpToolDescriptor[],
+  compareFullDescriptor: boolean,
+): string[] {
+  const approvedByName = new Map(baseline.map((tool) => [tool.name, tool]));
+  const advertisedNames = new Set<string>();
+  const drift: string[] = [];
+
+  for (const tool of advertised) {
+    advertisedNames.add(tool.name);
+    const approved = approvedByName.get(tool.name);
+    if (!approved) {
+      drift.push(`"${tool.name}" is new since approval`);
+      continue;
+    }
+    const changed = compareFullDescriptor
+      ? !isDeepStrictEqual(approved, tool)
+      : (approved.description ?? "") !== (tool.description ?? "");
+    if (changed) {
+      drift.push(
+        compareFullDescriptor
+          ? `"${tool.name}" changed since approval`
+          : `"${tool.name}" changed its description since approval`,
+      );
+    }
+  }
+  for (const approved of baseline) {
+    if (!advertisedNames.has(approved.name)) {
+      drift.push(`"${approved.name}" was withdrawn since approval`);
+    }
+  }
+  return drift;
+}
+
 function gateToolInventory(
   frame: JsonRpcFrame,
   direction: FrameDirection,
@@ -277,35 +323,81 @@ function gateToolInventory(
     );
   }
 
-  const baseline = ctx.approvedTools;
-  if (baseline) {
-    const approvedByName = new Map(baseline.map((tool) => [tool.name, tool]));
-    const advertisedNames = new Set<string>();
-    const drift: string[] = [];
-
-    for (const tool of tools) {
-      advertisedNames.add(tool.name);
-      const approved = approvedByName.get(tool.name);
-      if (!approved) {
-        drift.push(`"${tool.name}" is new since approval`);
-        continue;
-      }
-      if ((approved.description ?? "") !== (tool.description ?? "")) {
-        drift.push(`"${tool.name}" changed its description since approval`);
-      }
-    }
-    for (const approved of baseline) {
-      if (!advertisedNames.has(approved.name)) {
-        drift.push(`"${approved.name}" was withdrawn since approval`);
-      }
-    }
-
+  const baselineMode = ctx.baselineMode ?? "off";
+  if (baselineMode === "off") {
+    const sessionBaseline = ctx.approvedTools;
+    const drift = sessionBaseline === undefined
+      ? []
+      : inventoryDrift(sessionBaseline, tools, false);
+    ctx.baselineDecision = sessionBaseline === undefined
+      ? { state: "missing", drift: [] }
+      : drift.length === 0
+        ? { state: "matched", drift: [] }
+        : { state: "drift", drift };
     if (drift.length > 0) {
       decision = maxDecision(decision, "approve");
       riskLevel = maxRisk(riskLevel, "high");
       detectionIds.push("det.mcp.tool.drift");
       run.markers["mcpToolDrift"] = "true";
       reasons.push(`Advertised tool inventory drifted from the approved set: ${drift.join("; ")}`);
+    }
+  } else {
+    if (ctx.baselineStore === undefined || ctx.baselineKey === undefined) {
+      throw new Error(`${baselineMode} mode needs a baseline store and baseline key`);
+    }
+
+    let baseline: McpToolDescriptor[] | undefined;
+    try {
+      baseline = ctx.baselineStore.read(ctx.baselineKey);
+    } catch (error) {
+      const warning = error instanceof Error ? error.message : String(error);
+      ctx.baselineDecision = { state: "missing", drift: [warning] };
+      if (baselineMode === "lock") throw error;
+      reasons.push(`${warning}; learn mode left the file unchanged`);
+      return {
+        gate: "tool_inventory",
+        decision,
+        riskLevel,
+        reasons,
+        detectionIds: dedupe(detectionIds),
+      };
+    }
+
+    if (baseline === undefined) {
+      if (decision === "deny") {
+        ctx.baselineDecision = { state: "missing", drift: [] };
+      } else if (baselineMode === "learn") {
+        try {
+          ctx.baselineStore.write(ctx.baselineKey, tools);
+          ctx.baselineDecision = { state: "learned", drift: [] };
+          reasons.push(`Learned the first clean inventory with ${tools.length} tool(s)`);
+        } catch (error) {
+          const warning = error instanceof Error ? error.message : String(error);
+          ctx.baselineDecision = { state: "missing", drift: [warning] };
+          reasons.push(`The clean inventory was not learned: ${warning}`);
+        }
+      } else {
+        const drift = tools.map((tool) => `"${tool.name}" is new because no baseline exists`);
+        if (drift.length === 0) drift.push("No accepted baseline exists for this server");
+        ctx.baselineDecision = { state: "missing", drift };
+        decision = maxDecision(decision, "approve");
+        riskLevel = maxRisk(riskLevel, "high");
+        detectionIds.push("det.mcp.tool.drift");
+        run.markers["mcpToolDrift"] = "true";
+        reasons.push(`No locked tool inventory exists: ${drift.join("; ")}`);
+      }
+    } else {
+      const drift = inventoryDrift(baseline, tools, true);
+      ctx.baselineDecision = drift.length === 0
+        ? { state: "matched", drift: [] }
+        : { state: "drift", drift };
+      if (drift.length > 0) {
+        decision = maxDecision(decision, "approve");
+        riskLevel = maxRisk(riskLevel, "high");
+        detectionIds.push("det.mcp.tool.drift");
+        run.markers["mcpToolDrift"] = "true";
+        reasons.push(`Advertised tool inventory drifted from the locked set: ${drift.join("; ")}`);
+      }
     }
   }
 
