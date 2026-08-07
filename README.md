@@ -1,272 +1,125 @@
-# AgentWall
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/brand/agentwall-logo-reverse.svg">
+    <img src="assets/brand/agentwall-logo-primary.svg" width="480" alt="Agentwall">
+  </picture>
+</p>
 
-AgentWall is a local policy and evidence layer for agent actions.
-It checks network, tool, content, identity, and runtime decisions.
-It records each decision in a hash-chained audit file.
+<p align="center"><strong>Agentwall gives operators control of AI agent actions before those actions become real.</strong></p>
 
-## What AgentWall does
+<p align="center">
+  <a href="https://github.com/repsecure/agentwall/actions/workflows/ci.yml"><img src="https://github.com/repsecure/agentwall/actions/workflows/ci.yml/badge.svg" alt="CI status"></a>
+  <a href="https://github.com/repsecure/agentwall/actions/workflows/codeql.yml"><img src="https://github.com/repsecure/agentwall/actions/workflows/codeql.yml/badge.svg" alt="CodeQL status"></a>
+  <a href="docs/install.md#requirements"><img src="https://img.shields.io/badge/Node.js-22.12%2B-5FE6C8?style=flat-square" alt="Node.js 22.12 or newer"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-313B49?style=flat-square" alt="Apache 2.0 license"></a>
+  <a href="SECURITY.md"><img src="https://img.shields.io/badge/security-private%20reporting-5FE6C8?style=flat-square" alt="Private security reporting policy"></a>
+</p>
 
-AgentWall provides three enforcement modes.
-`monitor` records decisions without blocking.
-`guarded` enforces matching deny rules.
-`strict` allows only configured destinations.
+<p align="center">
+  <a href="#run-from-source"><strong>Run from source</strong></a>
+  &nbsp;·&nbsp;
+  <a href="docs/architecture.md"><strong>Read the architecture</strong></a>
+</p>
 
-AgentWall also provides approvals, session controls, per-agent credentials, runtime limits, and independent audit verification.
-The local console exposes each supported service mutation through a typed action.
+![Agentwall operator console showing Review required posture and a simulated bash_exec approval for sim-operator.](docs/assets/agentwall-console-hero.png)
 
-## What AgentWall does not do
+## Enforce. Approve. Prove.
 
-AgentWall does not control traffic that bypasses its proxy or Linux perimeter.
-The default proxy route depends on standard proxy environment variables.
-A process can ignore those variables.
+### [Enforce](docs/enforcement.md)
 
-AgentWall does not prove that every action reached the audit writer.
-A valid hash chain proves later record integrity, not record completeness.
+Apply network, tool, content, identity, MCP, and runtime policy before an action proceeds. Default proxy capture remains cooperative unless Linux host controls add a stronger boundary.
 
-AgentWall does not provide a clustered control plane.
-Fleet identity, policy, and budgets have per-instance scope.
+### [Approve](docs/operator-guide.md)
 
-See [documented limits](docs/limits.md) before relying on these controls.
+Route high-risk actions through typed operator decisions with explicit reasons and next actions. These controls apply only inside Agentwall decision paths.
 
-## Install and setup
+### [Prove](docs/verification.md)
 
-AgentWall requires Node.js 22.12 or newer.
-Linux provides process attribution, the perimeter, and the sandbox.
-Other core service features run where the supported Node.js runtime runs.
+Keep hash-chained records and verify them with independent implementations. Verification proves the integrity of written records, not the completeness of capture.
 
-```bash
-npm install -g @repsecure/agentwall
-agentwall ui
-```
+## Run from source
 
-`agentwall ui` starts the bootstrap UI on `http://127.0.0.1:3001` by default.
-Use **Setup** to create local configuration, policy, credentials, and an audit path.
-Setup uses monitor mode and loopback access by default.
-It does not replace existing files without `--force`.
-
-The direct CLI path is:
-
-```bash
-agentwall setup
-agentwall start
-agentwall doctor
-```
-
-`agentwall init` remains available for the earlier starter-file workflow.
-
-```bash
-agentwall init --mode monitor
-agentwall doctor
-```
-
-From a source checkout, run `node dist/cli.js` where this page uses `agentwall`.
-The unscoped npm package `agentwall` is a different, unrelated project. This one is
-`@repsecure/agentwall`.
-
-`init` writes `agentwall.config.yaml` and `policy.yaml` without overwriting work you already
-have. `doctor` checks the install and reports **capture**: which declared agent was last seen
-and at what binding tier, its standing against budget, and any egress no declared agent claims.
-Exit 0 clear, 1 traffic policy said to refuse reached the network, 2 it cannot tell the two
-apart, as it says plainly rather than guessing.
-
-From a checkout instead, run `node dist/cli.js` wherever this file says `agentwall`.
+> The public npm package is not released yet. Use the source install below.
 
 ```bash
 git clone https://github.com/repsecure/agentwall.git
-cd agentwall && npm install && npm run build
+cd agentwall
+npm ci
+npm run build
+node dist/cli.js version
+node dist/cli.js ui
 ```
 
-## First run
+Agentwall requires Node.js 22.12 or newer. The install, build, and version commands must exit with status 0. The UI stays active and prints its loopback URL.
 
-1. Run `agentwall ui`.
-2. Open the printed local URL.
-3. Select **Setup** and keep monitor mode.
-4. Select **Start service**.
-5. Open the authenticated dashboard link.
-6. Run `agentwall doctor` after the agent sends traffic.
+After setup and service start, run `node dist/cli.js doctor`. It exits 0 for clear, 1 for observed blocked traffic, or 2 when it cannot distinguish the state.
 
-The dashboard has Status, Approvals, Policy, Agents, and Evidence areas.
-The Operations view contains host and process controls.
-Each action shows its matching offline CLI command.
+`@repsecure/agentwall` is the intended scoped package name. Registry publication remains a separate approval-gated release action.
 
-For a manual environment, use these variables before `agentwall start`.
-```bash
-export AGENTWALL_OPERATOR_TOKEN="$(openssl rand -hex 32)"   # without this, every route 401s
-export AGENTWALL_AUDIT_FILE="$PWD/audit.jsonl"              # without this, the chain is stdout only
-export AGENTWALL_PROXY_PORT=8899                            # without this, the proxy does not start
+## Capabilities and limits
 
-agentwall start
-```
-
-Send test traffic through the proxy from another shell.
-
-```bash
-https_proxy=http://127.0.0.1:8899 curl -s -o /dev/null https://example.com/
-tail -1 audit.jsonl
-```
-
-A proxied request appends a chained record.
-
-```json
-{"agentId":"curl","plane":"network","action":"egress:https","decision":"allow",
- "metadata":{"host":"example.com","port":"443","pid":"1101858","comm":"curl"},
- "integrity":{"chainIndex":1,"hash":"0e86f943...","previousHash":"4678da51...",
-              "algorithm":"sha256","status":"chained-local","canon":"cu1"}}
-```
-
-## Feature summary
-
-### Typed local operation
-
-The bootstrap UI performs setup, initialization, onboarding, start, development start, and stop.
-The running dashboard prepares client-owned stdio wrapper commands and performs every other supported service-side mutation through `POST /api/operator/actions`.
-The API rejects unknown actions, shell syntax, path traversal, and undeclared executables.
-
-**Limit:** The bootstrap UI manages only its fixed AgentWall child process.
-The running dashboard needs the service.
-
-### Network policy and content checks
-
-The forward proxy checks destinations and plaintext HTTP content.
-It can scan paths, headers, request bodies, and response bodies.
-A denied request opens no upstream socket.
-
-**Limit:** Each body scan stops at 256 KiB.
-AgentWall forwards the remaining bytes and records partial visibility.
-Event stream bodies pass without body inspection, but their headers remain visible.
-
-### TLS controls
-
-Without interception, AgentWall sees the `CONNECT` authority and available TLS SNI.
-Interception can decrypt configured hosts after a runtime trusts the local CA.
-Interception is off by default.
-
-**Limit:** HTTPS paths, headers, and bodies remain opaque without interception.
-Encrypted ClientHello or missing SNI can also hide the TLS hostname.
-The CA key holder can impersonate trusted sites for the configured runtime.
-
-### Process attribution
-
-On Linux, AgentWall maps a proxy socket through `/proc` to its PID and process name.
-Each record states the observed identity signal.
-
-**Limit:** Process attribution is Linux-only.
-A container can hide the required host namespaces or descriptors.
-Attribution failure records `pid: null` and does not block traffic.
-
-### Linux perimeter
-
-`agentwall perimeter` can redirect one UID's outbound TCP through the transparent proxy.
-`agentwall perimeter plan` prints the network rules before installation.
-Install, run, and rollback need root.
-
-**Limit:** The perimeter needs Linux and `nftables`.
-It permits one DNS resolver or blocks DNS.
-Permitted DNS remains a possible data path.
-
-### Linux sandbox
-
-`agentwall sandbox` applies Landlock and seccomp controls to one process.
-Probe and plan commands show the current kernel support and gaps.
-
-**Limit:** TCP restrictions need Landlock ABI 4 and Linux 6.7 or newer.
-The sandbox does not create a network namespace.
-
-### MCP wrapper
-
-`agentwall mcp wrap` checks JSON-RPC frames over stdio or Streamable HTTP.
-Use `agentwall mcp status` to list HTTP wrappers managed by the running service.
-Use `agentwall mcp stop <wrapper-id>` to stop one managed HTTP wrapper.
-The local dashboard provides the same start, list, and stop actions.
-Inventory baseline modes are `off`, `learn`, and `lock`.
-Lock mode sends inventory drift to approval.
-
-**Limit:** The HTTP wrapper has an 8 MiB default request limit.
-A baseline records inventory shape, but it does not prove safe server code.
-
-### Approvals and session controls
-
-The approval modes are `auto`, `always`, and `never`.
-Operators can pause, resume, terminate, boost, or reset a session through typed actions.
-Terminate needs explicit confirmation.
-
-**Limit:** These controls apply only inside AgentWall decision paths.
-They do not terminate an external process or close a direct socket.
-
-### Fleet credentials and budgets
-
-AgentWall can issue, rotate, and revoke per-agent credentials.
-It can enforce per-agent destination and budget rules in one instance.
-A new secret appears once and never enters the audit chain.
-
-**Limit:** Credentials separate cooperating agents, but not processes that can read the same secret.
-Budgets and policy state do not synchronize across instances.
-The transparent path carries no fleet identity.
-
-### Audit evidence
-
-AgentWall writes SHA-256 hash-chained JSONL records.
-Rotation manifests link closed segments.
-Signed checkpoints can anchor the current history outside the host.
-Set `audit.anchorIntervalMs` to a positive value to run anchors on the service schedule.
-Scheduled anchors require `AGENTWALL_AUDIT_FILE`.
-The service logs each result or failure and stops the schedule during shutdown.
-
-A verifier written by the same people in the same language as the writer only proves the code
-agrees with itself. Agentwall ships three independent verifiers in Go, Rust, and Python. A
-corpus of deliberate forgeries runs all four against each other on every push.
-
-```bash
-agentwall verify                                                   # bundled TypeScript verifier
-cd verifier && go build -o agentwall-verify . && ./agentwall-verify --audit <path>
-```
-
-The verifier reports three separate layers, because they fail independently and one verdict would hide which guarantee you actually have.
-
-```
-PASS  chained   records link within each segment, so an edit inside one is detectable
-PASS  linked    segments link and match their files, so replacing one is detectable
-PASS  anchored  a fingerprint exists off-box, so a local rewrite shows
-```
-
-**Limit:** A pending anchor is not confirmed evidence.
-An anchor detects later changes, but it cannot prove that the log is complete.
-
-## Limits at a glance
-
-| Limit | Effect |
+| Area | Implemented control and documented boundary |
 | --- | --- |
-| Cooperative capture by default | A process that ignores proxy settings can bypass AgentWall. |
-| TLS content is opaque by default | Enable interception only for reviewed hosts and runtimes. |
-| 256 KiB body scan | Content after the prefix is not inspected. |
-| Event stream body bypass | AgentWall inspects headers, but not stream body events. |
-| Linux-only attribution | Other platforms record the destination without a verified PID. |
-| DNS perimeter gap | Permitted DNS can carry data outside the TCP proxy path. |
-| Per-instance fleet scope | Instances do not share live budgets, policy state, or credentials automatically. |
-| Audit completeness gap | Verification detects changes to written records, not missing events. |
+| [Policy](docs/feature-reference.md) | Applies network, tool, content, identity, and runtime decisions. [Default capture can be bypassed](docs/limits.md). |
+| [Operator control](docs/feature-reference.md) | Provides typed approvals and session actions. [Direct external actions stay outside these paths](docs/limits.md). |
+| [Evidence](docs/feature-reference.md) | Writes hash-chained records and external anchor data. [Integrity does not prove completeness](docs/limits.md). |
+| [Agent identity](docs/feature-reference.md) | Issues credentials and applies per-agent budgets. [State and identity have per-instance scope](docs/limits.md). |
+| [MCP](docs/feature-reference.md) | Checks JSON-RPC and detects inventory drift. [A baseline does not prove safe server code](docs/limits.md). |
+| [Linux host controls](docs/feature-reference.md) | Adds a perimeter and process sandbox. [Kernel and platform support set the boundary](docs/limits.md). |
 
-## Documentation
+## Decisions and evidence in context
 
-- [User guide](docs/user-guide.md) gives first-run procedures and common fixes.
-- [Operator guide](docs/operator-guide.md) maps every CLI action to its UI workflow.
-- [Feature reference](docs/feature-reference.md) lists each capability and its limit.
-- [Glossary](docs/glossary.md) defines the public terms.
-- [Install guide](docs/install.md) gives package, source, and platform details.
-- [Onboarding guide](docs/onboarding.md) creates and verifies one agent identity.
-- [Enforcement guide](docs/enforcement.md) explains monitor, guarded, and strict modes.
-- [Sandbox guide](docs/sandbox.md) explains Linux process controls.
-- [Architecture](docs/architecture.md) describes the request and control paths.
-- [Threat model](docs/threat-model.md) states protected and unprotected paths.
-- [API and configuration reference](docs/reference.md) lists routes and settings.
-- [Enterprise roadmap](docs/enterprise-roadmap.md) is a roadmap and does not describe shipped behavior.
+### A typed approval at the point of risk
 
-The [documentation index](docs/README.md) links the detailed evidence and control documents.
+The built-in incident simulation marks every synthetic record as simulation data.
 
-## Security and license
+![Critical bash_exec approval awaiting operator review for sim-operator in the built-in incident simulation.](docs/assets/agentwall-approval-in-action.png)
 
-Report a vulnerability through the private process in [SECURITY.md](SECURITY.md).
-Do not put a vulnerability report in a public issue.
+### Evidence with verification controls
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) and [GOVERNANCE.md](GOVERNANCE.md) before you propose a change.
-AgentWall uses the Apache-2.0 license.
-See [LICENSE](LICENSE) and [NOTICE](NOTICE).
+The evidence view keeps simulated events beside the real chain and anchor status.
+
+![Agentwall evidence list showing simulated token replay, blocked C2 beacon, shell escalation, secret match, and containment records for sim-operator.](docs/assets/agentwall-evidence-verification.png)
+
+## Architecture flow
+
+```mermaid
+flowchart TD
+    A[Agent action] --> P[Policy decision]
+    P -->|allow or deny| H[Hash-chained audit record]
+    P -->|approval required| O[Typed operator decision]
+    O --> R[Resolved policy decision]
+    R --> H
+    H --> V[Independent verification]
+    H --> X[External anchor]
+```
+
+See the [architecture](docs/architecture.md) for request paths, control paths, and deployment boundaries.
+
+## Assurance evidence and trust boundaries
+
+### Evidence in the repository
+
+- The [verification design](docs/verification.md) covers TypeScript, Go, Rust, and Python verifier implementations.
+- The [conformance harness](scripts/conformance.js) runs the same forgery corpus across all four implementations.
+- The [CodeQL workflow](.github/workflows/codeql.yml) and [gitleaks workflow](.github/workflows/security.yml) define static and secret scans.
+- The [release workflow](.github/workflows/release.yml) defines checksums and provenance for approved releases. Its presence does not prove a public package exists.
+- The [threat model](docs/threat-model.md) and [limits](docs/limits.md) state the protected and unprotected paths.
+
+### Trust boundaries
+
+- A process that ignores proxy configuration can bypass default proxy capture.
+- TLS content stays opaque without reviewed interception for configured hosts and runtimes.
+- Audit verification proves the integrity of written records, not record completeness.
+- Fleet identity, policy, credentials, and budgets have per-instance scope.
+
+## Documentation and project trust
+
+| Need | Path |
+| --- | --- |
+| Start | [User guide](docs/user-guide.md), [install guide](docs/install.md), and [documentation index](docs/README.md) |
+| Operate | [Operator guide](docs/operator-guide.md) and [feature reference](docs/feature-reference.md) |
+| Understand | [Architecture](docs/architecture.md), [threat model](docs/threat-model.md), and [limits](docs/limits.md) |
+| Report a vulnerability | Use the private process in [SECURITY.md](SECURITY.md). Do not use a public issue. |
+| Contribute | Read [CONTRIBUTING.md](CONTRIBUTING.md) and [GOVERNANCE.md](GOVERNANCE.md). |
+| License | Agentwall uses [Apache-2.0](LICENSE). See the [NOTICE](NOTICE). |

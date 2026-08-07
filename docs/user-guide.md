@@ -10,16 +10,23 @@ This guide gives a direct CLI command beside each UI procedure.
 
 ## Install AgentWall
 
-**Goal:** Install the AgentWall command for the current machine.
+**Goal:** Build Agentwall from source and install the local launcher.
+
+The public npm package is not released yet. Use the source path.
 
 ```bash
-npm install -g @repsecure/agentwall
+git clone https://github.com/repsecure/agentwall.git
+cd agentwall
+npm ci
+npm run build
+./scripts/agentwall-install.sh --yes
+agentwall version
 ```
 
-**Expected result:** `agentwall version` prints the installed version.
+**Expected result:** `agentwall version` prints the built version.
 
-**Common failure:** A permission error stops the global install.
-Use a user-owned npm prefix, then run the command again.
+**Common failure:** The default launcher path needs permission.
+Use `./scripts/agentwall-install.sh --prefix "$HOME/.local/bin" --yes`, then add that directory to `PATH`.
 
 ## Open the first-run UI
 

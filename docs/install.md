@@ -20,7 +20,7 @@ AgentWall reads `/proc` to map a connection to its source process. This attribut
 ```bash
 git clone https://github.com/repsecure/agentwall
 cd agentwall
-npm install
+npm ci
 npm run build
 ```
 

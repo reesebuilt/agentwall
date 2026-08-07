@@ -26,6 +26,7 @@
     "conformance": "node scripts/conformance.js",
     "check:public-copy": "node scripts/check-public-copy.js",
     "check:brand": "node scripts/check-brand-assets.js",
+    "check:readme": "node scripts/check-readme.js README.md",
     "lint": "tsc --noEmit",
     "cli": "node dist/cli.js",
     "init": "node dist/cli.js init",
