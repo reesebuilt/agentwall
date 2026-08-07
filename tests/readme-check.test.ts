@@ -24,6 +24,7 @@ function themeAwarePicture(): string {
     `  <source media=\"(prefers-color-scheme: dark)\" srcset=\"${reverseLogo}\">`,
     `  <img src=\"${primaryLogo}\" alt=\"Agentwall\">`,
     "</picture>",
+    "",
   ].join("\n");
 }
 
@@ -84,6 +85,20 @@ describe("README contract checker", () => {
     for (const image of manifestImages) {
       expect(result.stderr).toContain(`${image}: README does not reference this manifest image`);
     }
+  });
+
+  it("rejects a manifest image target inside a four-space indented code block", () => {
+    const markdown = [
+      themeAwarePicture(),
+      `![Product image 1](${manifestImages[0]})`,
+      `![Product image 2](${manifestImages[1]})`,
+      `    ![Not rendered](${manifestImages[2]})`,
+    ].join("\n");
+
+    const result = runChecker(writeRootFixture(markdown));
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain(`${manifestImages[2]}: README does not reference this manifest image`);
   });
 
   it("rejects a supplied README path outside the repository before reading it", () => {

@@ -50,14 +50,33 @@ function addTarget(targets, rawTarget) {
   return target;
 }
 
+function stripIndentedCodeBlocks(markdown) {
+  const output = [];
+  let insideRawHtml = false;
+  for (const line of markdown.split('\n')) {
+    if (!insideRawHtml && /^ {0,3}<\/?[A-Za-z][A-Za-z0-9-]*(?:\s|>|\/>)/.test(line)) {
+      insideRawHtml = true;
+    }
+    if (insideRawHtml) {
+      output.push(line);
+      if (line.trim() === '') insideRawHtml = false;
+    } else {
+      output.push(/^(?: {4}|\t)/.test(line) ? '' : line);
+    }
+  }
+  return output.join('\n');
+}
+
 function collectTargets(markdown) {
   const targets = new Set();
   const imageTargets = new Set();
-  const renderedMarkup = markdown
-    .replace(/<!--[\s\S]*?-->/g, '')
-    .replace(/```[\s\S]*?```/g, '')
-    .replace(/~~~[\s\S]*?~~~/g, '')
-    .replace(/`[^`\n]*`/g, '');
+  const renderedMarkup = stripIndentedCodeBlocks(
+    markdown
+      .replace(/<!--[\s\S]*?-->/g, '')
+      .replace(/```[\s\S]*?```/g, '')
+      .replace(/~~~[\s\S]*?~~~/g, '')
+      .replace(/`[^`\n]*`/g, ''),
+  );
 
   for (const match of renderedMarkup.matchAll(/!\[[^\]]*\]\(([^)]+)\)/g)) {
     const target = addTarget(targets, match[1]);
