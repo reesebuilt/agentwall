@@ -109,7 +109,7 @@ fn every_corpus_case_matches_the_formats_verdict() {
         mismatches.len(),
         mismatches.join("\n  ")
     );
-    assert_eq!(checked, 26, "the corpus should hold 26 cases");
+    assert_eq!(checked, 27, "the corpus should hold 27 cases");
 }
 
 #[test]

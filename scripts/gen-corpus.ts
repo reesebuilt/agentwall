@@ -36,6 +36,9 @@
  *       Cannot walk past the pending attestation tag it hardcoded.
  *   g7  two anchor passes over a growing live file.
  *       Assumes one anchor per log, or overwrites the first pass's proof with the second.
+ *   g8  a stale writer lock beside an otherwise healthy anchored chain.
+ *       Walks audit.jsonl.lock as a rotated segment and condemns a chain that verifies, over
+ *       a file every live deployment holds open for as long as it runs.
  *
  *   b1  one decision flipped from deny to allow, hash left alone.
  *       Trusts the hash field the record carries instead of recomputing it.
@@ -531,6 +534,23 @@ async function main(): Promise<void> {
 		writeLines(LIVE, [...readLines(LIVE), ...grown.lines]);
 		await anchor(pendingProof(`${CALENDAR}/timestamp`), at);
 		if (anchorRecords().length !== 2) throw new Error("second anchor pass wrote no record");
+		return ANCHORED_OK;
+	});
+
+	await buildCase("g8-writer-lock-beside-a-healthy-chain", async (at) => {
+		// A chain that already passes, recorded the way l1 records it, so the lock is the only
+		// thing this case adds to the verdict.
+		await baseline(at);
+		writeAnchorRecords(anchorRecords().map((r) => ({ ...r, status: "confirmed" })));
+		// The single-writer lock sits beside the chain for as long as a deployment runs, and a
+		// hard kill leaves it behind. Its body is stated directly rather than taken from
+		// claimWriter, which stores the running process's pid and would differ every run. JSON
+		// rather than that bare pid, because a lock that parses is the one that gets past a
+		// discovery filter asking only whether a neighbouring file is JSON.
+		writeFileSync(
+			`${LIVE}.lock`,
+			JSON.stringify({ pid: 12345, host: "example", acquiredAt: "2026-08-06T00:00:00.000Z" }) + "\n",
+		);
 		return ANCHORED_OK;
 	});
 

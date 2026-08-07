@@ -141,7 +141,7 @@ jobs:
       - name: Lint
         run: cargo clippy --all-targets -- -D warnings
 
-      # Runs the unit tests, the published crypto vectors, and the 26 corpus cases in process
+      # Runs the unit tests, the published crypto vectors, and the 27 corpus cases in process
       # against expected.json. The conformance job compares implementations against each other;
       # this one holds this implementation against the format on its own, so a Rust regression
       # is attributable here rather than surfacing as an unexplained cross-language mismatch.
