@@ -484,7 +484,7 @@ describe("verify", () => {
 
 		const r = resolvePaths({ auditPath: audit });
 		const line = JSON.parse(readFileSync(r.anchorLogPath, "utf8").trim());
-		const claimed = `0${line.digest.slice(1)}`;
+		const claimed = `${line.digest[0] === "0" ? "1" : "0"}${line.digest.slice(1)}`;
 		writeFileSync(r.anchorLogPath, JSON.stringify({ ...line, digest: claimed }) + "\n");
 
 		const anchored = runVerify({ auditPath: audit }).layers.find((l) => l.name === "anchored");

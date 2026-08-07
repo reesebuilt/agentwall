@@ -178,7 +178,7 @@ describe("bootstrap UI", () => {
       expect(response.statusCode).toBe(202);
       expect(spawnMock).toHaveBeenCalledWith(
         process.execPath,
-        [join(directory, "dist", "index.js")],
+        [join(__dirname, "..", "dist", "index.js")],
         expect.objectContaining({ cwd: directory, stdio: "inherit" }),
       );
       expect(JSON.stringify(response.json())).not.toContain("AGENTWALL_OPERATOR_TOKEN");
@@ -209,7 +209,7 @@ describe("bootstrap UI", () => {
       expect(response.statusCode).toBe(202);
       expect(spawnMock).toHaveBeenCalledWith(
         process.execPath,
-        [join(directory, "node_modules", "ts-node", "dist", "bin.js"), "src/index.ts"],
+        [join(__dirname, "..", "node_modules", "ts-node", "dist", "bin.js"), join(__dirname, "..", "src", "index.ts")],
         expect.objectContaining({ cwd: directory, stdio: "inherit" }),
       );
     } finally {

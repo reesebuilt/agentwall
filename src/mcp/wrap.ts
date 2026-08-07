@@ -8,6 +8,7 @@ import { DetectionMapping, detectionCatalog } from "../policy/detections";
 import { PolicyEngine } from "../policy/engine";
 import { AgentContext, DetectionMatch, PolicyResult, ProvenanceTag } from "../types";
 import { GateContext, evaluateFrame, recordToolInventory } from "./gates";
+import { parseMcpToolInventoryPage, type McpToolInventoryParseResult } from "./inventory";
 import { McpBaselineStore } from "./baseline";
 import { McpHttpHandle, startMcpHttpListener } from "./http";
 import { runStdioWrapper } from "./stdio";
@@ -100,6 +101,7 @@ export interface WrapOptions {
 interface PendingCall {
   method: string;
   toolName?: string;
+  inventorySequenceId?: string;
 }
 
 /**
@@ -234,31 +236,6 @@ function classifyFrame(frame: JsonRpcFrame, inFlight: Map<string, PendingCall>):
   return remembered;
 }
 
-/**
- * Read the tool list out of a `tools/list` result.
- *
- * Sniffed by shape rather than by the method of the request it answers, because a response
- * carries no method and the correlation map is bounded: an evicted mapping must not cost us the
- * inventory baseline. A malformed entry is skipped rather than defaulted, so it cannot enter the
- * baseline as a tool named "undefined" that a later comparison then treats as approved.
- */
-function parseToolDescriptors(result: unknown): McpToolDescriptor[] {
-  if (result === null || typeof result !== "object" || !("tools" in result)) return [];
-  if (!Array.isArray(result.tools)) return [];
-  const listed: readonly unknown[] = result.tools;
-
-  const tools: McpToolDescriptor[] = [];
-  for (const entry of listed) {
-    if (entry === null || typeof entry !== "object") continue;
-    if (!("name" in entry) || typeof entry.name !== "string" || entry.name.length === 0) continue;
-
-    const tool: McpToolDescriptor = { name: entry.name };
-    if ("description" in entry && typeof entry.description === "string") tool.description = entry.description;
-    if ("inputSchema" in entry) tool.inputSchema = entry.inputSchema;
-    tools.push(tool);
-  }
-  return tools;
-}
 
 /**
  * Project a gate evaluation onto the audit record's detection list.
@@ -446,11 +423,26 @@ function createFrameHandling(args: {
   };
 
   const inFlight = new Map<string, PendingCall>();
-  // Accumulated across pages: tools/list is cursor-paginated, so page two must not erase page
-  // one. Merging by name also means a tool that stops being advertised stays in the baseline.
-  // Forgetting it would hand a re-introduced tool a clean first appearance, which is exactly the
-  // sequence a poisoned tool would use to walk past a drift check.
-  const advertised = new Map<string, McpToolDescriptor>();
+  interface InventorySequence {
+    id: string;
+    advertised: Map<string, McpToolDescriptor>;
+  }
+  const inventorySequences = new Map<string, InventorySequence>();
+  const cursorSequences = new Map<string, string>();
+
+  const clearInventoryContext = (): void => {
+    ctx.inventoryCandidate = undefined;
+    ctx.inventoryComplete = undefined;
+    ctx.inventoryError = undefined;
+  };
+
+  const discardInventorySequence = (sequenceId: string | undefined): void => {
+    if (sequenceId === undefined) return;
+    inventorySequences.delete(sequenceId);
+    for (const [cursor, owner] of cursorSequences) {
+      if (owner === sequenceId) cursorSequences.delete(cursor);
+    }
+  };
 
   const record = (recordArgs: {
     /** Audit action, `mcp:<method>` for an evaluated frame. */
@@ -517,7 +509,74 @@ function createFrameHandling(args: {
 
   return {
     async handleFrame(frame: JsonRpcFrame, direction: FrameDirection): Promise<FrameAction> {
+      clearInventoryContext();
       const call = classifyFrame(frame, inFlight);
+      let inventorySequence: InventorySequence | undefined;
+      let inventoryPage: McpToolInventoryParseResult | undefined;
+      let inventoryResponseEnded = false;
+
+      if (direction === "client_to_server" && frame.method === "tools/list") {
+        const key = requestKey(frame.id);
+        const params = frame.params;
+        let cursor: unknown;
+        if (params !== null && typeof params === "object" && "cursor" in params) {
+          cursor = params.cursor;
+        }
+
+        if (key === null) {
+          ctx.inventoryError = "Malformed MCP tools/list request: a correlatable request id is required";
+        } else if (cursor === undefined) {
+          if (inventorySequences.size >= MAX_TRACKED_REQUESTS) {
+            ctx.inventoryError = "Too many incomplete MCP tool inventory sequences";
+          } else {
+            inventorySequence = { id: randomUUID(), advertised: new Map() };
+            inventorySequences.set(inventorySequence.id, inventorySequence);
+            call.inventorySequenceId = inventorySequence.id;
+          }
+        } else if (typeof cursor !== "string" || cursor.length === 0) {
+          ctx.inventoryError = "Malformed MCP tools/list cursor: expected a non-empty string";
+        } else {
+          const sequenceId = cursorSequences.get(cursor);
+          inventorySequence = sequenceId === undefined ? undefined : inventorySequences.get(sequenceId);
+          if (inventorySequence === undefined) {
+            ctx.inventoryError = `Unknown or expired MCP tools/list cursor "${cursor}"`;
+          } else {
+            cursorSequences.delete(cursor);
+            call.inventorySequenceId = inventorySequence.id;
+          }
+        }
+      }
+
+      if (direction === "server_to_client" && call.method === "tools/list") {
+        inventorySequence = call.inventorySequenceId === undefined
+          ? undefined
+          : inventorySequences.get(call.inventorySequenceId);
+
+        if (Object.prototype.hasOwnProperty.call(frame, "error")) {
+          inventoryResponseEnded = true;
+        } else if (inventorySequence === undefined) {
+          ctx.inventoryError = "MCP tools/list response has no active inventory sequence";
+        } else {
+          inventoryPage = parseMcpToolInventoryPage(frame.result);
+          if (inventoryPage.status === "not-inventory") {
+            ctx.inventoryError = "Malformed MCP tools/list response: result does not contain a tool inventory";
+          } else if (inventoryPage.status === "malformed") {
+            ctx.inventoryError = `Malformed MCP tools/list response: ${inventoryPage.error}`;
+          } else {
+            const candidate = new Map(inventorySequence.advertised);
+            for (const tool of inventoryPage.page.tools) candidate.set(tool.name, tool);
+            const nextCursor = inventoryPage.page.nextCursor;
+            const cursorOwner = nextCursor === undefined ? undefined : cursorSequences.get(nextCursor);
+            if (cursorOwner !== undefined && cursorOwner !== inventorySequence.id) {
+              ctx.inventoryError = `MCP tools/list cursor "${nextCursor}" belongs to another inventory sequence`;
+            } else {
+              ctx.inventoryCandidate = [...candidate.values()];
+              ctx.inventoryComplete = nextCursor === undefined;
+            }
+          }
+        }
+      }
+
       const evaluation = evaluateFrame(frame, direction, ctx);
       record({
         action: `mcp:${call.method}`,
@@ -528,19 +587,19 @@ function createFrameHandling(args: {
         gate: evaluation.blockingGate,
       });
 
-      if (evaluation.decision === "deny") {
-        return blockAction(evaluation, blockReason(evaluation, `MCP ${call.method} blocked by AgentWall.`));
-      }
+      if (evaluation.decision === "deny" || evaluation.decision === "approve") {
+        discardInventorySequence(call.inventorySequenceId);
+        if (direction === "client_to_server") {
+          const key = requestKey(frame.id);
+          if (key !== null) inFlight.delete(key);
+        }
+        clearInventoryContext();
+        if (evaluation.decision === "deny") {
+          return blockAction(evaluation, blockReason(evaluation, `MCP ${call.method} blocked by AgentWall.`));
+        }
 
-      // An `approve` verdict blocks.
-      //
-      // Interactive approval is not implemented on either transport. Neither has a side channel to
-      // ask a human anything, and holding the frame open until an operator answers would stall the
-      // client for as long as the operator is away. The approval queue is reachable over the HTTP
-      // API; until an approval channel exists on the MCP transports, refusing is the honest answer.
-      // Forwarding the call, or telling the client it was approved, would be a claim the client
-      // then acts on.
-      if (evaluation.decision === "approve") {
+        // Interactive approval is not implemented on either transport. Neither has a side channel
+        // that can hold this frame while a human is away, so an approval verdict must refuse it.
         const reason = blockReason(evaluation, "policy holds this call for a human.");
         return blockAction(evaluation, `MCP ${call.method} requires operator approval: ${reason}`);
       }
@@ -550,17 +609,24 @@ function createFrameHandling(args: {
           ? evaluation.redactedFrame
           : frame;
 
-      if (direction === "server_to_client") {
-        // Baselined only from a frame we are actually forwarding, and only after the gates have
-        // judged it. Recording a denied or held inventory would launder it: the next tools/list
-        // would be compared against the poisoned list and come back clean.
-        const tools = parseToolDescriptors(forwarded.result);
-        if (tools.length > 0) {
-          for (const tool of tools) advertised.set(tool.name, tool);
-          recordToolInventory(ctx, [...advertised.values()]);
+      if (direction === "server_to_client" && call.method === "tools/list") {
+        if (inventoryResponseEnded) {
+          discardInventorySequence(call.inventorySequenceId);
+        } else if (inventorySequence !== undefined) {
+          const forwardedPage = parseMcpToolInventoryPage(forwarded.result);
+          if (forwardedPage.status === "valid") {
+            for (const tool of forwardedPage.page.tools) inventorySequence.advertised.set(tool.name, tool);
+            if (forwardedPage.page.nextCursor === undefined) {
+              recordToolInventory(ctx, [...inventorySequence.advertised.values()]);
+              discardInventorySequence(inventorySequence.id);
+            } else {
+              cursorSequences.set(forwardedPage.page.nextCursor, inventorySequence.id);
+            }
+          }
         }
       }
 
+      clearInventoryContext();
       return { kind: "forward", frame: forwarded };
     },
 

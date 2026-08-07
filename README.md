@@ -208,6 +208,9 @@ The transparent path carries no fleet identity.
 AgentWall writes SHA-256 hash-chained JSONL records.
 Rotation manifests link closed segments.
 Signed checkpoints can anchor the current history outside the host.
+Set `audit.anchorIntervalMs` to a positive value to run anchors on the service schedule.
+Scheduled anchors require `AGENTWALL_AUDIT_FILE`.
+The service logs each result or failure and stops the schedule during shutdown.
 
 A verifier written by the same people in the same language as the writer only proves the code
 agrees with itself. Agentwall ships three independent verifiers in Go, Rust, and Python. A

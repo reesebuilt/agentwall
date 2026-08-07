@@ -237,6 +237,22 @@ describe("operator action route behavior", () => {
       data: expect.objectContaining({ output: expect.any(String) }),
     }));
   });
+
+  it("returns a failure status when a read-only command reports failure", async () => {
+    const { app } = await serverPromise;
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/operator/actions",
+      payload: { action: "perimeter-status" },
+    });
+
+    expect(response.statusCode).toBeGreaterThanOrEqual(400);
+    expect(response.json()).toEqual(expect.objectContaining({
+      ok: false,
+      action: "perimeter-status",
+      status: "failed",
+    }));
+  });
   it("accepts the required subject for a read-only policy explanation", async () => {
     const { app } = await serverPromise;
     const response = await app.inject({

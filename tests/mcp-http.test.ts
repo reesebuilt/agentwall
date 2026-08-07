@@ -511,10 +511,10 @@ describe("mcp http wrap wiring", () => {
     listeners.push(listener);
 
     const clean = await call(listener.port, {
-      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "resources/list" }),
     });
     expect(clean.status).toBe(200);
-    expect((JSON.parse(clean.body) as JsonRpcFrame).result).toEqual({ saw: "tools/list" });
+    expect((JSON.parse(clean.body) as JsonRpcFrame).result).toEqual({ saw: "resources/list" });
 
     // A response frame carrying neither result nor error fails the frame_integrity gate, which is a
     // real verdict from the real gates rather than a stubbed one: this is the assertion that the
@@ -551,7 +551,10 @@ process.stdin.on("data", (chunk) => {
     if (line.length === 0) continue;
     const frame = JSON.parse(line);
     if (frame.id === undefined || frame.id === null) continue;
-    process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: frame.id, result: { saw: frame.method } }) + "\\n");
+    const result = frame.method === "tools/list"
+      ? { tools: [{ name: "echo", description: "Echo a value" }] }
+      : { saw: frame.method };
+    process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: frame.id, result }) + "\\n");
   }
 });
 process.stdin.on("end", () => process.exit(0));
@@ -604,7 +607,11 @@ describe("mcp stdio wrap regression guard", () => {
       exitedEarly,
     ]);
 
-    expect(frames[0]).toEqual({ jsonrpc: "2.0", id: 1, result: { saw: "tools/list" } });
+    expect(frames[0]).toEqual({
+      jsonrpc: "2.0",
+      id: 1,
+      result: { tools: [{ name: "echo", description: "Echo a value" }] },
+    });
 
     client.end();
     await expect(finished).resolves.toBe(0);

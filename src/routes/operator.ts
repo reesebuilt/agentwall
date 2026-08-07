@@ -475,7 +475,7 @@ export async function operatorRoutes(app: FastifyInstance, context: OperatorRout
 
     try {
       const actionResult = await executeAction(parsed.data, context, managedMcpHttpWraps);
-      return reply.status(actionResult.ok || !entry.mutating ? 200 : 409).send(actionResult);
+      return reply.status(actionResult.ok ? 200 : 409).send(actionResult);
     } catch (error) {
       const message = error instanceof Error ? error.message : "The operator action failed.";
       return reply.status(400).send(result(parsed.data.action, false, "failed", message.endsWith(".") ? message : `${message}.`, "Correct the action fields or review local status before you try again."));

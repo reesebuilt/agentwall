@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "@jest/globals";
 import { get as httpGet } from "http";
-import { mkdtempSync, rmSync, writeFileSync } from "fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import {
@@ -649,18 +649,73 @@ describe("typed capture command execution", () => {
         host: "127.0.0.1",
         timeoutMs: 2_000,
         settleMs: 0,
-        commandArgv: [process.execPath, "-e", "fetch(process.argv[1])", "{url}"],
+        commandArgv: [process.execPath, "-e", "process.stdout.write('fetching\\n'); fetch(process.argv[1])", "{url}"],
       });
 
       expect(report.fetch.exitCode).toBe(0);
+      expect(report.fetch.stdout).toContain("fetching");
       expect(report.hits).toHaveLength(1);
       expect(report.fetch.commandArgv).toEqual([
         process.execPath,
         "-e",
-        "fetch(process.argv[1])",
+        "process.stdout.write('fetching\\n'); fetch(process.argv[1])",
         "{url}",
       ]);
     } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  // This covers kernel process-group and pipe lifetime; fake timers cannot drive either.
+  it("returns promptly when a timed-out command leaves a descendant holding its pipes", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "agentwall-capture-timeout-"));
+    const auditPath = join(dir, "audit.jsonl");
+    const pidPath = join(dir, "descendant.pid");
+    const script = [
+      "const { spawn } = require('child_process');",
+      "const { writeFileSync } = require('fs');",
+      "const child = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 5000)'], { stdio: ['ignore', 'inherit', 'inherit'] });",
+      "writeFileSync(process.argv[1], String(child.pid));",
+      "setTimeout(() => {}, 5000);",
+    ].join("");
+    writeFileSync(auditPath, "");
+    const startedAt = Date.now();
+    let descendantPid: number | undefined;
+    try {
+      const report = await runVerifyCapture({
+        agentId: "alpha",
+        auditPath,
+        host: "127.0.0.1",
+        timeoutMs: 100,
+        settleMs: 0,
+        commandArgv: [process.execPath, "-e", script, pidPath, "{url}"],
+      });
+
+      expect(Date.now() - startedAt).toBeLessThan(2_000);
+      expect(report.fetch.exitCode).toBeNull();
+      expect(report.fetch.stderr).toMatch(/timed out/i);
+      descendantPid = Number(readFileSync(pidPath, "utf8"));
+      let descendantAlive = true;
+      for (let attempt = 0; attempt < 20 && descendantAlive; attempt++) {
+        try {
+          process.kill(descendantPid, 0);
+          const delay = deferred<void>();
+          setTimeout(() => delay.resolve(undefined), 25);
+          await delay.promise;
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+          descendantAlive = false;
+        }
+      }
+      expect(descendantAlive).toBe(false);
+    } finally {
+      if (descendantPid !== undefined) {
+        try {
+          process.kill(descendantPid, "SIGKILL");
+        } catch {
+          // The process group timeout already reaped it.
+        }
+      }
       rmSync(dir, { recursive: true, force: true });
     }
   });

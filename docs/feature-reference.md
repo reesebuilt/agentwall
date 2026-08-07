@@ -174,13 +174,15 @@ Malformed or oversized input does not reach the upstream server.
 
 | Mode | Result |
 | --- | --- |
-| `off` | Uses session-only inventory checks and stores no baseline. |
-| `learn` | Stores the first clean inventory with atomic file replacement. |
-| `lock` | Requires approval when a tool is new, removed, or changed. |
+| `off` | Uses a complete session-only inventory and stores no baseline. |
+| `learn` | Stores the first complete clean inventory with atomic file replacement. |
+| `lock` | Requires approval when a tool or any standard descriptor field is new, removed, or changed. |
 
 The baseline key uses the agent ID, server name, and optional command hash.
 A denied inventory never changes the stored baseline.
 The baseline file is not part of the audit root of trust.
+The store keeps output schemas, annotations, icons, and metadata.
+An old lock with no provably dead owner fails closed and requires manual removal.
 
 **Limit:** Baseline matching shows inventory drift.
 It does not prove that the server implementation is safe.

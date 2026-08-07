@@ -107,6 +107,28 @@ export async function buildServer(config: AgentwallConfig): Promise<AgentwallSer
   }
   registerAuditSink(stdoutSink);
 
+  const anchorIntervalMs = config.audit?.anchorIntervalMs ?? 0;
+  const anchorSchedule = anchorIntervalMs > 0 && auditPath
+    ? startAnchorSchedule(
+        { auditPath },
+        anchorIntervalMs,
+        (result) => {
+          if (result.anchored) {
+            app.log.info(
+              { covered: result.covered, segments: result.segments, liveRecords: result.liveRecords },
+              "scheduled audit anchor completed",
+            );
+          } else {
+            app.log.debug({ reason: result.reason }, "scheduled audit anchor had nothing to submit");
+          }
+        },
+        (error) => app.log.error({ err: error }, "scheduled audit anchor failed"),
+      )
+    : undefined;
+  if (anchorIntervalMs > 0 && !auditPath) {
+    app.log.warn("audit.anchorIntervalMs is configured, but AGENTWALL_AUDIT_FILE is unset; scheduled anchoring is disabled");
+  }
+
   // Emergency stop: wired here so the signal and sentinel channels exist as early as the
   // audit stream that records them. Idempotent, so rebuilding a server does not stack a
   // second SIGUSR1 listener or a second poll timer. No path in the environment simply
@@ -178,6 +200,7 @@ export async function buildServer(config: AgentwallConfig): Promise<AgentwallSer
     policyRuntime?.stop();
     reloadCoordinator.dispose();
     gate.close();
+    anchorSchedule?.stop();
   });
 
   // Auth BEFORE any route registers. Allowlist model: everything is protected

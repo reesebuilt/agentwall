@@ -33,7 +33,7 @@ import {
 type GateHook = (
   frame: JsonRpcFrame,
   direction: FrameDirection,
-  context: { baselineDecision?: McpBaselineDecision },
+  context: { baselineDecision?: McpBaselineDecision; inventoryError?: string },
 ) => McpEvaluation;
 
 let mockEvaluate: GateHook = () => mockAllow();
@@ -43,7 +43,7 @@ jest.mock("../src/mcp/gates", () => ({
   evaluateFrame: (
     frame: JsonRpcFrame,
     direction: FrameDirection,
-    context: { baselineDecision?: McpBaselineDecision },
+    context: { baselineDecision?: McpBaselineDecision; inventoryError?: string },
   ) => mockEvaluate(frame, direction, context),
   recordToolInventory: (ctx: { approvedTools?: McpToolDescriptor[] }, tools: McpToolDescriptor[]) => {
     ctx.approvedTools = [...tools];
@@ -99,6 +99,55 @@ process.stdin.on("end", () => process.exit(0));
 const CHILD_FAILING_SERVER = `
 process.stdin.resume();
 process.stdin.on("end", () => process.exit(3));
+`;
+
+const PAGINATED_CHILD_SERVER = `
+let buffered = "";
+process.stdin.setEncoding("utf8");
+process.stdin.on("data", (chunk) => {
+  buffered += chunk;
+  for (;;) {
+    const newline = buffered.indexOf("\\n");
+    if (newline === -1) break;
+    const line = buffered.slice(0, newline).trim();
+    buffered = buffered.slice(newline + 1);
+    if (!line) continue;
+    const frame = JSON.parse(line);
+    if (frame.id === undefined || frame.id === null) continue;
+    const page = frame.params && frame.params.cursor === "page-2"
+      ? { tools: [{ name: "write_file" }] }
+      : { tools: [{ name: "read_file", description: "Read a file" }], nextCursor: "page-2" };
+    process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: frame.id, result: page }) + "\\n");
+  }
+});
+process.stdin.on("end", () => process.exit(0));
+`;
+
+const INTERLEAVED_PAGINATED_CHILD_SERVER = `
+let buffered = "";
+process.stdin.setEncoding("utf8");
+process.stdin.on("data", (chunk) => {
+  buffered += chunk;
+  for (;;) {
+    const newline = buffered.indexOf("\\n");
+    if (newline === -1) break;
+    const line = buffered.slice(0, newline).trim();
+    buffered = buffered.slice(newline + 1);
+    if (!line) continue;
+    const frame = JSON.parse(line);
+    if (frame.id === undefined || frame.id === null) continue;
+    const cursor = frame.params && frame.params.cursor;
+    const page = cursor === "a-2"
+      ? { tools: [{ name: "a_two" }] }
+      : cursor === "b-2"
+        ? { tools: [{ name: "b_two" }] }
+        : frame.id === 40
+          ? { tools: [{ name: "a_one" }], nextCursor: "a-2" }
+          : { tools: [{ name: "b_one" }], nextCursor: "b-2" };
+    process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: frame.id, result: page }) + "\\n");
+  }
+});
+process.stdin.on("end", () => process.exit(0));
 `;
 
 interface WrapHarness {
@@ -434,6 +483,22 @@ describe("runMcpWrap", () => {
     expect(await shutdown(harness)).toBe(0);
   }, 15000);
 
+  it("waits for the final tools/list page before recording a complete inventory", async () => {
+    const harness = startWrap(PAGINATED_CHILD_SERVER);
+
+    send(harness, { jsonrpc: "2.0", id: 10, method: "tools/list", params: {} });
+    await harness.awaitFrames(1);
+    expect(mockInventories).toHaveLength(0);
+
+    send(harness, { jsonrpc: "2.0", id: 11, method: "tools/list", params: { cursor: "page-2" } });
+    await harness.awaitFrames(2);
+    expect(mockInventories).toEqual([
+      [{ name: "read_file", description: "Read a file" }, { name: "write_file" }],
+    ]);
+
+    expect(await shutdown(harness)).toBe(0);
+  }, 15000);
+
   it("does not baseline an inventory the gates denied", async () => {
     const harness = startWrap();
     mockEvaluate = (_frame, direction) =>
@@ -511,6 +576,53 @@ describe("runMcpWrap", () => {
     });
     expect(JSON.stringify(response)).not.toContain("Read a file");
 
+    expect(await shutdown(harness)).toBe(0);
+  }, 15000);
+
+  it("keeps concurrent paginated inventories isolated", async () => {
+    const harness = startWrap(INTERLEAVED_PAGINATED_CHILD_SERVER);
+
+    send(harness, { jsonrpc: "2.0", id: 40, method: "tools/list" });
+    await harness.awaitFrames(1);
+    send(harness, { jsonrpc: "2.0", id: 41, method: "tools/list" });
+    await harness.awaitFrames(2);
+    send(harness, { jsonrpc: "2.0", id: 42, method: "tools/list", params: { cursor: "a-2" } });
+    await harness.awaitFrames(3);
+    send(harness, { jsonrpc: "2.0", id: 43, method: "tools/list", params: { cursor: "b-2" } });
+    await harness.awaitFrames(4);
+
+    expect(mockInventories).toEqual([
+      [{ name: "a_one" }, { name: "a_two" }],
+      [{ name: "b_one" }, { name: "b_two" }],
+    ]);
+    expect(await shutdown(harness)).toBe(0);
+  }, 15000);
+
+  it("fails closed when a tools/list request supplies an unknown cursor", async () => {
+    const harness = startWrap(INTERLEAVED_PAGINATED_CHILD_SERVER);
+    mockEvaluate = (_frame, _direction, context) => context.inventoryError === undefined
+      ? mockAllow()
+      : mockAllow({
+          decision: "deny",
+          riskLevel: "high",
+          reasons: [context.inventoryError],
+          detectionIds: ["det.mcp.tool.malformed"],
+          blockingGate: "tool_inventory",
+          outcomes: [{
+            gate: "tool_inventory",
+            decision: "deny",
+            riskLevel: "high",
+            reasons: [context.inventoryError],
+            detectionIds: ["det.mcp.tool.malformed"],
+          }],
+        });
+
+    send(harness, { jsonrpc: "2.0", id: 44, method: "tools/list", params: { cursor: "missing" } });
+    await harness.awaitFrames(1);
+
+    expect(harness.frames[0].error?.code).toBe(MCP_BLOCKED_ERROR_CODE);
+    expect(harness.frames[0].error?.message).toMatch(/unknown or expired.*cursor/i);
+    expect(mockInventories).toHaveLength(0);
     expect(await shutdown(harness)).toBe(0);
   }, 15000);
 

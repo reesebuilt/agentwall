@@ -10,11 +10,10 @@ import { Decision, RiskLevel } from "../types";
  * gate vocabulary only. Decisions come from the existing PolicyEngine, and every
  * MCP decision joins the same hash chain as every other decision.
  *
- * Transport scope is stdio. MCP's stdio transport is newline-delimited JSON-RPC
- * 2.0 over the child's stdin/stdout, which is the transport every local MCP
- * server supports. HTTP and SSE transports are deliberately absent rather than
- * half-present: a partially-wrapped transport would report "protected" while
- * leaving a live path unscanned, which is worse than an honest gap.
+ * Transport scope is stdio and Streamable HTTP. The stdio transport is newline-delimited JSON-RPC
+ * 2.0 over the child's stdin/stdout. The HTTP transport supports JSON and server-sent events.
+ * Both transports use the same framing and gate callbacks, so a transport change does not bypass
+ * policy. WebSocket transport remains outside this scope.
  */
 
 /**
@@ -158,11 +157,18 @@ export interface McpServerIdentity {
   commandHash?: string;
 }
 
-/** A tool as advertised by the server in a tools/list response. */
+/** A complete tool descriptor as advertised by the server in a tools/list response. */
 export interface McpToolDescriptor {
   name: string;
+  title?: string;
   description?: string;
   inputSchema?: unknown;
+  outputSchema?: unknown;
+  annotations?: Record<string, unknown>;
+  icons?: unknown[];
+  _meta?: Record<string, unknown>;
+  meta?: Record<string, unknown>;
+  [extension: string]: unknown;
 }
 
 /** Persistent tool inventory behavior for one wrapped MCP server. */

@@ -189,6 +189,17 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
   endpoint no client calls. `PolicyEvaluationResponse` no longer carries the field.
 
 ### Fixed
+- MCP inventory checks now validate complete tool descriptors, reject malformed pages, and detect
+  drift in output schemas, annotations, icons, and metadata.
+- Paginated MCP inventory checks now isolate concurrent cursor sequences and deny unknown cursors.
+- Persistent MCP baselines now preserve complete descriptors, replace files atomically, and refuse
+  an old lock when its owner cannot be proved dead.
+- `verify-capture` now uses an argument array without a shell and kills the child process group on
+  timeout, so descendants cannot retain its pipes.
+- The CLI now reports the real package root and prints one concise error before exit. The public
+  console keeps structured failure output visible for operator review.
+- A configured audit anchor schedule now starts with the server, logs each result, and stops during
+  shutdown.
 - `agentwall perimeter install` installs a perimeter. It never did. It handed the ruleset to
   `nft` on standard input as `spawnSync("nft", ["-f", "-"], { input: ruleset })`, and Node does
   not give a child process a pipe for `input`: libuv backs child stdio with a Unix domain

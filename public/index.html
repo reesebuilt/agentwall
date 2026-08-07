@@ -200,6 +200,49 @@
               </div>
             </form>
           </details>
+          <div id="channel-firewall">
+            <div class="subsection-heading">
+              <p class="context-label">Communication controls</p>
+              <h3>Channel profiles</h3>
+            </div>
+            <p class="section-intro">Set one safe action profile for each agent and channel.</p>
+            <div id="channel-firewall-summary" class="plain-list">
+              <div class="empty-state" data-state="loading">
+                <strong>Wait for channel profiles.</strong>
+                <p>Agentwall will show the actions that each channel allows.</p>
+              </div>
+            </div>
+            <details id="channel-firewall-editor" class="disclosure">
+              <summary>Set a channel profile</summary>
+              <p class="disclosure-copy">A profile limits what an agent can do in one channel.</p>
+              <form id="channel-firewall-form" class="typed-form">
+                <div class="form-grid">
+                  <label class="form-field">
+                    <span>Agent ID</span>
+                    <input name="agentId" type="text" autocomplete="off" required placeholder="telegram-bot" />
+                  </label>
+                  <label class="form-field">
+                    <span>Channel ID</span>
+                    <input name="channelId" type="text" autocomplete="off" required placeholder="telegram:-1001234567890:42" />
+                  </label>
+                  <label class="form-field form-field-wide">
+                    <span>Profile</span>
+                    <select name="profile">
+                      <option value="observe">Monitor only</option>
+                      <option value="answer_only">Answer only</option>
+                      <option value="read_only">Read only</option>
+                      <option value="approval_required">Approval required</option>
+                      <option value="locked_down">Locked down</option>
+                    </select>
+                  </label>
+                </div>
+                <div class="form-actions">
+                  <button class="button button-primary" type="submit">Save profile</button>
+                  <span id="channel-firewall-form-state" class="form-state" aria-live="polite"></span>
+                </div>
+              </form>
+            </details>
+          </div>
         </section>
 
         <section id="agents" class="console-section" aria-labelledby="agents-title">
